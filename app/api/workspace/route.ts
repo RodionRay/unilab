@@ -46,7 +46,7 @@ import {
  type MailingSourceKind,
 } from '@/lib/mailing';
 import {interpretMailingSendResult,isAmbiguousSendError,mailingPersonKey,notePeerMiss,untriedAccountIds,type PeerMissState} from '@/lib/processes/mailing-tick';
-import {STALE_CLAIM_ERROR,claimMailingRecipient,expireStalePendingClaims,loadContactedRecipients,releaseMailingRecipient,settleMailingRecipient,staleClaimDelivery,type MailingRecipientEntry} from '@/lib/processes/mailing-recipients';
+import {CONTACTED_CHUNK,STALE_CLAIM_ERROR,claimMailingRecipient,expireStalePendingClaims,findContactedRecipients,releaseMailingRecipient,settleMailingRecipient,staleClaimDelivery,type MailingRecipientEntry} from '@/lib/processes/mailing-recipients';
 import {checkProxyTarget} from '@/lib/security/net-guard';
 import {proxyCheckTimeoutMs,workerAppTimeoutMs,workerSlots} from '@/lib/worker-timeouts';
 import {WorkerBusyError,isRetryableTickError,tickRetryPatch} from '@/lib/processes/tick-retry';
@@ -4230,11 +4230,10 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     }catch{/* */}
    }
   }else{
-   const users=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='audience_user'").bind(owner).all();
+   const users=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='audience_user' AND json_extract(data,'$.taskId')=?").bind(owner,String(data.audienceTaskId||'')).all();
    for(const r of users.results){
     try{
      const u=JSON.parse(String(r.data));
-     if(u.taskId!==data.audienceTaskId)continue;
      if(!u.username&&!u.userId)continue;
      const key=recipientKey({sourceKind:'audience',userId:u.userId,username:u.username});
      if(key&&!delivered.has(key))pending++;
@@ -4487,10 +4486,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const t=Date.parse(until);
    return Number.isFinite(t)&&t>nowMs;
   };
-  // Реестр получателей владельца: не ограничен 5000 ключами и общий для всех рассылок (REQ-M2, REQ-M3)
-  const contacted=await loadContactedRecipients(db,owner,id);
-  const isQueued=(key:string,personKey:string)=>
-   !!key&&!deliveredKeys.has(key)&&!isDeferred(key)&&!(personKey&&contacted.personKeys.has(personKey));
+  const isQueued=(key:string)=>!!key&&!deliveredKeys.has(key)&&!isDeferred(key);
   const batchSize=Math.max(1,Math.min(10,Number(data.batchPerTick)||1));
   // Дневной лимит задачи режет батч, а не только стартовую проверку (REQ-M6)
   const dailyLeft=data.dailyLimitEnabled?Math.max(0,Number(data.dailyLimit||200)-sentToday):batchSize;
@@ -4526,12 +4522,11 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      if(filter==='hot_warm'&&temp!=='hot'&&temp!=='warm')continue;
      if(deliveryMode==='dm'&&!L.senderId&&!L.senderUsername)continue;
      if(deliveryMode==='chat'&&(!L.groupId||!L.tgMsgId))continue;
-     if(deliveryMode==='dm'&&contacted.leadIds.has(String(r.id)))continue;
      const userId=String(L.senderId||'');
      const username=String(L.senderUsername||'').replace(/^@/,'');
      const key=recipientKey({sourceKind:'leads',leadId:String(r.id),userId,username});
      const personKey=mailingPersonKey(deliveryMode,{userId,username,leadId:String(r.id)});
-     if(!isQueued(key,personKey))continue;
+     if(!isQueued(key))continue;
      const g=L.groupId?gMap.get(String(L.groupId)):null;
      candidates.push({
       key,
@@ -4556,17 +4551,17 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      if(trow)audienceUrl=String(JSON.parse(String(trow.data)).url||'');
     }catch{/* */}
    }
-   const allUsers=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='audience_user'").bind(owner).all();
-   for(const r of allUsers.results){
+   // SQL-фильтр по базе задачи, не скан всей аудитории владельца (как инвайт/сбор)
+   const taskUsers=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='audience_user' AND json_extract(data,'$.taskId')=?").bind(owner,audienceTaskId).all();
+   for(const r of taskUsers.results){
     try{
      const u=JSON.parse(String(r.data));
-     if(u.taskId!==data.audienceTaskId)continue;
      if(!u.username&&!u.userId)continue;
      const userId=String(u.userId||'');
      const username=String(u.username||'').replace(/^@/,'');
      const key=recipientKey({sourceKind:'audience',userId,username});
      const personKey=mailingPersonKey(deliveryMode,{userId,username,leadId:''});
-     if(!isQueued(key,personKey))continue;
+     if(!isQueued(key))continue;
      candidates.push({
       key,
       personKey,
@@ -4584,7 +4579,20 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    candidates.sort((a,b)=>(b.username?1:0)-(a.username?1:0));
   }
 
-  const batch=candidates.slice(0,Math.min(batchSize,dailyLeft));
+  // Реестр получателей владельца (не ограничен 5000 ключами, общий для всех рассылок — REQ-M2, REQ-M3):
+  // проверяем порциями кандидатов (IN …), пока не набран батч
+  const batchLimit=Math.min(batchSize,dailyLeft);
+  const batch:Cand[]=[];
+  for(let i=0;i<candidates.length&&batch.length<batchLimit;i+=CONTACTED_CHUNK){
+   const chunk=candidates.slice(i,i+CONTACTED_CHUNK);
+   const contacted=await findContactedRecipients(db,owner,id,chunk);
+   for(const c of chunk){
+    if(batch.length>=batchLimit)break;
+    if(c.personKey&&contacted.personKeys.has(c.personKey))continue;
+    if(deliveryMode==='dm'&&c.leadId&&contacted.leadIds.has(c.leadId))continue;
+    batch.push(c);
+   }
+  }
   if(!batch.length){
    const decision=mailingEmptyBatchDecision(deferredUntil);
    if(decision.action==='wait'){

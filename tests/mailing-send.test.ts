@@ -1,5 +1,5 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
-import {OWNER,addRecord,login,postRequest,resetWorkspace,testDb} from './helpers/workspace-harness';
+import {OWNER,addRecord,cfModule,login,postRequest,resetWorkspace,testDb} from './helpers/workspace-harness';
 import {ACC_A,ACC_B,addSealedAccount,dropHarnessAccount,readRecord,writeRecord,type WorkerCall} from './helpers/chats-fixture';
 import {moscowDayKey} from '@/lib/telegram-accounts';
 
@@ -271,6 +271,57 @@ describe('рассылка · отправка (tick_mailing)',()=>{
     expect(byKey).toEqual({'dm:u:2001':'unknown','dm:u:2002':'pending'});
     expect(task().deliveries).toMatchObject([{key:'u:2001',userId:'2001',ok:false}]);
     expect(task().log.map(l=>l.text).join('\n')).toMatch(/id2001.*могло уйти/);
+  });
+
+  it('REQ-M3: legacy deliveredKeys другой рассылки — человеку не пишем',async()=>{
+    seedAudience(['2001','2002']);
+    addRecord('e5000000-0000-4000-8000-000000000005','mailing_task',{name:'Old',status:'completed',deliveredKeys:['u:2001']});
+    seedMailing({batchPerTick:2});
+    const {calls}=stubWorker(()=>({ok:true,messageId:'1'}));
+
+    await tick();
+
+    expect(sends(calls).map(c=>c.body.senderId)).toEqual(['2002']);
+  });
+
+  it('реестр проверяется порциями кандидатов: большая база уже написанных не мешает найти новых',async()=>{
+    const users=Array.from({length:75},(_,i)=>String(3000+i));
+    seedAudience(users);
+    for(const uid of users.slice(0,70)){
+      testDb().sqlite.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,NULL,?)').run(
+        `mr:${OWNER}:dm:u:${uid}`,OWNER,'mailing_recipient',
+        JSON.stringify({key:`dm:u:${uid}`,state:'sent',taskId:'other',accountId:ACC_A,leadId:'',at:new Date().toISOString(),error:''}),
+        new Date().toISOString(),
+      );
+    }
+    seedMailing({batchPerTick:3});
+    const {calls}=stubWorker(()=>({ok:true,messageId:'1'}));
+
+    await tick();
+
+    expect(sends(calls).map(c=>c.body.senderId)).toEqual(['3070','3071','3072']);
+  });
+
+  it('тик читает аудиторию SQL-фильтром по задаче, реестр/лиды/deliveredKeys — по кандидатам (IN)',async()=>{
+    seedAudience(['2001']);
+    addRecord('e6000000-0000-4000-8000-000000000006','audience_user',{taskId:'other-task',userId:'9999',username:'stranger'});
+    seedMailing();
+    const sql:string[]=[];
+    const realDb=cfModule.env.DB as {prepare:(q:string)=>unknown};
+    cfModule.env.DB=new Proxy(realDb,{get(target,key){
+      if(key==='prepare')return (q:string)=>{sql.push(q);return target.prepare(q)};
+      const v=Reflect.get(target,key);
+      return typeof v==='function'?v.bind(target):v;
+    }});
+    try{
+      const {calls}=stubWorker(()=>({ok:true,messageId:'1'}));
+      await tick();
+      expect(sends(calls).map(c=>c.body.senderId)).toEqual(['2001']);
+    }finally{cfModule.env.DB=realDb}
+    const reads=sql.filter(q=>/^\s*SELECT/i.test(q));
+    for(const q of reads.filter(q=>/audience_user/.test(q)))expect(q).toMatch(/json_extract\(data,'\$\.taskId'\)/);
+    for(const q of reads.filter(q=>/mailing_recipient|kind=\?/.test(q)&&!/LIMIT|id=\?/.test(q)))expect(q).toMatch(/IN \(/);
+    for(const q of reads.filter(q=>/mailingTaskId|deliveredKeys/.test(q)))expect(q).toMatch(/IN \(/);
   });
 
   it('R2: AI-текст возвращается в пул, если отправка упала',async()=>{

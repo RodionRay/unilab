@@ -44,53 +44,99 @@ function parseData(raw: unknown): Record<string, unknown> | null {
   }
 }
 
+/** Bound parameters per IN (…) query stay well under the D1 limit of 100. */
+export const CONTACTED_CHUNK = 30;
+
+export type ContactedCandidate = Readonly<{ personKey: string; leadId: string }>;
+
+const placeholders = (n: number) => Array.from({ length: n }, () => "?").join(",");
+
 /**
- * Кому уже писали: реестр + данные до реестра (deliveredKeys других задач, лиды с mailingTaskId
- * другой задачи). `leadIds` — лиды, которые уже получили рассылку другой задачи.
+ * Кому из этих кандидатов уже писали: реестр + данные до реестра (deliveredKeys других задач,
+ * лиды с mailingTaskId другой задачи). Запросы только по ключам кандидатов (IN …), порциями —
+ * без чтения всего реестра / всех задач / всех лидов владельца на каждом тике.
+ * `leadIds` — лиды-кандидаты, которым уже писала другая задача.
  */
-export async function loadContactedRecipients(
+export async function findContactedRecipients(
   db: D1LikeDatabase,
   owner: string,
   taskId: string,
+  candidates: readonly ContactedCandidate[],
 ): Promise<{ personKeys: Set<string>; leadIds: Set<string> }> {
   const personKeys = new Set<string>();
   const leadIds = new Set<string>();
+  for (let i = 0; i < candidates.length; i += CONTACTED_CHUNK) {
+    const chunk = candidates.slice(i, i + CONTACTED_CHUNK);
+    const keys = [...new Set(chunk.map((c) => c.personKey).filter(Boolean))];
+    await collectRegistryHits(db, owner, keys, personKeys);
+    await collectLegacyDeliveredHits(db, owner, taskId, keys, personKeys);
+    await collectLegacyLeadHits(db, owner, taskId, chunk, keys, personKeys, leadIds);
+  }
+  return { personKeys, leadIds };
+}
+
+async function collectRegistryHits(db: D1LikeDatabase, owner: string, keys: string[], out: Set<string>) {
+  if (!keys.length) return;
   const prefix = idPrefix(owner);
   const rows = await db
-    .prepare("SELECT id FROM records WHERE owner=? AND kind=?")
-    .bind(owner, MAILING_RECIPIENT_KIND)
+    .prepare(`SELECT id FROM records WHERE owner=? AND kind=? AND id IN (${placeholders(keys.length)})`)
+    .bind(owner, MAILING_RECIPIENT_KIND, ...keys.map((k) => recipientRowId(owner, k)))
     .all();
-  for (const r of rows.results) {
-    const id = String(r.id);
-    if (id.startsWith(prefix)) personKeys.add(id.slice(prefix.length));
-  }
+  for (const r of rows.results) out.add(String(r.id).slice(prefix.length));
+}
 
-  const tasks = await db
-    .prepare("SELECT data FROM records WHERE owner=? AND kind='mailing_task' AND id!=?")
-    .bind(owner, taskId)
-    .all();
-  for (const t of tasks.results) {
-    const keys = parseData(t.data)?.deliveredKeys;
-    if (!Array.isArray(keys)) continue;
-    for (const k of keys) {
-      const s = String(k);
-      if (s.startsWith("u:") || s.startsWith("un:")) personKeys.add(`dm:${s}`);
-    }
-  }
-
-  const leads = await db
+/** deliveredKeys `u:<id>` / `un:<name>` of other tasks = person keys `dm:u:…` / `dm:un:…`. */
+async function collectLegacyDeliveredHits(
+  db: D1LikeDatabase,
+  owner: string,
+  taskId: string,
+  keys: string[],
+  out: Set<string>,
+) {
+  const legacy = keys.filter((k) => k.startsWith("dm:u:") || k.startsWith("dm:un:")).map((k) => k.slice(3));
+  if (!legacy.length) return;
+  const rows = await db
     .prepare(
-      "SELECT id,data FROM records WHERE owner=? AND kind='lead' AND COALESCE(json_extract(data,'$.mailingTaskId'),'') NOT IN ('',?)",
+      "SELECT DISTINCT je.value AS k FROM records r, json_each(r.data,'$.deliveredKeys') je " +
+        `WHERE r.owner=? AND r.kind='mailing_task' AND r.id!=? AND je.value IN (${placeholders(legacy.length)})`,
     )
-    .bind(owner, taskId)
+    .bind(owner, taskId, ...legacy)
     .all();
-  for (const l of leads.results) {
+  for (const r of rows.results) out.add(`dm:${String(r.k)}`);
+}
+
+async function collectLegacyLeadHits(
+  db: D1LikeDatabase,
+  owner: string,
+  taskId: string,
+  chunk: readonly ContactedCandidate[],
+  keys: string[],
+  personKeys: Set<string>,
+  leadIds: Set<string>,
+) {
+  const ids = [...new Set(chunk.map((c) => c.leadId).filter(Boolean))];
+  const uids = keys.filter((k) => k.startsWith("dm:u:")).map((k) => k.slice(5));
+  const names = keys.filter((k) => k.startsWith("dm:un:")).map((k) => k.slice(6));
+  const match: string[] = [];
+  if (ids.length) match.push(`id IN (${placeholders(ids.length)})`);
+  if (uids.length) match.push(`trim(CAST(json_extract(data,'$.senderId') AS TEXT)) IN (${placeholders(uids.length)})`);
+  if (names.length) {
+    match.push(`lower(ltrim(trim(json_extract(data,'$.senderUsername')),'@')) IN (${placeholders(names.length)})`);
+  }
+  if (!match.length) return;
+  const rows = await db
+    .prepare(
+      "SELECT id,data FROM records WHERE owner=? AND kind='lead' " +
+        `AND COALESCE(json_extract(data,'$.mailingTaskId'),'') NOT IN ('',?) AND (${match.join(" OR ")})`,
+    )
+    .bind(owner, taskId, ...ids, ...uids, ...names)
+    .all();
+  for (const l of rows.results) {
     const d = parseData(l.data);
     if (!d) continue;
     leadIds.add(String(l.id));
     for (const k of legacyPersonKeys(d.senderId, d.senderUsername)) personKeys.add(k);
   }
-  return { personKeys, leadIds };
 }
 
 /** Занять получателя перед отправкой; false — уже занят (другая задача/тик успели раньше). */
