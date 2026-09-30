@@ -407,19 +407,25 @@ export type JoinPaceState = {
   lastJoinAt?: string;
   joinsToday?: number;
   joinsDay?: string;
+  /** Конец FloodWait от Telegram на вступления: пауза темпа, не отлёжка. */
+  joinFloodUntil?: string;
 };
 
-/** Сколько секунд ждать до следующего join. 0 = можно сейчас. */
+/** Сколько секунд ждать до следующего join (пауза темпа или FloodWait). 0 = можно сейчас. */
 export function joinWaitSec(
   state: JoinPaceState,
   now = Date.now(),
 ): number {
-  if (!state.lastJoinAt) return 0;
-  const last = Date.parse(state.lastJoinAt);
-  if (!Number.isFinite(last)) return 0;
+  const floodUntil = Date.parse(String(state.joinFloodUntil || ""));
+  const floodWait = Number.isFinite(floodUntil) && floodUntil > now
+    ? Math.ceil((floodUntil - now) / 1000)
+    : 0;
+  const last = Date.parse(String(state.lastJoinAt || ""));
+  if (!Number.isFinite(last)) return floodWait;
   const elapsed = (now - last) / 1000;
   const need = JOIN_GAP_DEFAULT_SEC;
-  return elapsed >= need ? 0 : Math.ceil(need - elapsed);
+  const paceWait = elapsed >= need ? 0 : Math.ceil(need - elapsed);
+  return Math.max(paceWait, floodWait);
 }
 
 export function normalizeJoinsToday(state: JoinPaceState): number {
