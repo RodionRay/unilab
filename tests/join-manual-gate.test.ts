@@ -10,8 +10,10 @@ vi.mock('@/lib/auth',async(importOriginal)=>({
 import {GET,POST} from '@/app/api/workspace/route';
 import {seal} from '@/lib/server-store';
 import {clearStaleJoinState,JOIN_STATE_STALE_MS} from '@/lib/processes/join-flow';
+import {moscowDayKey} from '@/lib/telegram-accounts';
 
 const ACC_A='a0000000-0000-4000-8000-00000000000a';
+const ACC_B='b0000000-0000-4000-8000-00000000000b';
 const GROUP='e0000000-0000-4000-8000-00000000000e';
 const GROUP_2='e0000000-0000-4000-8000-0000000000e2';
 
@@ -132,6 +134,19 @@ describe('ручное вступление: хвосты очереди и го
       expect(joinCalls).toBe(1);
       expect(rec(ACC_A).joinsToday||0).toBe(0);
       expect(rec(ACC_A).lastJoinAt||'').toBe('');
+    });
+
+    it('исчерпан дневной лимит — 429 limitReached, второй живой аккаунт не подставляется',async()=>{
+      await addAccount(ACC_A,{limits:{invite:3},joinsToday:3,joinsDay:moscowDayKey()});
+      await addAccount(ACC_B,{});
+      addGroup(GROUP,{});
+
+      const res=await join(GROUP);
+
+      expect(res.status).toBe(429);
+      expect(await res.json()).toMatchObject({limitReached:true});
+      expect(joinCalls).toBe(0);
+      expect(rec(GROUP).accountId).toBe(ACC_A);
     });
   });
 });
