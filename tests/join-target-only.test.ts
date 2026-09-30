@@ -11,55 +11,47 @@ import {POST} from '@/app/api/workspace/route';
 
 const CATALOG_ID='66666666-6666-4666-8666-666666666666';
 const ORPHAN_ID='77777777-7777-4777-8777-777777777777';
-const WANTED_ID='88888888-8888-4888-8888-888888888888';
 
 function group(id:string){
   const row=testDb().sqlite.prepare('SELECT data FROM records WHERE id=?').get(id) as {data:string};
   return JSON.parse(row.data);
 }
 
-describe('вступление только в группы, поставленные владельцем',()=>{
+describe('вступление только по ручному действию владельца',()=>{
   let errSpy:ReturnType<typeof vi.spyOn>;
   beforeEach(()=>{
     resetWorkspace();
     login(OWNER);
     errSpy=vi.spyOn(console,'error').mockImplementation(()=>{});
     const base={membership:'none',status:'setup',joinedAt:''};
-    addRecord(CATALOG_ID,'group',{...base,name:'Каталог',url:'https://t.me/catalog_chat',accountId:ACCOUNT_ID,source:'catalog',joinState:'queued'});
+    // Хвост старой очереди браузера: joinState='queued' больше ничего не запускает.
+    addRecord(CATALOG_ID,'group',{...base,name:'Каталог',url:'https://t.me/catalog_chat',accountId:ACCOUNT_ID,source:'catalog',joinState:'queued',joinWanted:true});
     addRecord(ORPHAN_ID,'group',{...base,name:'Без аккаунта',url:'https://t.me/orphan_chat',accountId:'',source:'catalog'});
-    addRecord(WANTED_ID,'group',{...base,name:'Целевая',url:'https://t.me/wanted_chat',accountId:ACCOUNT_ID,joinWanted:true});
   });
   afterEach(()=>{
     errSpy.mockRestore();
     vi.unstubAllGlobals();
   });
 
-  it('join_group отказывает группе вне очереди и не зовёт воркер',async()=>{
-    const res=await POST(postRequest({action:'join_group',id:CATALOG_ID}));
+  it('rescan_groups не вступает, не ставит в очередь и не назначает аккаунт',async()=>{
+    const res=await POST(postRequest({action:'rescan_groups',force:true}));
+    const body=await res.json() as {groupIds:string[];needJoin:number};
 
-    expect(res.status).toBe(409);
-    expect(await res.json()).toMatchObject({notWanted:true});
+    expect(res.status).toBe(200);
+    expect(body.groupIds).toEqual([]);
+    expect(body.needJoin).toBe(1);
     expect(workerCalls.some(u=>u.includes('/join-group'))).toBe(false);
-    expect(group(CATALOG_ID).joinState).toBe('');
-  });
-
-  it('автопочинка не берёт в очередь и не назначает аккаунт нецелевым группам',async()=>{
-    const res=await POST(postRequest({action:'heal_dead_group_accounts'}));
-    const body=await res.json() as {items?:{id:string}[]};
-
-    const ids=(body.items||[]).map(i=>i.id);
-    expect(ids).not.toContain(CATALOG_ID);
-    expect(ids).not.toContain(ORPHAN_ID);
     expect(group(ORPHAN_ID).accountId).toBe('');
-    expect(group(CATALOG_ID).joinState).toBe('');
+    expect(group(CATALOG_ID).accountId).toBe(ACCOUNT_ID);
   });
 
-  it('enqueue_joins помечает группу целевой и пропускает её к вступлению',async()=>{
-    const enq=await POST(postRequest({action:'enqueue_joins',groupIds:[CATALOG_ID]}));
-    expect(enq.status).toBe(200);
-    expect(group(CATALOG_ID).joinWanted).toBe(true);
+  it('join_group по кнопке не требует очереди вступления',async()=>{
+    testDb().sqlite.prepare("UPDATE records SET data=json_set(data,'$.joinWanted',json('false')) WHERE id=?").run(CATALOG_ID);
 
     const res=await POST(postRequest({action:'join_group',id:CATALOG_ID}));
+    const body=await res.json() as {notWanted?:boolean};
+
     expect(res.status).not.toBe(409);
+    expect(body.notWanted).toBeUndefined();
   },10_000);
 });

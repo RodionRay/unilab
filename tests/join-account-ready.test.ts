@@ -58,7 +58,7 @@ describe("готовность аккаунта к вступлению · evalu
     });
   });
 
-  it("в ферму берёт аккаунт на паузе, но не на отлёжке и не слепой", () => {
+  it("под вступление годится аккаунт на паузе, но не на отлёжке и не слепой", () => {
     const paced = { ...ready, lastJoinAt: new Date(NOW - 60_000).toISOString() };
     expect(isJoinFarmCandidate(paced, { now: NOW })).toBe(true);
     expect(isJoinFarmCandidate({ ...ready, ...accountBlindPatch(NOW) }, { now: NOW })).toBe(false);

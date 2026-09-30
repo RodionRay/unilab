@@ -13,10 +13,8 @@ export const maxDuration = 300;
 
 /** Стена тика меньше AbortSignal воркера (300с), чтобы не ловить abort. */
 const TICK_BUDGET_MS = 210_000;
-const JOIN_TIMEOUT_MS = 90_000;
 const SCAN_TIMEOUT_MS = 150_000;
 const BOOT_TIMEOUT_MS = 20_000;
-const MAX_JOINS = 3;
 const MAX_SCANS_AUTO = 6;
 const MAX_SCANS_FORCE = 10;
 
@@ -79,35 +77,10 @@ async function workspace(
   return data;
 }
 
-async function tryJoin(
-  origin: string,
-  cookie: string,
-  id: string,
-  timeoutMs: number,
-) {
-  try {
-    const j = await workspace(
-      origin,
-      cookie,
-      { action: "join_group", id },
-      timeoutMs,
-    );
-    if (j?.ok || j?.pending) return { joined: 1, rejoinId: "", error: "" };
-    const error = String(j?.error || j?.result?.error || "не вступил").slice(0, 160);
-    if (j?.rejoinItem?.id) return { joined: 0, rejoinId: String(j.rejoinItem.id), error };
-    return { joined: 0, rejoinId: "", error };
-  } catch (e) {
-    const data = (e as any)?.data;
-    const error = String(data?.error || (e as Error)?.message || e).slice(0, 160);
-    if (data?.rejoinItem?.id) return { joined: 0, rejoinId: String(data.rejoinItem.id), error };
-    if (isAbort(e)) throw e;
-    return { joined: 0, rejoinId: "", error };
-  }
-}
-
 /**
  * Круглосуточный автообход лидов — вызывается tg-worker'ом, без открытого кабинета.
- * Порциями: 1 join + 1–2 скана за тик, с бюджетом времени. Остаток — следующим тиком.
+ * Только сканирует уже вступившие группы, с бюджетом времени; остаток — следующим тиком.
+ * Не вступает и не переназначает аккаунты: такие группы пропускаются и попадают в журнал обхода.
  */
 export async function POST(req: Request) {
   const secret = cronSecret();
@@ -168,7 +141,6 @@ export async function POST(req: Request) {
     ticks,
     scanned: sum("scanned"),
     added: sum("added"),
-    joined: sum("joined"),
     due: sum("due"),
     more: ticks.some((t) => !!(t as any).more),
     ms: Date.now() - started,
@@ -224,44 +196,13 @@ async function tickOwner(
       25_000,
     );
 
-    const pendingJoins = new Set<string>();
-    const rejoin: { id: string; name?: string }[] = Array.isArray(
-      pack.rejoinItems,
-    )
-      ? pack.rejoinItems
-      : [];
-    for (const item of rejoin) {
-      if (item?.id) pendingJoins.add(item.id);
-    }
-
-    let joined = 0;
-    let extraReassigned = 0;
     let stoppedEarly = false;
+    let needJoin = Number(pack.needJoin) || 0;
+    let unavailable = Number(pack.unavailableTotal) || 0;
     const errors: string[] = [];
-
-    for (const item of rejoin.slice(0, MAX_JOINS)) {
-      if (left() < 50_000) {
-        stoppedEarly = true;
-        break;
-      }
-      try {
-        const r = await tryJoin(origin, cookie, item.id, opTimeout(JOIN_TIMEOUT_MS));
-        joined += r.joined;
-        if (r.error) errors.push(`join ${item.name || item.id.slice(0, 8)}: ${r.error}`);
-        if (r.rejoinId && r.rejoinId !== item.id) {
-          extraReassigned++;
-          pendingJoins.add(r.rejoinId);
-        }
-        pendingJoins.delete(item.id);
-      } catch (e) {
-        if (isAbort(e)) {
-          stoppedEarly = true;
-          errors.push(`join timeout:${item.id.slice(0, 8)}`);
-          break;
-        }
-        errors.push(String((e as Error).message || e).slice(0, 120));
-      }
-    }
+    const groupErrors: string[] = (Array.isArray(pack.unavailable) ? pack.unavailable : [])
+      .slice(0, 3)
+      .map((u: any) => `${String(u?.name || "группа").slice(0, 40)}: ${String(u?.error || "аккаунт недоступен").slice(0, 80)}`);
 
     const ids: string[] = Array.isArray(pack.groupIds) ? pack.groupIds : [];
     let scanned = 0;
@@ -284,51 +225,18 @@ async function tickOwner(
           skipped++;
           continue;
         }
-        if (r?.rejoinItem?.id) {
-          if (r?.soft || r?.preserved) continue;
-          extraReassigned++;
-          const jid = String(r.rejoinItem.id);
-          if (left() >= 25_000) {
-            try {
-              const jr = await tryJoin(origin, cookie, jid, opTimeout(JOIN_TIMEOUT_MS));
-              joined += jr.joined;
-              if (jr.rejoinId && jr.rejoinId !== jid) pendingJoins.add(jr.rejoinId);
-            } catch (e) {
-              if (isAbort(e)) {
-                stoppedEarly = true;
-                pendingJoins.add(jid);
-                break;
-              }
-              pendingJoins.add(jid);
-            }
-          } else {
-            pendingJoins.add(jid);
-            stoppedEarly = true;
-          }
-          continue;
-        }
         scanned++;
         added += Number(r?.added) || 0;
       } catch (e) {
         const data = (e as any)?.data;
-        if (data?.rejoinItem?.id) {
-          if (data?.soft || data?.preserved) continue;
-          extraReassigned++;
-          const jid = String(data.rejoinItem.id);
-          if (left() >= 25_000 && !isAbort(e)) {
-            try {
-              const jr = await tryJoin(origin, cookie, jid, opTimeout(JOIN_TIMEOUT_MS));
-              joined += jr.joined;
-            } catch {
-              pendingJoins.add(jid);
-            }
-          } else {
-            pendingJoins.add(jid);
-            if (isAbort(e)) {
-              stoppedEarly = true;
-              break;
-            }
-          }
+        // Ошибка одной группы (нужно вступить / аккаунт недоступен) — пропуск с записью в журнал
+        if (data?.needJoin) {
+          needJoin++;
+          continue;
+        }
+        if (data?.accountDead || data?.accountFrozen || data?.accountCooldown) {
+          unavailable++;
+          groupErrors.push(String(data?.error || "аккаунт недоступен").slice(0, 120));
           continue;
         }
         errors.push(String((e as Error).message || e).slice(0, 120));
@@ -349,16 +257,17 @@ async function tickOwner(
       /* ответы в ЛС — следующим тиком */
     }
 
+    const logged = [...groupErrors, ...errors];
     const summary =
-      `Автообход: вступил ${joined}/${Math.min(rejoin.length, MAX_JOINS)}, ` +
-      `в очереди ${rejoin.length}, возвращено ${Number(pack.restored) || 0}, ` +
-      `просканировано ${scanned}, лидов +${added}` +
-      (errors.length ? ` · ошибки: ${errors.slice(0, 3).join(" | ")}` : "");
+      `Автообход: просканировано ${scanned}, лидов +${added}` +
+      (needJoin ? `, пропущено (нужно вступить вручную) ${needJoin}` : "") +
+      (unavailable ? `, аккаунт группы недоступен ${unavailable}` : "") +
+      (logged.length ? ` · ошибки: ${logged.slice(0, 3).join(" | ")}` : "");
     try {
       await workspace(
         origin,
         cookie,
-        { action: "mark_auto_rescan", summary, hasErrors: errors.length > 0 },
+        { action: "mark_auto_rescan", summary, hasErrors: logged.length > 0 },
         12_000,
       );
     } catch {
@@ -366,21 +275,17 @@ async function tickOwner(
     }
 
     const due = Number(pack.total) || ids.length;
-    const more =
-      stoppedEarly ||
-      due > ids.length ||
-      extraReassigned > 0 ||
-      pendingJoins.size > 0;
+    const more = stoppedEarly || due > ids.length;
     return {
       ok: true,
       scanned,
       added,
-      joined,
       skipped,
+      needJoin,
+      unavailable,
       due,
       queued: ids.length,
       remaining: Math.max(0, due - scanned - skipped),
-      reassigned: (Number(pack.reassigned) || 0) + extraReassigned,
       more,
       ms: Date.now() - started,
       errors: errors.slice(0, 5),

@@ -10,6 +10,13 @@ Private administration workspace for Telegram sources and sales leads.
 - OpenAI Responses API draft generation and manual editing/copying.
 - Russian responsive UI inspired by Air on Refero Styles.
 
+## Removed on purpose (2026-09-30)
+Features that get Telegram accounts banned are gone: mass group joining (join queue, "join all", auto-join
+from the catalog and the auto-rescan cron, auto-rejoin), account mixing (round-robin group assignment, switching
+to another farm account for joins, scans or DMs), audience collection, member inviting and mailings. Each group
+is joined manually, one at a time, by its assigned account. Old `audience_*`, `invite_task` and `mailing_task`
+records stay in D1 and are ignored. Spec: `docs/project/specs/remove-risky-tg.md`.
+
 ## Not implemented yet
 Telegram authorization / tdata import, joining groups, proxy connectivity checks, background message collection, automatic lead qualification and Telegram sending. These require a separate long-running Telegram connector; Sites has no raw TCP support. UI labels these limitations.
 

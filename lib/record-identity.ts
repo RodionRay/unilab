@@ -55,7 +55,7 @@ export function accountUsernameKey(username: unknown): string {
     .toLowerCase();
 }
 
-const DUP_KINDS = new Set(["account", "proxy", "group", "audience_task", "invite_task"]);
+const DUP_KINDS = new Set(["account", "proxy", "group"]);
 
 export function isDuplicateKind(kind: string): boolean {
   return DUP_KINDS.has(kind);
@@ -81,24 +81,6 @@ export function duplicateReason(kind: string, incoming: any, existing: any): str
     if (a && a === b) return "Эта группа или канал уже есть в кабинете";
     return null;
   }
-  if (kind === "audience_task") {
-    const a = telegramEntityKey(incoming.url);
-    const b = telegramEntityKey(existing.url);
-    if (a && a === b) return "Сбор с этим источником уже создан";
-    return null;
-  }
-  if (kind === "invite_task") {
-    const a = telegramEntityKey(incoming.targetUrl);
-    const b = telegramEntityKey(existing.targetUrl);
-    if (
-      a &&
-      a === b &&
-      String(incoming.audienceTaskId || "") === String(existing.audienceTaskId || "")
-    ) {
-      return "Инвайт в эту группу из этой базы уже создан";
-    }
-    return null;
-  }
   return null;
 }
 
@@ -112,7 +94,7 @@ export function findDuplicate<T extends { id: string; data: any; kind?: string }
   return rows.find(
     (row) =>
       row.id !== excludeId &&
-      // Нельзя сверять audience_task с group и т.п. — один t.me ключ, разные сущности
+      // Сверяем только записи того же вида: один t.me ключ может быть у разных сущностей
       (row.kind == null || row.kind === kind) &&
       !!duplicateReason(kind, incoming, row.data),
   );

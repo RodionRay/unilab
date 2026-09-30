@@ -20,7 +20,9 @@ export type AuthzDecision={ok:true}|{ok:false;error:string};
 
 type ActionRule={anyOf:readonly CrmAccessKey[];mutates:boolean};
 
-export const RECORD_KINDS=['account','proxy','group','lead','settings','audience_task','audience_user','invite_task','mailing_task'] as const;
+/** Record kinds the API reads and writes. Rows of removed kinds (audience_task, audience_user,
+ * invite_task, mailing_task) stay in D1 but are neither served nor accepted. */
+export const RECORD_KINDS=['account','proxy','group','lead','settings'] as const;
 export type RecordKind=(typeof RECORD_KINDS)[number];
 
 /** Section that owns each record kind (save/delete/GET visibility). */
@@ -30,10 +32,6 @@ export const KIND_ACCESS:Readonly<Record<RecordKind,readonly CrmAccessKey[]>>={
  group:['groups'],
  lead:['leads','chats'],
  settings:['settings','ai'],
- audience_task:['audience'],
- audience_user:['audience'],
- invite_task:['invite'],
- mailing_task:['mailing'],
 };
 
 const LEADS:readonly CrmAccessKey[]=['leads','chats'];
@@ -62,10 +60,8 @@ export const ACTION_RULES:Readonly<Record<string,ActionRule>>={
  join_group:rule(['groups']),
  scan_group:rule(['groups']),
  rescan_groups:rule(['groups']),
- heal_dead_group_accounts:rule(['groups']),
  import_catalog:rule(['groups']),
  mark_auto_rescan:rule(['groups']),
- enqueue_joins:rule(['groups']),
  set_group_join_state:rule(['groups']),
  assign_group_accounts:rule(['groups']),
  heal_group_join_state:rule(['groups']),
@@ -75,20 +71,6 @@ export const ACTION_RULES:Readonly<Record<string,ActionRule>>={
  train_from_ignored:rule(AI),
  preview_lead_core:rule(AI,false),
  test_notify:rule(['settings']),
-
- start_audience:rule(['audience']),
- pause_audience:rule(['audience']),
- tick_audience:rule(['audience']),
- export_audience:rule(['audience'],false),
-
- start_invite:rule(['invite']),
- pause_invite:rule(['invite']),
- tick_invite:rule(['invite']),
-
- start_mailing:rule(['mailing']),
- pause_mailing:rule(['mailing']),
- refill_mailing_ai_pool:rule(['mailing']),
- tick_mailing:rule(['mailing']),
 };
 
 const DENY_UNKNOWN='Действие недоступно для вашей роли';
@@ -118,11 +100,11 @@ export function authorizeWorkspaceAction(actor:WorkspaceActor,action:unknown,kin
  return hasAnyAccess(actor,r.anyOf)?{ok:true}:{ok:false,error:DENY_SECTION};
 }
 
-/** Sections that pick farm accounts for their tasks without managing the accounts themselves. */
-const ACCOUNT_PICKER_SECTIONS:readonly CrmAccessKey[]=['mailing','audience','invite','groups'];
+/** Sections that pick an account for their groups without managing the accounts themselves. */
+const ACCOUNT_PICKER_SECTIONS:readonly CrmAccessKey[]=['groups'];
 const ACCOUNT_PICKER_FIELDS=[
  'name','username','firstName','lastName','status','cooldownUntil','limits','hasPhoto',
- 'joinsToday','joinsDay','memberInvitesToday','memberInviteDay',
+ 'joinsToday','joinsDay',
 ] as const;
 /** Owner-only secrets that live inside record data (not in the sealed `secret` column). */
 const OWNER_ONLY_SETTINGS_FIELDS=['notifyBotToken'] as const;
