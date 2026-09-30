@@ -176,6 +176,19 @@ describe('ручное вступление: хвосты очереди и го
       expect(rec(ACC_A).lastJoinAt||'').toBe('');
     });
 
+    it('already: запрос в Telegram был — пауза темпа остаётся, дневной счётчик не тратится',async()=>{
+      await addAccount(ACC_A,{});
+      addGroup(GROUP,{url:'https://t.me/+AbCdEfGh123'});
+      workerReply={ok:true,join:'already',status:'active',member:true};
+
+      const res=await join(GROUP);
+
+      expect(res.status).toBe(200);
+      expect(rec(ACC_A).joinsToday||0).toBe(0);
+      expect(rec(ACC_A).lastJoinAt).toBeTruthy();
+      expect(rec(GROUP).membership).toBe('joined');
+    });
+
     it('исчерпан дневной лимит — 429 limitReached, второй живой аккаунт не подставляется',async()=>{
       await addAccount(ACC_A,{limits:{invite:3},joinsToday:3,joinsDay:moscowDayKey()});
       await addAccount(ACC_B,{});

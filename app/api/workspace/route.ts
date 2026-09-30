@@ -923,13 +923,25 @@ async function reserveJoinSlot(owner:string,accountId:string,prevRaw:string,adat
  return res.meta.changes?reserved:null;
 }
 
-/** Вступление не потрачено (already, сбой, отказ): вернуть темп и счётчик к значениям до резерва. */
+const JOIN_SLOT_FIELDS=['lastJoinAt','joinsDay','joinsToday'] as const;
+const JOIN_QUOTA_FIELDS=['joinsDay','joinsToday'] as const;
+
+/** Вступление не потрачено (сбой, отказ до Telegram): вернуть темп и счётчик к значениям до резерва. */
 async function releaseJoinSlot(owner:string,accountId:string,before:JoinAccountState){
+ await restoreJoinFields(owner,accountId,before,JOIN_SLOT_FIELDS);
+}
+
+/** already: запрос в Telegram был (темп остаётся), но новой группы нет — дневной счётчик назад. */
+async function releaseJoinQuota(owner:string,accountId:string,before:JoinAccountState){
+ await restoreJoinFields(owner,accountId,before,JOIN_QUOTA_FIELDS);
+}
+
+async function restoreJoinFields(owner:string,accountId:string,before:JoinAccountState,keys:readonly (keyof JoinAccountState)[]){
  const db=database();
  const row=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,accountId,'account').first<{data:string}>();
  if(!row)return;
  const next:Record<string,unknown>=JSON.parse(String(row.data));
- for(const key of ['lastJoinAt','joinsDay','joinsToday'] as const){
+ for(const key of keys){
   if(before[key]===undefined)delete next[key];
   else next[key]=before[key];
  }
@@ -1380,7 +1392,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const accountFault=!frozen&&!result.ok&&JOIN_ACCOUNT_FAULT_STATUSES.includes(String(result.status||''));
    const workerTransient=!frozen&&!result.ok&&JOIN_WORKER_TRANSIENT_STATUSES.includes(String(result.status||''));
    const joinedOk=!!result.ok||result.join==='already'||result.join==='requested';
-   // «already» не шлёт JoinChannel — дневной лимит и паузу не тратит
+   // «already» не добавляет группу — дневной лимит не тратит; паузу держит: по инвайту
+   // (и при UserAlreadyParticipant) ему предшествовал реальный запрос вступления в Telegram
    const spentJoin=joinedOk&&result.join!=='already';
    const reallyJoined=result.join==='already'||(!!result.ok&&result.join!=='requested'&&result.join!=='flood'&&result.join!=='missing'&&result.join!=='frozen');
    const status=result.join==='requested'?'pending':reallyJoined?'active':frozen?'error':'error';
@@ -1412,6 +1425,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     if(cooled!==reserved){
      await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(cooled),owner,gdata.accountId,'account').run();
     }
+   }else if(result.join==='already'){
+    await releaseJoinQuota(owner,gdata.accountId,adata);
    }else{
     await releaseJoinSlot(owner,gdata.accountId,adata);
    }
