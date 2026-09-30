@@ -7,16 +7,14 @@ import { Button } from '@/components/ui/button';
 import {
   CRM_ACCESS_LABELS,
   STAFF_ROLE_LABELS,
-  type CrmAccess,
-  type StaffRole,
 } from '@/lib/staff-types';
-
-type InviteInfo = {
-  role: StaffRole;
-  access: CrmAccess;
-  expiresAt: string;
-  ownerName: string;
-};
+import {
+  readStaffResponse,
+  type StaffInviteLookupResponse,
+  type StaffInvitePreview,
+  type StaffOkResponse,
+  type StaffViewer,
+} from '@/lib/staff-client';
 
 export function InviteAcceptClient() {
   const params = useParams<{ token: string }>();
@@ -25,8 +23,8 @@ export function InviteAcceptClient() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [invite, setInvite] = useState<InviteInfo | null>(null);
-  const [me, setMe] = useState<{ userId: string; email: string; name: string } | null>(null);
+  const [invite, setInvite] = useState<StaffInvitePreview | null>(null);
+  const [me, setMe] = useState<StaffViewer | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -35,8 +33,10 @@ export function InviteAcceptClient() {
         const r = await fetch(`/api/staff?token=${encodeURIComponent(token)}`, {
           cache: 'no-store',
         });
-        const data = await r.json();
-        if (!r.ok) throw new Error(data.error || 'Не удалось загрузить приглашение');
+        const data = await readStaffResponse<StaffInviteLookupResponse>(
+          r,
+          'Не удалось загрузить приглашение',
+        );
         if (!cancelled) {
           setInvite(data.invite);
           setMe(data.me || null);
@@ -61,8 +61,7 @@ export function InviteAcceptClient() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'accept_invite', token }),
       });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.error || 'Не удалось принять приглашение');
+      await readStaffResponse<StaffOkResponse>(r, 'Не удалось принять приглашение');
       router.replace('/app');
     } catch (e) {
       setError((e as Error).message);

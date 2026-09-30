@@ -15,6 +15,7 @@ import {TaskLogDialog} from '@/components/product/task-log-dialog';
 import {EmployeesPanel} from '@/components/product/employees-panel';
 import {DEFAULT_DM_SOFT_CLOSE,DEFAULT_MAILING_TASK} from '@/lib/mailing';
 import {canAccessNav,type CrmAccess,type WorkspaceInvite,type WorkspaceMember} from '@/lib/staff-types';
+import {readStaffResponse,type StaffBulkRemoveResponse,type StaffClearAllResponse,type StaffCreateInviteResponse,type StaffListResponse,type StaffOkResponse} from '@/lib/staff-client';
 import {DEFAULT_NAV} from '@/components/product/workspace-nav';
 import {Input} from '@/components/ui/input';
 import {Checkbox} from '@/components/ui/checkbox';
@@ -557,7 +558,7 @@ function WorkspaceHome(){
         if(r.status===403){setStaffMembers([]);setStaffInvites([]);return}
         return;
       }
-      const data=await r.json();
+      const data=await readStaffResponse<StaffListResponse>(r,'Не удалось загрузить сотрудников');
       setStaffMembers(data.members||[]);
       setStaffInvites(data.invites||[]);
     }catch{/* */}
@@ -3315,11 +3316,10 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'create_invite',...input})});
-                    const data=await r.json();
-                    if(!r.ok)throw new Error(data.error||'Не удалось создать приглашение');
+                    const data=await readStaffResponse<StaffCreateInviteResponse>(r,'Не удалось создать приглашение');
                     await refreshStaff();
                     toast.success('Ссылка-приглашение создана');
-                    return data.url as string;
+                    return data.url;
                   }catch(e){toast.error((e as Error).message);return null}
                   finally{setBusy(false)}
                 }}
@@ -3327,8 +3327,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'revoke_invite',id})});
-                    const data=await r.json();
-                    if(!r.ok)throw new Error(data.error||'Не удалось отозвать');
+                    await readStaffResponse<StaffOkResponse>(r,'Не удалось отозвать');
                     await refreshStaff();
                     toast.success('Приглашение отозвано');
                   }catch(e){toast.error((e as Error).message)}
@@ -3338,8 +3337,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'revoke_invites',ids})});
-                    const data=await r.json();
-                    if(!r.ok)throw new Error(data.error||'Не удалось отозвать');
+                    const data=await readStaffResponse<StaffBulkRemoveResponse>(r,'Не удалось отозвать');
                     await refreshStaff();
                     toast.success(`Отозвано: ${data.removed||ids.length}`);
                   }catch(e){toast.error((e as Error).message)}
@@ -3349,8 +3347,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'update_member',...input})});
-                    const data=await r.json();
-                    if(!r.ok)throw new Error(data.error||'Не удалось сохранить');
+                    await readStaffResponse<StaffOkResponse>(r,'Не удалось сохранить');
                     await refreshStaff();
                     toast.success('Доступы обновлены');
                   }catch(e){toast.error((e as Error).message)}
@@ -3360,8 +3357,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'remove_member',id})});
-                    const data=await r.json();
-                    if(!r.ok)throw new Error(data.error||'Не удалось удалить');
+                    await readStaffResponse<StaffOkResponse>(r,'Не удалось удалить');
                     await refreshStaff();
                     toast.success('Сотрудник удалён');
                   }catch(e){toast.error((e as Error).message)}
@@ -3371,8 +3367,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'remove_members',ids})});
-                    const data=await r.json();
-                    if(!r.ok)throw new Error(data.error||'Не удалось удалить');
+                    const data=await readStaffResponse<StaffBulkRemoveResponse>(r,'Не удалось удалить');
                     await refreshStaff();
                     toast.success(`Удалено: ${data.removed||ids.length}`);
                   }catch(e){toast.error((e as Error).message)}
@@ -3382,8 +3377,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'clear_all'})});
-                    const data=await r.json();
-                    if(!r.ok)throw new Error(data.error||'Не удалось очистить');
+                    const data=await readStaffResponse<StaffClearAllResponse>(r,'Не удалось очистить');
                     await refreshStaff();
                     toast.success(`Удалено сотрудников: ${data.members||0}, приглашений: ${data.invites||0}`);
                   }catch(e){toast.error((e as Error).message)}
