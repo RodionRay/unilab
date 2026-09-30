@@ -318,11 +318,19 @@ const QUOTA_CHECKS: ReadonlyArray<[DayLimitKind, (data: Record<string, unknown>)
  * Если после операции дневной лимит кончился — увести в отлёжку до полуночи.
  * `spent` — вид квоты, которую только что потратили: проверяется только он (ЛС не уводит
  * в отлёжку из-за исчерпанных вступлений). Без него — любой исчерпанный лимит.
+ * Результат может нести поля отлёжки, которых не было во входе (отсюда `Partial<QuotaCooldownPatch>`).
  */
+export type QuotaCooldownPatch = {
+  status: string;
+  cooldownUntil: string;
+  cooldownReason: string;
+  error: string;
+};
+
 export function applyQuotaCooldownIfExhausted<T extends Record<string, unknown>>(
   data: T,
   spent?: DayLimitKind,
-): T {
+): T & Partial<QuotaCooldownPatch> {
   const st = String((data as { status?: string }).status || "");
   if (st === "spamblock" || st === "frozen") return data;
   if (isDayLimitCooldown(data as { status?: string; cooldownUntil?: string })) {
