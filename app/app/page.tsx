@@ -28,6 +28,7 @@ import {Skeleton} from '@/components/ui/skeleton';
 import {Empty,EmptyHeader,EmptyTitle,EmptyDescription} from '@/components/ui/empty';
 import {Toaster} from 'sonner';
 import {toast} from '@/lib/workspace-notifications';
+import {markLeadOpened} from '@/lib/lead-conversation';
 import {SidebarProvider,Sidebar,SidebarHeader,SidebarContent,SidebarFooter,SidebarInset,SidebarTrigger} from '@/components/ui/sidebar';
 import {parseProxyLine,parseProxyLines,type ProxyProtocol} from '@/lib/proxy-line';
 import {accountPhoneKey,canonicalizeTgUrl,duplicateReason,findDuplicate,proxyIdentityKey,telegramEntityKey} from '@/lib/record-identity';
@@ -546,6 +547,7 @@ function WorkspaceHome(){
   /** Задачи, которые пользователь только что поставил на паузу — poller не трогает до play */
   const pausedTasksRef=useRef(new Set<string>());
   const lastInboxPollAt=useRef(0);
+  const replySendKeyRef=useRef<{leadId:string;mode:string;text:string;key:string}|null>(null);
 
   const refreshStaff=useCallback(async()=>{
     try{
@@ -829,7 +831,8 @@ function WorkspaceHome(){
         }
         }
         try{
-          if(Date.now()-lastInboxPollAt.current>15_000){
+          // Скрытые вкладки не опрашивают входящие; параллельные опросы сервер отсекает lease
+          if(document.visibilityState==='visible'&&Date.now()-lastInboxPollAt.current>15_000){
             lastInboxPollAt.current=Date.now();
             const inbox=await api({action:'poll_dm_replies'});
             if(inbox?.opened>0){
@@ -1515,34 +1518,56 @@ function WorkspaceHome(){
     setDetail(item);
     setChatMode('dm');
     setChatText(item.data.draft||'');
-    const alreadyViewed=!!item.data.viewed;
-    const needsManager=!!item.data.needsManager;
-    if(alreadyViewed&&!needsManager)return;
-    const viewedAt=item.data.viewedAt||new Date().toISOString();
-    setRecords(prev=>prev.map(r=>r.id===item.id?{...r,data:{...r.data,viewed:true,viewedAt,needsManager:false}}:r));
-    setDetail(d=>d&&d.id===item.id?{...d,data:{...d.data,viewed:true,viewedAt,needsManager:false}}:d);
+    const patch=markLeadOpened(item.data,new Date().toISOString());
+    if(!patch)return;
+    const before={viewed:item.data.viewed,viewedAt:item.data.viewedAt,needsManager:item.data.needsManager};
+    setRecords(prev=>prev.map(r=>r.id===item.id?{...r,data:{...r.data,...patch}}:r));
+    setDetail(d=>d&&d.id===item.id?{...d,data:{...d.data,...patch}}:d);
     try{
       await api({action:'mark_lead_viewed',id:item.id});
-    }catch{/* не блокируем просмотр */}
+    }catch(e){
+      // Просмотр не блокируем, но и не показываем «просмотрено», если сервер не записал (403 у наблюдателя)
+      setRecords(prev=>prev.map(r=>r.id===item.id?{...r,data:{...r.data,...before}}:r));
+      setDetail(d=>d&&d.id===item.id?{...d,data:{...d.data,...before}}:d);
+      toast.error(`Отметка «просмотрено» не сохранена: ${(e as Error).message}`);
+    }
   }
 
-  async function sendLeadReply(){
+  /** Один ключ на одно сообщение: повтор после таймаута узнаётся сервером и не уходит дублем. */
+  function replySendKey(leadId:string,mode:string,text:string){
+    const cur=replySendKeyRef.current;
+    if(cur&&cur.leadId===leadId&&cur.mode===mode&&cur.text===text)return cur.key;
+    const key=crypto.randomUUID();
+    replySendKeyRef.current={leadId,mode,text,key};
+    return key;
+  }
+
+  async function sendLeadReply(force=false){
     if(!detail||!chatText.trim())return;
     if(!telegramConnected){toast.error('Запустите: npm run dev');return}
+    const text=chatText.trim();
+    const mode=chatMode;
+    const clientMsgId=replySendKey(detail.id,mode,text);
     setBusy(true);
     try{
-      const r=await api({action:'send_lead_message',id:detail.id,mode:chatMode,text:chatText.trim()});
-      const next={...detail,data:r.lead||{...detail.data,draft:chatText,replies:[...(detail.data.replies||[]),{text:chatText,mode:chatMode,at:new Date().toISOString(),ok:true,error:'',link:r.link||'',messageId:r.messageId||''}]}};
-      setDetail(next);
+      const r=await api({action:'send_lead_message',id:detail.id,mode,text,clientMsgId,force});
+      if(r.lead)setDetail({...detail,data:r.lead});
       await refresh();
       toast.success(
-        chatMode==='dm'
+        mode==='dm'
           ?'Отправлено в личку'
           :(r.link?'Отправлено в чат — ссылка на ответ сохранена':'Отправлено в чат'),
       );
+      replySendKeyRef.current=null;
       setChatText('');
     }catch(e){
-      toast.error((e as Error).message);
+      const err=e as Error&{status?:number;data?:{unknown?:boolean;lead?:RecordItem['data']}};
+      if(err.data?.lead)setDetail({...detail,data:err.data.lead});
+      if(err.data?.unknown){
+        toast.error(err.message,{action:{label:'Отправить ещё раз',onClick:()=>{void sendLeadReply(true)}}});
+      }else{
+        toast.error(err.message);
+      }
       await refresh();
     }finally{setBusy(false)}
   }
@@ -5102,7 +5127,7 @@ function WorkspaceHome(){
               const incoming=rep.from==='client';
               return (
               <div className={`chat-bubble ${incoming?'in':'out'} ${!incoming&&!rep.ok?'fail':''}`} key={`${rep.at}-${i}`}>
-                <span className="chat-meta">{incoming?'Клиент · входящее':(rep.mode==='dm'?'Личка':'В чат')} · {new Date(rep.at).toLocaleString('ru-RU')}{!incoming&&!rep.ok?' · ошибка':''}</span>
+                <span className="chat-meta">{incoming?'Клиент · входящее':(rep.mode==='dm'?'Личка':'В чат')} · {new Date(rep.at).toLocaleString('ru-RU')}{!incoming&&!rep.ok?(rep.status==='pending'?' · отправляется':rep.status==='unknown'?' · не подтверждено':' · ошибка'):''}</span>
                 <p>{rep.text}</p>
                 {rep.error&&<p className="chat-err">{rep.error}</p>}
                 {href&&rep.ok&&(
@@ -5134,7 +5159,7 @@ function WorkspaceHome(){
               placeholder={chatMode==='dm'?'Личное сообщение клиенту…':'Ответ в группу (reply)…'}
             />
             <div className="flex flex-wrap gap-2">
-              <Button disabled={busy||!chatText.trim()} onClick={sendLeadReply}>
+              <Button disabled={busy||!chatText.trim()} onClick={()=>{void sendLeadReply()}}>
                 {busy?<Loader2 className="animate-spin" size={15}/>:null}
                 {chatMode==='dm'?'Отправить в ЛС':'Отправить в чат'}
               </Button>
