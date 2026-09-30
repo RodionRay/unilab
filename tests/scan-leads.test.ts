@@ -111,4 +111,13 @@ describe("скан · tombstones и серверные поля (REQ-L6, REQ-L10
     expect(merged).toEqual({ replies: [{ text: "a" }], coreScore: 70, status: "working", draft: "x" });
     expect(keepServerOwnedFields("account", { status: "a" }, { status: "b" })).toEqual({ status: "b" });
   });
+
+  it("save лида не даёт клиенту задать серверное поле, которого нет в сохранённом лиде", () => {
+    const merged = keepServerOwnedFields(
+      "lead",
+      { status: "new" },
+      { status: "working", senderId: "666", peerId: "777", mailingTaskId: "x", accountId: "acc" },
+    );
+    expect(merged).toEqual({ status: "working" });
+  });
 });

@@ -171,7 +171,7 @@ export function addLeadTombstone(list: unknown, tgMsgId: string): string[] {
 
 /**
  * REQ-L10 / REQ-L7: fields the server owns; a client save (stale copy or zod-stripped) never
- * overwrites them. Lead: conversation, sender and scan data. Group: scan lock, cursor, memories.
+ * overwrites or introduces them. Lead: conversation, sender and scan data. Group: scan lock, cursor, memories.
  */
 const SERVER_OWNED: Record<"lead" | "group", readonly string[]> = {
   lead: [
@@ -191,7 +191,9 @@ export function keepServerOwnedFields(
   const fields = kind === "lead" || kind === "group" ? SERVER_OWNED[kind] : [];
   const out = { ...next };
   for (const f of fields) {
+    // Missing in the stored row → still not the client's to set (sender, peer, account …).
     if (f in prev) out[f] = prev[f];
+    else delete out[f];
   }
   return out;
 }
