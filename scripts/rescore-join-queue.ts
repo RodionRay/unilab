@@ -35,7 +35,7 @@ function main() {
   if (!settingsRows.length) throw new Error("no settings rows");
 
   const backup: Row[] = [];
-  const updates: { id: string; owner: string; data: string }[] = [];
+  const updates: { id: string; owner: string; data: string; prev: string }[] = [];
   const report: Record<string, unknown>[] = [];
   const now = new Date();
   for (const s of settingsRows) {
@@ -66,7 +66,7 @@ function main() {
       }
       if (next !== g) {
         backup.push(row);
-        updates.push({ id: row.id, owner: row.owner, data: JSON.stringify(next) });
+        updates.push({ id: row.id, owner: row.owner, data: JSON.stringify(next), prev: row.data });
       }
     }
     scored.sort((a, b) => b.score - a.score);
@@ -85,12 +85,14 @@ function main() {
   // Backups hold real group data: never default into the (public) repo checkout.
   const backupFile = arg("backup") || join(tmpdir(), `join-rescore-backup-${Date.now()}.json`);
   writeFileSync(backupFile, JSON.stringify(backup, null, 1));
-  const stmt = db.prepare("UPDATE records SET data=? WHERE id=? AND owner=? AND kind='group'");
+  // CAS on the row read above: a live app may write the same group meanwhile — skip, never clobber.
+  const stmt = db.prepare("UPDATE records SET data=? WHERE id=? AND owner=? AND kind='group' AND data=?");
+  let applied = 0;
   const tx = db.transaction(() => {
-    for (const u of updates) stmt.run(u.data, u.id, u.owner);
+    for (const u of updates) applied += stmt.run(u.data, u.id, u.owner, u.prev).changes;
   });
   tx();
-  console.log(`applied ${updates.length} group rows · backup ${backupFile}`);
+  console.log(`applied ${applied}/${updates.length} group rows (rest changed concurrently) · backup ${backupFile}`);
 }
 
 main();
