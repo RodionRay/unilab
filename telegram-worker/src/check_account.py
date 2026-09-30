@@ -14,6 +14,7 @@ import socket
 import sys
 import tempfile
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -865,6 +866,66 @@ async def join_group(client, url: str, peer_hint: dict | None = None) -> dict[st
         raise
 
 
+MIN_MINUS_TERM_LENGTH = 3
+MAX_MINUS_TERM_LENGTH = 100
+MAX_MINUS_TERMS = 120
+
+
+@dataclass(frozen=True)
+class MinusMatcher:
+    """Word-start matcher for stop terms; `combined` is one alternation so a clean message costs one scan."""
+
+    terms: tuple[tuple[str, re.Pattern[str]], ...]
+    combined: re.Pattern[str] | None
+
+
+def _normalize_minus_text(text: str) -> str:
+    return (text or "").lower().replace("ё", "е")
+
+
+def compile_minus_terms(terms: list[str]) -> MinusMatcher:
+    """Minus terms as word-start patterns (phrases as phrases).
+
+    Substring matching made "нал" kill "канал"/"анализ" and "бот" kill "работа".
+    Only the first MAX_MINUS_TERMS non-empty terms count; terms <3 or >100 chars are ignored.
+    Mirrors lib/lead-filter.ts::findMinusHit (shared fixture tests/fixtures/minus-match.json).
+    """
+    head = [t for t in (_normalize_minus_text(r).strip() for r in terms) if t][:MAX_MINUS_TERMS]
+    compiled: list[tuple[str, re.Pattern[str]]] = []
+    alternatives: list[str] = []
+    for term in head:
+        if not MIN_MINUS_TERM_LENGTH <= len(term) <= MAX_MINUS_TERM_LENGTH:
+            continue
+        phrase = r"\s+".join(re.escape(w) for w in term.split())
+        # (?<![^\W_]) = not preceded by a letter/digit (underscore does not count, as in the TS core)
+        compiled.append((term, re.compile(r"(?<![^\W_])" + phrase)))
+        alternatives.append(phrase)
+    combined = re.compile(r"(?<![^\W_])(?:" + "|".join(alternatives) + ")") if alternatives else None
+    return MinusMatcher(terms=tuple(compiled), combined=combined)
+
+
+def find_minus_hit(text: str, matcher: MinusMatcher) -> str | None:
+    if matcher.combined is None:
+        return None
+    low = _normalize_minus_text(text)
+    if not matcher.combined.search(low):
+        return None
+    for term, pattern in matcher.terms:
+        if pattern.search(low):
+            return term
+    return None
+
+
+# Чужая реклама / эзотерика / CTA @ / рассылки — не кандидат (начало слова, как минус-слова).
+AD_MARKERS = compile_minus_terms([
+    "матриц", "судьб", "таро", "гадан", "астролог", "нумеролог",
+    "эзотерик", "писать @", "пишите @", "пиши @", "писать@",
+    "передано через @", "занимаюсь разбором", "есть отзывы)",
+    "вам срочное сообщение", "каталоге решений", "нельзя пропустить",
+    "гайд для продавцов", "подписывайтесь",
+])
+
+
 async def scan_group(
     client,
     url: str,
@@ -893,7 +954,7 @@ async def scan_group(
         )
 
     kws = [k.strip().lower() for k in keywords if k and k.strip()]
-    minus = [k.strip().lower() for k in minus_keywords if k and k.strip()]
+    minus = compile_minus_terms(minus_keywords)
     # Только общий intent; нишевые алиасы не хардкодим — приходят в keywords из настроек AI
     intent_markers = (
         "ищу сервис", "ищу crm", "ищем сервис", "нужен сервис", "нужна crm",
@@ -948,19 +1009,7 @@ async def scan_group(
                 md = md.replace(tzinfo=timezone.utc)
             if md < cutoff:
                 return
-        low = text.lower()
-        if minus and any(x in low for x in minus):
-            skipped_minus += 1
-            return
-        # чужая реклама / эзотерика / CTA @ / рассылки — не кандидат
-        ad_markers = (
-            "матриц", "судьб", "таро", "гадан", "астролог", "нумеролог",
-            "эзотерик", "писать @", "пишите @", "пиши @", "писать@",
-            "передано через @", "занимаюсь разбором", "есть отзывы)",
-            "вам срочное сообщение", "каталоге решений", "нельзя пропустить",
-            "гайд для продавцов", "подписывайтесь",
-        )
-        if any(x in low for x in ad_markers):
+        if find_minus_hit(text, minus) or find_minus_hit(text, AD_MARKERS):
             skipped_minus += 1
             return
         if not passes_kw(text):
