@@ -2779,7 +2779,7 @@ function WorkspaceHome(){
                         </>
                       ):(
                         <>
-                          <span className="muted text-sm">Чекбоксы слева — массовые действия</span>
+                          <span className="muted text-sm">Отметьте группы, чтобы назначить им аккаунт</span>
                           {sortedList.length>0&&(
                             <Button size="sm" variant="outline" onClick={()=>setGroupSelected(sortedList.map(r=>r.id))}>
                               Выбрать все ({sortedList.length})
