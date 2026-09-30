@@ -22,24 +22,100 @@ export type JoinBlockReason =
   | "frozen"
   | "quota"
   | "pace"
+  | "resolve_blind"
+  | "proxy"
   | "unusable";
 
 export type JoinGateResult =
   | { ok: true }
   | { ok: false; reason: JoinBlockReason; waitSec?: number; message: string };
 
+export type JoinAccountState = {
+  status?: string | null;
+  cooldownUntil?: string | null;
+  limits?: { invite?: unknown };
+  joinsToday?: number;
+  joinsDay?: string;
+  lastJoinAt?: string;
+  joinFloodUntil?: string;
+  resolveBlindUntil?: string | null;
+  proxyId?: string | null;
+};
+
+export type JoinProxyState = { status?: string | null };
+
+/**
+ * Единственное правило «аккаунт может вступать прямо сейчас»: авторизован и активен,
+ * не спамблок/заморозка/отлёжка, резолвит @username, прокси жив, есть дневная квота
+ * и пауза/FloodWait прошли. proxy: запись прокси аккаунта; null — proxyId указан,
+ * а прокси нет (join без прокси засветил бы IP сервера).
+ */
+export function evaluateAccountJoinReadiness(
+  acc: JoinAccountState | null | undefined,
+  opts: { proxy?: JoinProxyState | null; now?: number } = {},
+): JoinGateResult {
+  const now = opts.now ?? Date.now();
+  if (!acc) {
+    return { ok: false, reason: "unusable", message: "Аккаунт не найден" };
+  }
+  const st = String(acc.status || "");
+  if (st === "spamblock") {
+    return { ok: false, reason: "spamblock", message: "Аккаунт в спамблоке" };
+  }
+  if (st === "frozen") {
+    return { ok: false, reason: "frozen", message: "Аккаунт заморожен" };
+  }
+  if (isDayLimitCooldown(acc)) {
+    const until = Date.parse(String(acc.cooldownUntil || ""));
+    const waitSec = Math.max(60, Math.ceil((until - now) / 1000) || 300);
+    return { ok: false, reason: "cooldown", waitSec, message: "Аккаунт на отлёжке" };
+  }
+  if (!isAccountUsable(acc)) {
+    return { ok: false, reason: "unusable", message: "Аккаунт недоступен" };
+  }
+  if (isAccountResolveBlind(acc, now)) {
+    const until = Date.parse(String(acc.resolveBlindUntil));
+    return {
+      ok: false,
+      reason: "resolve_blind",
+      waitSec: Math.max(300, Math.ceil((until - now) / 1000)),
+      message: "Аккаунт не резолвит @username (ограничен Telegram)",
+    };
+  }
+  if (String(acc.proxyId || "") && (opts.proxy == null || opts.proxy.status === "inactive")) {
+    return { ok: false, reason: "proxy", message: "Прокси аккаунта не работает" };
+  }
+  if (!hasInviteQuota(acc)) {
+    return { ok: false, reason: "quota", message: "Дневной лимит вступлений исчерпан" };
+  }
+  const wait = joinWaitSec(acc, now);
+  if (wait > 0) {
+    return {
+      ok: false,
+      reason: "pace",
+      waitSec: wait,
+      message: `Пауза между вступлениями: ${wait} с`,
+    };
+  }
+  return { ok: true };
+}
+
+/** В ферму вступлений: готов сейчас или ждёт только паузу темпа. */
+export function isJoinFarmCandidate(
+  acc: JoinAccountState | null | undefined,
+  opts: { proxy?: JoinProxyState | null; now?: number } = {},
+): boolean {
+  const gate = evaluateAccountJoinReadiness(acc, opts);
+  return gate.ok || gate.reason === "pace";
+}
+
 /** Можно ли сейчас слать join_group для этой пары group+account. */
 export function evaluateJoinGate(opts: {
   groupUrl?: string;
   accountId?: string;
-  account?: {
-    status?: string | null;
-    cooldownUntil?: string | null;
-    limits?: { invite?: unknown };
-    joinsToday?: number;
-    joinsDay?: string;
-    lastJoinAt?: string;
-  } | null;
+  account?: JoinAccountState | null;
+  proxy?: JoinProxyState | null;
+  now?: number;
 }): JoinGateResult {
   if (!opts.accountId) {
     return { ok: false, reason: "missing_account", message: "Назначьте аккаунт группе" };
@@ -51,45 +127,10 @@ export function evaluateJoinGate(opts: {
       message: "Нужна реальная ссылка t.me/… или инвайт (это шаблон каталога)",
     };
   }
-  const acc = opts.account;
-  if (!acc) {
-    return { ok: false, reason: "unusable", message: "Аккаунт не найден" };
-  }
-  const st = String(acc.status || "");
-  if (st === "spamblock") {
-    return { ok: false, reason: "spamblock", message: "Аккаунт в спамблоке" };
-  }
-  if (st === "frozen") {
-    return { ok: false, reason: "frozen", message: "Аккаунт заморожен" };
-  }
-  if (isDayLimitCooldown(acc) || st === "cooldown") {
-    const until = String(acc.cooldownUntil || "");
-    const waitSec = until
-      ? Math.max(60, Math.ceil((Date.parse(until) - Date.now()) / 1000) || 300)
-      : 300;
-    return {
-      ok: false,
-      reason: "cooldown",
-      waitSec,
-      message: "Аккаунт на отлёжке",
-    };
-  }
-  if (!isAccountUsable(acc)) {
-    return { ok: false, reason: "unusable", message: "Аккаунт недоступен" };
-  }
-  if (!hasInviteQuota(acc)) {
-    return { ok: false, reason: "quota", message: "Дневной лимит вступлений исчерпан" };
-  }
-  const wait = joinWaitSec(acc);
-  if (wait > 0) {
-    return {
-      ok: false,
-      reason: "pace",
-      waitSec: wait,
-      message: `Пауза между вступлениями: ${wait} с`,
-    };
-  }
-  return { ok: true };
+  return evaluateAccountJoinReadiness(opts.account, {
+    proxy: opts.proxy,
+    ...(opts.now === undefined ? {} : { now: opts.now }),
+  });
 }
 
 export type JoinWorkerResult = {
@@ -337,15 +378,21 @@ export type GroupHealAction =
   /** Backoff после неудачи — ждём joinNextAt. */
   | "wait"
   /** Лимит попыток исчерпан — только ручное вступление. */
-  | "gave_up";
+  | "gave_up"
+  /** Владелец не ставил группу в очередь (каталог, импорт) — автообход не вступает. */
+  | "not_wanted";
 
 /**
- * Решение автопочинки по одной группе. Инвариант: членство вступившей группы
- * сбрасывается только если её аккаунт умер насовсем.
+ * Решение автопочинки по одной группе. Инварианты: членство вступившей группы
+ * сбрасывается только если её аккаунт умер насовсем; новое вступление автообход
+ * делает только в группу, которую владелец сам поставил в очередь (joinWanted) —
+ * иначе каждый тик жжёт дневные лимиты на нецелевые чаты из каталога.
  */
 export function planGroupHeal(opts: {
   group: JoinRetryFields & {
     joinDead?: boolean;
+    /** Владелец сам поставил группу в очередь вступления (enqueue_joins); heal передаёт сюда решение гейта. */
+    joinWanted?: boolean;
     membership?: string;
     status?: string;
     joinedAt?: string;
@@ -377,6 +424,7 @@ export function planGroupHeal(opts: {
   ) {
     return "restore_previous";
   }
+  if (!g.joinWanted) return "not_wanted";
   if (g.joinGaveUp || g.joinDead) return "gave_up";
   const next = g.joinNextAt ? Date.parse(g.joinNextAt) : 0;
   if (Number.isFinite(next) && next > now) return "wait";

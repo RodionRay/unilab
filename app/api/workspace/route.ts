@@ -1,6 +1,6 @@
 import {getSessionUser} from '@/lib/auth';
 import {GROUP_CATALOG,isCatalogPlaceholderUrl} from '@/lib/group-catalog';
-import {JOIN_SUCCESS_PATCH,JOIN_WORKER_ERROR_RETRY_MS,accountBlindPatch,classifyJoinFailure,deadLinkPatch,isAccountBlindResult,isAccountResolveBlind,isUsernameMissingResult,joinFailurePatch,missingAccountsOf,planGroupHeal,recordUsernameMissing,sanitizeJoinStateError,seedMissingAccounts} from '@/lib/processes/join-flow';
+import {JOIN_SUCCESS_PATCH,type JoinAccountState,type JoinProxyState,evaluateAccountJoinReadiness,isJoinFarmCandidate,JOIN_WORKER_ERROR_RETRY_MS,accountBlindPatch,classifyJoinFailure,deadLinkPatch,isAccountBlindResult,isAccountResolveBlind,isUsernameMissingResult,joinFailurePatch,missingAccountsOf,planGroupHeal,recordUsernameMissing,sanitizeJoinStateError,seedMissingAccounts} from '@/lib/processes/join-flow';
 import {buildRelevanceProfile,compareJoinPriority,joinGateFor,rescoreGroup,seedRejoin,type JoinGateState} from '@/lib/join-relevance';
 import {JOIN_RESERVE_MS,accountJoinWaitSec,channelsTooMuchPatch,joinAttemptPatch,farmThroughput,joinErrorPatch,joinFloodPatch,joinSuccessPatch,planJoinFarm,type FarmAccount} from '@/lib/join-pacing';
 import {database,seal,unseal} from '@/lib/server-store';
@@ -17,7 +17,7 @@ import {
 } from '@/lib/lead-core';
 import {appendLearnExamples,extractTermsFromHotMessages,extractStopTermsFromMessage,mergeKeywords,mergeKeywordsPreferNew,parseKeywordCsv} from '@/lib/ai-keywords';
 import {sanitizeMinusTerms,scanStopTerms} from '@/lib/lead-stopwords';
-import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpChatCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasMemberInviteQuota,hasMessageQuota,isAccountUsable,isDayLimitCooldown,isOnCooldown,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
+import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpChatCounters,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasMemberInviteQuota,hasMessageQuota,isAccountUsable,isDayLimitCooldown,isOnCooldown,joinWaitSec,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
 import {bracketLabel,formatRuWhen,inviteUserFailText,inviteUserOkText,normalizeStatusFilters,normalizeTgRef,pushTaskLog,pushTaskLogs,randomPauseSec} from '@/lib/audience-invite';
 import {canonicalizeTgUrl,duplicateReason,isDuplicateKind,telegramEntityKey} from '@/lib/record-identity';
 import {
@@ -1049,7 +1049,7 @@ function restoreJoinedMembership(d:any){
  };
 }
 
-/** Живые аккаунты (не frozen/offline/отлёжка), с балансировкой по числу групп. */
+/** Живые аккаунты (не frozen/offline/отлёжка) для скана уже вступивших групп; для вступлений — listJoinTargetIds. */
 async function listLiveAccountIds(owner:string){
  const db=database();
  const accRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='account'").bind(owner).all();
@@ -1073,6 +1073,60 @@ async function listLiveAccountIds(owner:string){
  }
  live.sort((a,b)=>a.load-b.load);
  return live.map(x=>x.id);
+}
+
+type FarmJoinCandidate={id:string;data:any;wait:number;load:number};
+
+async function loadProxyStates(owner:string){
+ const db=database();
+ const rows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='proxy'").bind(owner).all();
+ const proxies=new Map<string,JoinProxyState>();
+ for(const r of rows.results){
+  try{proxies.set(String(r.id),JSON.parse(String(r.data)))}catch{/* битая запись = прокси нет */}
+ }
+ return proxies;
+}
+
+function proxyStateFor(adata:JoinAccountState,proxies:Map<string,JoinProxyState>){
+ const pid=String(adata?.proxyId||'');
+ return pid?proxies.get(pid)??null:undefined;
+}
+
+/** Правило join-готовности (join-flow) для одного аккаунта с его прокси из БД. */
+async function accountJoinGate(owner:string,adata:JoinAccountState){
+ return evaluateAccountJoinReadiness(adata,{proxy:proxyStateFor(adata,await loadProxyStates(owner))});
+}
+
+/** Аккаунты, которые могут вступать сейчас или после паузы темпа; сначала готовые, потом менее загруженные. */
+async function listJoinFarmCandidates(owner:string):Promise<FarmJoinCandidate[]>{
+ const db=database();
+ const accRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='account'").bind(owner).all();
+ const proxies=await loadProxyStates(owner);
+ const load=new Map<string,number>();
+ const groups=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='group'").bind(owner).all();
+ for(const r of groups.results){
+  try{
+   const d=JSON.parse(String(r.data));
+   const aid=String(d.accountId||'');
+   if(aid)load.set(aid,(load.get(aid)||0)+1);
+  }catch{/* */}
+ }
+ const live:FarmJoinCandidate[]=[];
+ for(const r of accRows.results){
+  try{
+   const a=JSON.parse(String(r.data));
+   if(!isJoinFarmCandidate(a,{proxy:proxyStateFor(a,proxies)}))continue;
+   const id=String(r.id);
+   live.push({id,data:a,wait:joinWaitSec(a),load:load.get(id)||0});
+  }catch{/* */}
+ }
+ live.sort((a,b)=>a.wait-b.wait||a.load-b.load);
+ return live;
+}
+
+/** Куда пересаживать группу, которой предстоит вступление: join-кандидаты, сначала готовые, потом по нагрузке. */
+async function listJoinTargetIds(owner:string){
+ return (await listJoinFarmCandidates(owner)).map(x=>x.id);
 }
 
 async function listMessageFarmCandidates(owner:string):Promise<{id:string;data:any}[]>{
@@ -1150,6 +1204,7 @@ type FarmRow=FarmAccount&{raw:string};
 async function loadFarmAccounts(owner:string):Promise<FarmRow[]>{
  const db=database();
  const accRows=await db.prepare("SELECT id,data,created FROM records WHERE owner=? AND kind='account'").bind(owner).all();
+ const proxies=await loadProxyStates(owner);
  const groups=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='group'").bind(owner).all();
  const load=new Map<string,number>();
  for(const r of groups.results){
@@ -1159,7 +1214,11 @@ async function loadFarmAccounts(owner:string):Promise<FarmRow[]>{
  for(const r of accRows.results){
   try{
    const raw=String(r.data);
-   out.push({id:String(r.id),raw,data:JSON.parse(raw),created:String(r.created||''),load:load.get(String(r.id))||0});
+   const data=JSON.parse(raw);
+   // Правило join-готовности: указан прокси, а его нет или он неактивен — join засветил бы IP сервера.
+   const proxy=proxyStateFor(data,proxies);
+   const proxyDown=!!String(data.proxyId||'')&&(proxy==null||proxy.status==='inactive');
+   out.push({id:String(r.id),raw,data,created:String(r.created||''),load:load.get(String(r.id))||0,blocked:proxyDown});
   }catch{/* */}
  }
  return out;
@@ -1209,7 +1268,7 @@ async function patchAccount(owner:string,accountId:string,patch:Record<string,un
 
 /** Владелец одобрил вступление: снимаем «мёртвую ссылку» и отказ — это явная повторная попытка. */
 function approvedJoinPatch(gdata:any){
- return {...gdata,joinDecision:'approved',joinDead:false,joinMissingAccounts:[],...(gdata.joinDead||gdata.joinGaveUp?JOIN_SUCCESS_PATCH:{})};
+ return {...gdata,joinDecision:'approved',joinWanted:true,joinDead:false,joinMissingAccounts:[],...(gdata.joinDead||gdata.joinGaveUp?JOIN_SUCCESS_PATCH:{})};
 }
 
 /** Ошибка вступления на стороне аккаунта: +1 к серии; на пороге — пауза автовступлений (lib/join-pacing). */
@@ -1233,7 +1292,8 @@ async function bumpJoinErrorStreak(owner:string,accountId:string){
 async function healDeadGroupAccounts(owner:string){
  const db=database();
  const relevance=await refreshGroupRelevance(owner);
- const liveIds=await listLiveAccountIds(owner);
+ // Пересаженной группе предстоит вступление — берём только аккаунты, способные вступать
+ const liveIds=await listJoinTargetIds(owner);
  const accRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='account'").bind(owner).all();
  const accStatus=new Map<string,string>();
  for(const r of accRows.results){
@@ -1263,7 +1323,8 @@ async function healDeadGroupAccounts(owner:string){
    const aid=String(d.accountId||'');
    const prev=String(d.joinedAccountId||'');
    const action=planGroupHeal({
-    group:d,
+    // «Целевая» = пропущена фильтром релевантности (авто / одобрена / восстановление членства).
+    group:{...d,joinWanted:joinGateFor(d).allow},
     accountStatus:aid&&accStatus.has(aid)?accStatus.get(aid)!:null,
     previousAccountStatus:prev&&accStatus.has(prev)?accStatus.get(prev)!:null,
    });
@@ -1279,8 +1340,9 @@ async function healDeadGroupAccounts(owner:string){
     }
     continue;
    }
-   if(action==='gave_up'||action==='wait'){
+   if(action==='gave_up'||action==='wait'||action==='not_wanted'){
     if(d.joinState==='queued')await save(gid,{...d,joinState:'',joinStateAt:''});
+    if(action==='not_wanted')parked++;
     continue;
    }
    if(action==='restore_previous'){
@@ -1344,6 +1406,14 @@ function workerLooksFrozen(result:any,msg?:string){
  return result?.status==='frozen'||result?.join==='frozen'||/FROZEN|заморожен/i.test(text);
 }
 
+/** Ответ воркера на join: упала сессия/прокси аккаунта — метим аккаунт, группу не штрафуем. */
+const JOIN_ACCOUNT_FAULT_STATUSES=['unauthorized','proxy_error'];
+/**
+ * disconnected воркер отдаёт и на свои сбои (таймаут, abort, нет JSON, spawn) — это не диагноз
+ * аккаунта: пометка выкинула бы его из фермы и скана, а падение воркера — всю ферму.
+ */
+const JOIN_WORKER_TRANSIENT_STATUSES=['disconnected'];
+
 function workerLooksDeadAccount(result:any){
  const st=String(result?.status||'');
  return workerLooksFrozen(result)||['unauthorized','spamblock','proxy_error'].includes(st);
@@ -1361,7 +1431,7 @@ async function rotateGroupOffDeadAccount(owner:string,gid:string,gdata:any,deadA
    }catch{/* */}
   }
  }
- const live=(await listLiveAccountIds(owner)).filter(aid=>aid!==deadAccountId);
+ const live=(await listJoinTargetIds(owner)).filter(aid=>aid!==deadAccountId);
  if(!live.length)return {ok:false as const,gdata};
  const nextAcc=live[0];
  if(!nextAcc||nextAcc===gdata.accountId)return {ok:false as const,gdata};
@@ -1741,7 +1811,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      gdata={...gdata,joinState:'',joinStateAt:''};
      await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(gdata),owner,id,'group').run();
     }
-    return reply({error:`${gate.label}: ${gate.reason||'группа вне автоочереди'}`,parked:true,gate:gate.state,group:gdata},409);
+    // notWanted — прежний контракт (dev): группа вне очереди вступления.
+    return reply({error:`${gate.label}: ${gate.reason||'группа вне автоочереди'}`,parked:true,notWanted:true,gate:gate.state,group:gdata},409);
    }
    if(scored)await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(gdata),owner,id,'group').run();
   }
@@ -1753,6 +1824,12 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    // Обновление peer у уже вступившего слота: это не новое вступление, темп не расходуем.
    const own=farm.find(a=>a.id===String(gdata.accountId));
    if(!own)return reply({error:'Аккаунт не найден'},404);
+   if(own.blocked)return reply({error:'Прокси аккаунта не работает',accountUnavailable:true,reason:'proxy',group:gdata},409);
+   // Членство принадлежит этому слоту: отключённый/неавторизованный аккаунт peer не обновит.
+   const st=String(own.data.status||'');
+   if(!['spamblock','frozen','cooldown'].includes(st)&&!isAccountUsable({...own.data,cooldownReason:''})){
+    return reply({error:'Аккаунт группы недоступен',accountUnavailable:true,reason:'unusable',group:gdata},409);
+   }
    if(isDayLimitCooldown(own.data)||['spamblock','frozen'].includes(String(own.data.status||''))){
     return reply({error:'Аккаунт на отлёжке (спамблок/заморозка/лимит)',cooldown:true,waitSec:300},429);
    }
@@ -1842,12 +1919,17 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const flood=result.join==='flood'||/FloodWait/i.test(String(result.error||''));
    // Слеп аккаунт, а не группа — попытку группе не засчитываем (иначе живые группы уходят в отказ)
    const accountBlind=isAccountBlindResult(result);
+   // Сессия/прокси/коннект упали — вина аккаунта, не группы (frozen обрабатывается ниже)
+   const sessionFault=!frozen&&!result.ok&&JOIN_ACCOUNT_FAULT_STATUSES.includes(String(result.status||''));
+   const workerTransient=!frozen&&!result.ok&&JOIN_WORKER_TRANSIENT_STATUSES.includes(String(result.status||''));
    const joinedOk=!!result.ok||result.join==='already'||result.join==='requested';
+   // «already» не шлёт JoinChannel — дневной лимит и паузу не тратит
+   const spentJoin=joinedOk&&result.join!=='already';
    const reallyJoined=result.join==='already'||(!!result.ok&&result.join!=='requested'&&result.join!=='flood'&&result.join!=='missing'&&result.join!=='frozen');
-   const failure=!joinedOk&&!flood&&!frozen&&!accountBlind?classifyJoinFailure(result):null;
-   // Спам-сигналы и лимиты — проблема аккаунта, не группы: статус группы и её попытки не трогаем.
-   const accountFault=flood||accountBlind||failure==='peer_flood'||failure==='channels_too_much';
-   const status=result.join==='requested'?'pending':reallyJoined?'active':accountFault?(gdata.status==='error'?'error':'setup'):'error';
+   const failure=!joinedOk&&!flood&&!frozen&&!accountBlind&&!sessionFault&&!workerTransient?classifyJoinFailure(result):null;
+   // Спам-сигналы, лимиты, сессия/прокси — проблема аккаунта, не группы: статус группы и её попытки не трогаем.
+   const accountFault=flood||accountBlind||sessionFault||failure==='peer_flood'||failure==='channels_too_much';
+   const status=result.join==='requested'?'pending':reallyJoined?'active':accountFault||workerTransient?(gdata.status==='error'?'error':'setup'):'error';
    let next:any={
     ...gdata,
     status,
@@ -1860,7 +1942,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     joinState:'',
     joinStateAt:'',
     joinStateError:reallyJoined||result.join==='requested'?'':(result.error||'Не удалось вступить').slice(0,500),
-    ...(joinedOk?{...JOIN_SUCCESS_PATCH,joinRejoin:false}:accountFault?{}:joinFailurePatch(gdata)),
+    ...(joinedOk?{...JOIN_SUCCESS_PATCH,joinRejoin:false}:accountFault?{}:workerTransient?{joinNextAt:new Date(Date.now()+JOIN_WORKER_ERROR_RETRY_MS).toISOString()}:joinFailurePatch(gdata)),
     name:result.title&&(!gdata.name||gdata.name.startsWith('http')||gdata.name==='Группа')?result.title:gdata.name,
    };
    // «Слот не видит @»: считаем разные аккаунты; после K — ссылка мёртвая, ферму больше не жжём.
@@ -1879,7 +1961,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'group').run();
    if(joinedOk){
     // «already» при обновлении peer — не новое вступление, счётчик не растёт.
-    if(alreadyIn)await patchAccount(owner,accountId,release);
+    // «already» не шлёт JoinChannel — дневной лимит и паузу не тратит.
+    if(alreadyIn||!spentJoin)await patchAccount(owner,accountId,release);
     else await patchAccount(owner,accountId,d=>applyQuotaCooldownIfExhausted({...d,...joinSuccessPatch(d,ageDays)}));
    }
    if(flood){
@@ -1887,7 +1970,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     const sec=Math.max(1,Number(result.waitSec)||(m?Number(m[1]):0)||900);
     // FloodWait — пауза ровно по Telegram + запас, только этого аккаунта; статус не «Отлежка».
     const fp=joinFloodPatch(sec);
-    await patchAccount(owner,accountId,fp);
+    // joinFloodUntil — то же окончание для правила готовности (evaluateAccountJoinReadiness).
+    await patchAccount(owner,accountId,{...fp,joinFloodUntil:fp.floodUntil,lastJoinAt:new Date().toISOString()});
     try{await appendGlobalRescanLog(owner,'warn',`Аккаунт ${accountId.slice(0,8)}: ${fp.error}`)}catch{/* */}
     return reply({ok:false,result,error:result.error,waitSec:30,accountWaitSec:Math.ceil((Date.parse(String(fp.floodUntil))-Date.now())/1000),flood:true,pace:true,retryOther:true,accountBusy:alreadyIn,rotatedAccount,group:next},429);
    }
@@ -1901,6 +1985,16 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     try{await appendGlobalRescanLog(owner,'error',`Аккаунт ${accountId.slice(0,8)}: 500 каналов/групп — вступления с него остановлены на 7 дней`)}catch{/* */}
     return reply({ok:false,result,error:'Аккаунт состоит в 500 каналах — берём другой аккаунт',waitSec:30,pace:true,retryOther:true,group:next},429);
    }
+   if(sessionFault){
+    const errMsg=String(result.error||'Аккаунт недоступен');
+    if(String(result.status)==='unauthorized'){
+     await putAccountUnauthorized(owner,gdata.accountId,adata,{lastError:errMsg});
+    }else{
+     await putAccountConnectFailed(owner,gdata.accountId,adata,{attempts:1,lastError:errMsg,status:'proxy_error'});
+    }
+   }
+   // Пометка аккаунта выше пишет прочитанную копию (с резервом) — снимаем резерв после неё.
+   if(sessionFault||workerTransient)await patchAccount(owner,accountId,release);
    if(accountBlind){
     await patchAccount(owner,accountId,{...accountBlindPatch(),...release,error:String(result.error||'').slice(0,500)});
     try{await appendGlobalRescanLog(owner,'warn',`Аккаунт ${accountId.slice(0,8)} слеп на ResolveUsername${result.sessionRefreshed?' (новая сессия)':''} — отлёжка 6 ч`)}catch{/* */}
@@ -1975,7 +2069,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     if(groupLooksJoined(gdata)){
      return reply({error:'Аккаунт недоступен — группа уже была вступившей, скан с этого слота пропущен',accountDead:true,preserved:true,group:gdata},409);
     }
-    const live=await listLiveAccountIds(owner);
+    const live=await listJoinTargetIds(owner);
     if(!live.length)return reply({error:'Нет живых аккаунтов для скана',accountDead:true},400);
     const nextAcc=live.find(id=>id!==gdata.accountId)||live[0];
     if(nextAcc===gdata.accountId){
@@ -2060,7 +2154,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      // Считаем разные аккаунты, которые не видят @: пробуем только новые, после K — ссылка мёртвая.
      const step=recordUsernameMissing(gdata,String(gdata.accountId||''),String(result.error||''));
      const tried=new Set(step.missingAccounts);
-     const live=await listLiveAccountIds(owner);
+     const live=await listJoinTargetIds(owner);
      const nextAcc=step.dead?undefined:live.find(aid=>!tried.has(aid));
      if(nextAcc){
       const rotated={
@@ -2869,6 +2963,9 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   if(accountId){
    const arow:any=await db.prepare('SELECT id FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,accountId,'account').first();
    if(!arow)return reply({error:'Аккаунт не найден'},400);
+   if(!(await listJoinFarmCandidates(owner)).some(x=>x.id===accountId)){
+    return reply({error:'Аккаунт не может вступать в группы (отлёжка/спамблок/заморозка/прокси/лимит)'},400);
+   }
   }
   const existing=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='group'").bind(owner).all();
   const byUrl=new Map<string,string>();
@@ -2933,8 +3030,9 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
  }
  if(b.action==='enqueue_joins'){
   const groupIds=z.array(z.string().uuid()).min(1).max(500).parse(b.groupIds);
-  // manual — владелец сам выбрал группы («Вступить»): это одобрение, фильтр релевантности не мешает.
-  const manual=b.manual===true;
+  // Постановка в очередь — намерение владельца («Вступить», импорт, каталог): это одобрение,
+  // фильтр релевантности не мешает. Автоматические элементы клиент сюда не шлёт (page.tsx).
+  const manual=true;
   const queue:{id:string;name:string;group:any}[]=[];
   let parked=0;
   for(const gid of groupIds){
@@ -2947,6 +3045,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    if(!joinGateFor(approved).allow){parked++;continue}
    const next={
     ...approved,
+    joinWanted:true,
     joinState:'queued',
     joinStateAt:new Date().toISOString(),
     joinStateError:'',
@@ -2973,8 +3072,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    if(decision==='approved')next=approvedJoinPatch(gdata);
    else if(decision==='skipped'){
     const busy=gdata.joinState==='joining'||gdata.joinState==='scanning';
-    next={...gdata,joinDecision:'skipped',...(busy?{}:{joinState:'',joinStateAt:''})};
-   }else next={...gdata,joinDecision:''};
+    next={...gdata,joinDecision:'skipped',joinWanted:false,...(busy?{}:{joinState:'',joinStateAt:''})};
+   }else next={...gdata,joinDecision:'',joinWanted:false};
    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,gid,'group').run();
    updated++;
    if(decision==='approved'&&next.accountId&&!isCatalogPlaceholderUrl(next.url||''))queue.push({id:gid,name:next.name||'Группа',group:next});
@@ -3009,16 +3108,10 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const mode=z.enum(['single','mix']).parse(b.mode||'single');
   const groupIds=z.array(z.string().uuid()).min(1).max(500).parse(b.groupIds);
   const accountIds=z.array(z.string().uuid()).min(1).max(200).parse(b.accountIds);
-  const accounts=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='account'").bind(owner).all();
-  const usable=new Set<string>();
-  for(const r of accounts.results){
-   try{
-    const d=JSON.parse(String(r.data));
-    if(isAccountUsable(d))usable.add(String(r.id));
-   }catch{/* */}
-  }
+  // Группам предстоит вступление — только аккаунты, которые могут вступать (пауза темпа допустима)
+  const usable=new Set((await listJoinFarmCandidates(owner)).map(x=>x.id));
   const validAccounts=accountIds.filter(id=>usable.has(id));
-  if(!validAccounts.length)return reply({error:'Нет рабочих аккаунтов (отлёжка/спамблок/заморозка скрыты)'},400);
+  if(!validAccounts.length)return reply({error:'Нет рабочих аккаунтов (отлёжка/спамблок/заморозка/мёртвый прокси/лимит скрыты)'},400);
   const pool=[...validAccounts];
   if(mode==='mix'){
    for(let i=pool.length-1;i>0;i--){
@@ -5132,6 +5225,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    // Оценка релевантности и решение владельца — не поля формы: правка названия их не сбрасывает.
    const body=b.data&&typeof b.data==='object'?(b.data as Record<string,unknown>):{};
    if(!('joinDecision' in body)&&typeof prev.joinDecision==='string')data.joinDecision=prev.joinDecision;
+   if(prev.joinWanted!==undefined)data.joinWanted=prev.joinWanted;
+   if(prev.joinRejoin!==undefined)data.joinRejoin=prev.joinRejoin;
    const sameUrl=canonicalizeTgUrl(String(prev.url||''))===data.url;
    // Новая ссылка/название → оценку пересчитает автопочинка; исправленная ссылка снова пробуется.
    if(sameUrl&&String(prev.name||'')===data.name&&prev.joinRelevance!==undefined)data.joinRelevance=prev.joinRelevance;

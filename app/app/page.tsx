@@ -1064,9 +1064,11 @@ function WorkspaceHome(){
       if(!opts?.resume)toast.message('Эти группы уже покрыты — вступление не нужно');
       return;
     }
-    if(!opts?.resume){
+    // enqueue_joins = намерение владельца (группа становится «целевой»); автоматические элементы
+    // (автопочинка, переобход) сервер уже поставил в очередь — их не одобряем заново.
+    if(!opts?.resume&&opts?.manual){
       try{
-        const enq=await api({action:'enqueue_joins',groupIds:toAdd.map(i=>i.id),manual:!!opts?.manual});
+        const enq=await api({action:'enqueue_joins',groupIds:toAdd.map(i=>i.id),manual:true});
         if(Array.isArray(enq.items)){
           toAdd=enq.items.map((i:{id:string;name:string})=>({id:i.id,name:i.name||'Группа'}));
           if(!toAdd.length){

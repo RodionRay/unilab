@@ -409,15 +409,17 @@ export type JoinPaceState = {
   joinsDay?: string;
   /** Рандомизированный gap после вступления (lib/join-pacing). */
   joinNextAt?: string;
-  /** FloodWait + запас. */
+  /** FloodWait + запас (lib/join-pacing). */
   floodUntil?: string;
+  /** Конец FloodWait от Telegram на вступления: пауза темпа, не отлёжка. */
+  joinFloodUntil?: string;
   /** Пауза после серии ошибок. */
   joinPausedUntil?: string;
   /** CHANNELS_TOO_MUCH и т.п. */
   joinBlockedUntil?: string;
 };
 
-/** Сколько секунд ждать до следующего join. 0 = можно сейчас. */
+/** Сколько секунд ждать до следующего join (пауза темпа или FloodWait). 0 = можно сейчас. */
 export function joinWaitSec(
   state: JoinPaceState,
   now = Date.now(),
@@ -431,6 +433,7 @@ export function joinWaitSec(
     last ? last + JOIN_GAP_DEFAULT_SEC * 1000 : 0,
     at(state.joinNextAt),
     at(state.floodUntil),
+    at(state.joinFloodUntil),
     at(state.joinPausedUntil),
     at(state.joinBlockedUntil),
   );

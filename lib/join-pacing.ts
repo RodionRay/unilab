@@ -45,6 +45,8 @@ export type PacedAccount = JoinPaceState & {
   resolveBlindUntil?: string | null;
   joinNextAt?: string;
   floodUntil?: string;
+  /** FloodWait end recorded by the join-account-selection rule (dev); same meaning as floodUntil. */
+  joinFloodUntil?: string;
   joinPausedUntil?: string;
   joinBlockedUntil?: string;
   joinBlockReason?: string;
@@ -97,6 +99,7 @@ export function accountJoinWaitSec(account: PacedAccount, now = Date.now()): num
     legacy,
     ts(account.joinNextAt),
     ts(account.floodUntil),
+    ts(account.joinFloodUntil),
     ts(account.joinPausedUntil),
     ts(account.joinBlockedUntil),
     ts(account.joinReservedUntil),
@@ -115,7 +118,8 @@ export function accountJoinBlock(account: PacedAccount, ageDays: number, now = D
   return null;
 }
 
-export type FarmAccount = { id: string; data: PacedAccount; created?: string; load?: number };
+/** blocked: excluded by a rule outside this module (e.g. the account's proxy is down). */
+export type FarmAccount = { id: string; data: PacedAccount; created?: string; load?: number; blocked?: boolean };
 
 export type FarmCandidate = {
   id: string;
@@ -147,7 +151,7 @@ export function planJoinFarm(
   }
   const out: FarmCandidate[] = [];
   for (const a of accounts) {
-    if (opts.exclude?.has(a.id)) continue;
+    if (opts.exclude?.has(a.id) || a.blocked) continue;
     const ageDays = accountAgeDays(a.created, now);
     if (accountJoinBlock(a.data, ageDays, now)) continue;
     const proxy = String(a.data.proxyId || "");

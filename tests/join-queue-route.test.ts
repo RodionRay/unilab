@@ -109,16 +109,13 @@ describe('workspace API: relevance gate before joining',()=>{
     expect(calls.filter(u=>u.endsWith('/join-group'))).toHaveLength(0);
   });
 
-  it('manual enqueue approves the group; automatic enqueue does not',async()=>{
+  it('enqueue_joins is the owner\'s intent: it approves a parked group (heal never re-enqueues automatically)',async()=>{
     await POST(postRequest({action:'heal_dead_group_accounts'}));
+    expect(group(G_SMM).joinState).toBe('');
 
-    const auto=await body(await POST(postRequest({action:'enqueue_joins',groupIds:[G_SMM]})));
-    expect(auto.items).toHaveLength(0);
-    expect(auto.parked).toBe(1);
-
-    const manual=await body(await POST(postRequest({action:'enqueue_joins',groupIds:[G_SMM],manual:true})));
-    expect(manual.items.map((i:{id:string})=>i.id)).toEqual([G_SMM]);
-    expect(group(G_SMM)).toMatchObject({joinDecision:'approved',joinState:'queued'});
+    const res=await body(await POST(postRequest({action:'enqueue_joins',groupIds:[G_SMM]})));
+    expect(res.items.map((i:{id:string})=>i.id)).toEqual([G_SMM]);
+    expect(group(G_SMM)).toMatchObject({joinDecision:'approved',joinWanted:true,joinState:'queued'});
   });
 
   it('owner can approve, skip and reset a group; skip leaves the queue',async()=>{
@@ -332,9 +329,11 @@ describe('workspace API: join pacing',()=>{
   it('one join at a time per proxy even with two free accounts on it',async()=>{
     const G2='a0000000-0000-4000-8000-000000000011';
     addRecord(G2,'group',unjoined('Ozon | Чат поставщиков','https://t.me/ozon_suppliers_test'));
-    addRecord(ACC2,'account',{name:'Farm 2',phone:'+79990001123',status:'active',proxyId:'shared-proxy'},await seal(JSON.stringify({session:'s2'}),OWNER));
+    const SHARED='33333333-3333-4333-8333-333333333399';
+    addRecord(SHARED,'proxy',{name:'shared',host:'proxy.example.com',port:1081,protocol:'socks5',status:'active'});
+    addRecord(ACC2,'account',{name:'Farm 2',phone:'+79990001123',status:'active',proxyId:SHARED},await seal(JSON.stringify({session:'s2'}),OWNER));
     testDb().sqlite.prepare('UPDATE records SET created=? WHERE id=?').run('2026-01-01T00:00:00Z',ACC2);
-    testDb().sqlite.prepare('UPDATE records SET data=? WHERE id=?').run(JSON.stringify({...account(ACCOUNT_ID),proxyId:'shared-proxy'}),ACCOUNT_ID);
+    testDb().sqlite.prepare('UPDATE records SET data=? WHERE id=?').run(JSON.stringify({...account(ACCOUNT_ID),proxyId:SHARED}),ACCOUNT_ID);
     await POST(postRequest({action:'heal_dead_group_accounts'}));
     const joins:string[]=[];
     vi.stubGlobal('fetch',vi.fn(async(url:string)=>{

@@ -295,8 +295,9 @@ export function scoreGroupRelevance(
       v: JOIN_RELEVANCE_VERSION,
       sig: profile.sig,
       score: 50,
-      band: "auto",
-      reasons: ["настройки продукта не заданы — фильтр выключен"],
+      // Nothing to judge against: never auto-join blind (the original bug) — the owner decides.
+      band: "review",
+      reasons: ["настройки продукта не заданы — подтвердите вступление вручную"],
       members,
       at,
     };
@@ -397,6 +398,8 @@ export type JoinGateGroup = RelevanceGroup & {
   status?: string;
   joinedAt?: string;
   joinDecision?: string;
+  /** Owner queued the group (enqueue_joins, earlier dev contract) — same as joinDecision «approved». */
+  joinWanted?: boolean;
   joinDead?: boolean;
   /** Was a member; membership was reset by an account swap — restoring it is not a new join decision. */
   joinRejoin?: boolean;
@@ -446,7 +449,7 @@ export function joinGateFor(group: JoinGateGroup): JoinGate {
   if (group.joinDead) return gate(false, "dead", "Несколько аккаунтов не видят @username — проверьте ссылку");
   if (group.joinDecision === "skipped") return gate(false, "skipped", "пропущено вручную");
   if (group.joinRejoin) return gate(true, "joined", "восстановление членства после смены аккаунта");
-  if (group.joinDecision === "approved") return gate(true, "approved", "одобрено вручную");
+  if (group.joinDecision === "approved" || group.joinWanted === true) return gate(true, "approved", "одобрено вручную");
   if (score == null) return gate(false, "review", "ещё не оценена");
   const band = rel?.band === "auto" || rel?.band === "review" || rel?.band === "skip" ? rel.band : bandOf(score);
   return gate(band === "auto", band);
@@ -456,7 +459,7 @@ export function joinGateFor(group: JoinGateGroup): JoinGate {
 export function joinPriority(group: JoinGateGroup): number {
   const rel = group.joinRelevance as Partial<GroupRelevance> | undefined;
   const score = Number(rel?.score) || 0;
-  return score + (group.joinDecision === "approved" ? 100 : 0);
+  return score + (group.joinDecision === "approved" || group.joinWanted === true ? 100 : 0);
 }
 
 export function compareJoinPriority(a: JoinGateGroup, b: JoinGateGroup): number {

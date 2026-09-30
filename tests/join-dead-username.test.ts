@@ -27,7 +27,7 @@ describe("«Слот не видит @» — cap distinct accounts, then mark de
   });
 
   it("a dead group leaves the heal queue", () => {
-    expect(planGroupHeal({ group: { membership: "none", accountId: "a1", joinDead: true }, accountStatus: "active" })).toBe(
+    expect(planGroupHeal({ group: { membership: "none", accountId: "a1", joinDead: true, joinWanted: true }, accountStatus: "active" })).toBe(
       "gave_up",
     );
   });

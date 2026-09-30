@@ -81,9 +81,9 @@ describe("relevance score · bands", () => {
     expect(withLeads.reasons[0]).toMatch(/давала лиды: 11/);
   });
 
-  it("unconfigured settings switch the filter off instead of parking everything", () => {
+  it("unconfigured settings never auto-join blind: every group waits for the owner", () => {
     const r = scoreGroupRelevance({ name: "Что угодно", url: "https://t.me/anything_test" }, buildRelevanceProfile({}));
-    expect(r.band).toBe("auto");
+    expect(r.band).toBe("review");
     expect(r.reasons[0]).toMatch(/не заданы/);
   });
 
