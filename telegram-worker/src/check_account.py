@@ -1082,26 +1082,22 @@ async def scan_group(
                     or ""
                 )
                 if not await member_of(linked):
-                    # Пробуем вступить в обсуждение тем же аккаунтом
-                    try:
-                        from telethon.tl.functions.channels import JoinChannelRequest
-
-                        await client(JoinChannelRequest(linked))
-                    except Exception:
-                        return {
-                            "ok": False,
-                            "status": "setup",
-                            "join": "need_join",
-                            "error": (
-                                "Нужно вступить в обсуждение канала "
-                                f"«{discussion_title or discussion_id}» — иначе комментарии недоступны"
-                            ),
-                            "messages": [],
-                            "member": False,
-                            "title": title,
-                            "scanMode": scan_mode,
-                            "needDiscussionJoin": True,
-                        }
+                    # Сам скан не вступает (REQ-6): любое вступление — только ручное,
+                    # через join_group с темпом и дневной квотой.
+                    return {
+                        "ok": False,
+                        "status": "setup",
+                        "join": "need_join",
+                        "error": (
+                            "Нужно вступить в обсуждение канала "
+                            f"«{discussion_title or discussion_id}» — иначе комментарии недоступны"
+                        ),
+                        "messages": [],
+                        "member": False,
+                        "title": title,
+                        "scanMode": scan_mode,
+                        "needDiscussionJoin": True,
+                    }
                 async for m in client.iter_messages(linked, limit=fetch_limit):
                     await add_msg(m, kind="discussion", peer_entity=linked)
                     if len(out) >= max(limit, 40):
