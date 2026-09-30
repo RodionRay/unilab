@@ -11,6 +11,7 @@ import {useWorkspaceNotices} from '@/hooks/useWorkspaceNotices';
 import {TaskLogDialog} from '@/components/product/task-log-dialog';
 import {EmployeesPanel} from '@/components/product/employees-panel';
 import {DEFAULT_DM_SOFT_CLOSE} from '@/lib/mailing';
+import {LIVE_JOIN_STATES,type LiveJoinState} from '@/lib/processes/join-flow';
 import {canAccessNav,type CrmAccess,type WorkspaceInvite,type WorkspaceMember} from '@/lib/staff-types';
 import {DEFAULT_NAV} from '@/components/product/workspace-nav';
 import {Input} from '@/components/ui/input';
@@ -96,7 +97,8 @@ type OnboardResult={
 const kinds:Record<string,Kind>={'Лиды':'lead','Переписки':'lead','Группы и каналы':'group','Аккаунты':'account','Прокси':'proxy','AI-ассистент':'settings'};
 const labels:Record<Kind,string>={account:'аккаунт',proxy:'прокси',group:'группу',lead:'лид',settings:'настройки AI'};
 const PROBLEM_ACCOUNT=new Set(['disconnected','unauthorized','frozen','spamblock','proxy_error','cooldown','inactive','setup','error']);
-const JOIN_BUSY=new Set(['queued','waiting','joining','scanning']);
+/** Живые состояния ручного вступления (вкладка вступает/сканирует); у фоновой очереди производителя больше нет. */
+const JOIN_ACTIVE_STATES=new Set<string>(LIVE_JOIN_STATES);
 const defaults:any={
   account:{name:'',phone:'',proxyId:'',status:'setup',format:'manual',sessionMode:'keep',limits:{...DEFAULT_ACCOUNT_LIMITS},cooldownUntil:'',firstName:'',lastName:'',username:'',about:'',hasPhoto:false,error:''},
   proxy:{name:'',host:'',port:'1080',protocol:'socks5',username:'',status:'inactive',exitIp:'',lastChecked:'',checkError:''},
@@ -160,7 +162,7 @@ function cleanGroupSaveData(data:Record<string,unknown>){
   const joinStateError=
     err==null||typeof err==='object'?'':String(err).slice(0,500);
   const joinState=String(data.joinState||'');
-  const okState=['','queued','waiting','joining','scanning'].includes(joinState)?joinState:'';
+  const okState=JOIN_ACTIVE_STATES.has(joinState)?joinState:'';
   return{
     ...data,
     joinState:okState,
@@ -313,8 +315,6 @@ function groupNeedsJoin(item:RecordItem){
 function groupStatusLabel(item:RecordItem){
   const d=item.data||{};
   const js=String(d.joinState||'');
-  if(js==='queued')return {label:'В очереди',tone:'warning' as const};
-  if(js==='waiting')return {label:'Пауза',tone:'warning' as const};
   if(js==='joining')return {label:'Вступаем…',tone:'warning' as const};
   if(js==='scanning')return {label:'Скан…',tone:'warning' as const};
   const s=String(d.status||'setup');
@@ -324,8 +324,6 @@ function groupStatusLabel(item:RecordItem){
   if(s==='active')return {label:'Не вступили',tone:'warning' as const};
   return {label:'Ждёт вступления',tone:'neutral' as const};
 }
-
-const JOIN_ACTIVE_STATES=new Set(['queued','waiting','joining','scanning']);
 
 function formatGroupSyncAt(raw:string){
   const t=Date.parse(raw||'');
@@ -547,7 +545,7 @@ function WorkspaceHome(){
     setRecords(prev=>prev.map(r=>r.id===id&&r.kind==='group'?{...r,data:{...r.data,...patch}}:r));
   }
 
-  async function persistJoinState(id:string,joinState:''|'queued'|'waiting'|'joining'|'scanning',joinStateError=''){
+  async function persistJoinState(id:string,joinState:''|LiveJoinState,joinStateError=''){
     const joinStateAt=joinState?new Date().toISOString():'';
     const err=String(joinStateError||'').slice(0,500);
     patchGroupLocal(id,{joinState,joinStateAt,joinStateError:err});
@@ -646,7 +644,7 @@ function WorkspaceHome(){
     const needManager=list('lead').filter(r=>!!r.data.needsManager&&!r.data.excludeFromTraining).length;
     const groups=list('group').filter(r=>{
       const d=r.data||{};
-      return d.status==='error'||d.membership==='pending'||JOIN_BUSY.has(String(d.joinState||''));
+      return d.status==='error'||d.membership==='pending'||JOIN_ACTIVE_STATES.has(String(d.joinState||''));
     }).length;
     const accounts=list('account').filter(r=>{
       const st=String(r.data.status||'');
@@ -2176,7 +2174,7 @@ function WorkspaceHome(){
         </Empty>
       );
     }
-    const inQueue=new Set(items.filter(r=>JOIN_ACTIVE_STATES.has(String(r.data.joinState||''))).map(r=>r.id));
+    const joinActive=new Set(items.filter(r=>JOIN_ACTIVE_STATES.has(String(r.data.joinState||''))).map(r=>r.id));
     const allSelected=items.length>0&&items.every(r=>groupSelected.includes(r.id));
     return (
       <div className="groups-list">
@@ -2193,13 +2191,13 @@ function WorkspaceHome(){
         {items.map(r=>{
           const st=groupStatusLabel(r);
           const accountName=records.find(x=>x.id===r.data.accountId)?.data.name||'';
-          const queued=inQueue.has(r.id);
-          const canJoin=groupNeedsJoin(r)&&!queued;
+          const inFlight=joinActive.has(r.id);
+          const canJoin=groupNeedsJoin(r)&&!inFlight;
           const joined=r.data.membership==='joined'||!!r.data.joinedAt;
           const syncAt=formatGroupSyncAt(String(r.data.lastScanned||''));
           const err=r.data.status==='error'?shortErr(r.data.error||r.data.joinStateError||''):'';
           return (
-            <div className={`groups-row ${queued?'is-queue':''} ${groupSelected.includes(r.id)?'is-selected':''}`} key={r.id}>
+            <div className={`groups-row ${inFlight?'is-queue':''} ${groupSelected.includes(r.id)?'is-selected':''}`} key={r.id}>
               <label className="groups-check">
                 <Checkbox checked={groupSelected.includes(r.id)} onCheckedChange={v=>toggleGroupSelected(r.id,v===true)} aria-label={`Выбрать ${r.data.name}`}/>
               </label>

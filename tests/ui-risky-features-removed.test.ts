@@ -56,6 +56,13 @@ describe("workspace UI without bulk Telegram actions (REQ-9)", () => {
     expect(page).toContain("action:'poll_dm_replies'");
   });
 
+  it("join states of the removed background queue have no UI (no hidden «Вступить»)", () => {
+    const page = read("app/app/page.tsx");
+    expect(page).not.toContain("'queued'");
+    expect(page).not.toContain("'waiting'");
+    expect(page).not.toContain("В очереди");
+  });
+
   it("removed panels are gone from the component tree", () => {
     for (const file of ["audience-panel", "invite-panel", "mailing-panel"]) {
       expect(() => read(`components/product/${file}.tsx`)).toThrow();

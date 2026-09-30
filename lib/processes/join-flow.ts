@@ -14,6 +14,32 @@ export function sanitizeJoinStateError(v: unknown): string {
   return String(v).slice(0, 500);
 }
 
+/** Состояния вступления, у которых есть производитель: ручной join_group из открытой вкладки. */
+export const LIVE_JOIN_STATES = ["joining", "scanning"] as const;
+export type LiveJoinState = (typeof LIVE_JOIN_STATES)[number];
+
+/** Вкладка закрылась посреди вступления/скана — дольше этого состояние считаем брошенным. */
+export const JOIN_STATE_STALE_MS = 10 * 60_000;
+
+type JoinStateFields = { joinState?: unknown; joinStateAt?: unknown };
+
+/**
+ * Сбросить joinState без живого производителя: queued/waiting остались от удалённой фоновой
+ * очереди, joining/scanning старше таймаута — от закрытой вкладки. null = менять нечего.
+ */
+export function clearStaleJoinState<T extends JoinStateFields>(
+  group: T,
+  now = Date.now(),
+): (T & { joinState: ""; joinStateAt: "" }) | null {
+  const state = String(group.joinState ?? "");
+  if (!state) return null;
+  if ((LIVE_JOIN_STATES as readonly string[]).includes(state)) {
+    const at = Date.parse(String(group.joinStateAt ?? ""));
+    if (Number.isFinite(at) && now - at <= JOIN_STATE_STALE_MS) return null;
+  }
+  return { ...group, joinState: "", joinStateAt: "" };
+}
+
 export type JoinBlockReason =
   | "missing_account"
   | "placeholder_url"

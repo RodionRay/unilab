@@ -1,6 +1,6 @@
 import {getSessionUser} from '@/lib/auth';
 import {GROUP_CATALOG,isCatalogPlaceholderUrl} from '@/lib/group-catalog';
-import {JOIN_SUCCESS_PATCH,JOIN_WORKER_ERROR_RETRY_MS,accountBlindPatch,type JoinAccountState,type JoinProxyState,evaluateAccountJoinReadiness,isAccountBlindResult,isJoinFarmCandidate,joinFailurePatch,sanitizeJoinStateError} from '@/lib/processes/join-flow';
+import {JOIN_SUCCESS_PATCH,JOIN_WORKER_ERROR_RETRY_MS,LIVE_JOIN_STATES,accountBlindPatch,clearStaleJoinState,type JoinAccountState,type JoinProxyState,evaluateAccountJoinReadiness,isAccountBlindResult,isJoinFarmCandidate,joinFailurePatch,sanitizeJoinStateError} from '@/lib/processes/join-flow';
 import {database,seal,unseal} from '@/lib/server-store';
 import {aiChatText,envAiApiKey,resolveAiConfig} from '@/lib/ai-client';
 import {buildProjectBrief,leadMessageFingerprint,normalizeLeadMessage,parseLeadTemperature,ratingFromTemperatures,strongPlusTerms,type LeadTemperature} from '@/lib/lead-filter';
@@ -120,8 +120,8 @@ const schemas={
   joinedAt:z.string().max(40).default(''),
   /** С каким аккаунтом группа вступила в Telegram */
   joinedAccountId:z.string().max(100).default(''),
-  /** Состояние ручного вступления/скана для UI */
-  joinState:z.enum(['','queued','waiting','joining','scanning']).default(''),
+  /** Состояние ручного вступления/скана для UI; queued/waiting удалённой очереди читаем как «не вступали» */
+  joinState:z.preprocess((v)=>v==='queued'||v==='waiting'?'':v,z.enum(['',...LIVE_JOIN_STATES]).default('')),
   joinStateAt:z.string().max(40).default(''),
   // coerce: раньше set_group_join_state мог сохранить не-строку; длинные ошибки TG режем.
   joinStateError:z.preprocess(
@@ -806,25 +806,24 @@ function isHardDeadAccountStatus(status:string){
 
 /** Нормализация joinStateError — см. lib/processes/join-flow.sanitizeJoinStateError */
 
-/** Починить группы после бага set_group_join_state (Zod-объект в JSON). */
+/**
+ * Починить joinState групп: битый joinStateError (Zod-объект от старого бага), queued/waiting от
+ * удалённой фоновой очереди и joining/scanning брошенной вкладки — иначе «Вступить» скрыт навсегда.
+ */
 async function healCorruptGroupJoinFields(owner:string){
  const db=database();
  const groups=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='group'").bind(owner).all();
  let fixed=0;
+ const now=Date.now();
  for(const row of groups.results){
   try{
    const gdata=JSON.parse(String(row.data));
    const rawErr=gdata.joinStateError;
    const nextErr=sanitizeJoinStateError(rawErr);
    const badErr=rawErr!=null&&(typeof rawErr==='object'||String(rawErr)!==nextErr&&String(rawErr).length>500);
-   const badState=gdata.joinState!=null&&gdata.joinState!==''&&!['queued','waiting','joining','scanning'].includes(String(gdata.joinState));
-   if(!badErr&&!badState)continue;
-   const next={
-    ...gdata,
-    joinState:badState?'':(gdata.joinState||''),
-    joinStateAt:badState?'':(gdata.joinStateAt||''),
-    joinStateError:nextErr,
-   };
+   const cleared=clearStaleJoinState(gdata,now);
+   if(!badErr&&!cleared)continue;
+   const next={...(cleared??gdata),joinStateError:nextErr};
    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,String(row.id),'group').run();
    fixed++;
   }catch{/* */}
@@ -2320,7 +2319,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
  }
  if(b.action==='set_group_join_state'){
   const id=z.string().uuid().parse(b.id);
-  const joinState=z.enum(['','queued','waiting','joining','scanning']).parse(b.joinState??'');
+  const joinState=z.enum(['',...LIVE_JOIN_STATES]).parse(b.joinState??'');
   // Без zod.string().parse — только строка; иначе снова «Проверьте поля: joinStateError».
   const joinStateError=sanitizeJoinStateError(b.joinStateError);
   const grow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'group').first();
@@ -2612,7 +2611,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
  if(kind==='group'&&existing){
   try{
    const prev=JSON.parse(existing.data);
-   const active=new Set(['queued','waiting','joining','scanning']);
+   const active=new Set<string>(LIVE_JOIN_STATES);
    if(active.has(String(prev.joinState||''))&&!data.joinState){
     data.joinState=prev.joinState;
     data.joinStateAt=prev.joinStateAt||'';
