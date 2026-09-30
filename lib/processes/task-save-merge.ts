@@ -33,6 +33,8 @@ const AUDIENCE_SOURCE_RESET: TaskData = {
   sourceChannelId: "",
   sourceAccessHash: "",
   sourceAccountId: "",
+  scannedMessages: 0,
+  warning: "",
 };
 
 export function serverOwnedTaskKeys(kind: TickTaskKind): ReadonlySet<string> {
