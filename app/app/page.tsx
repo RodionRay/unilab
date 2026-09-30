@@ -868,8 +868,14 @@ function WorkspaceHome(){
     const pack=await api({action:'rescan_groups',force:!!opts?.force,limit:opts?.limit??40});
     const ids:string[]=pack.groupIds||[];
     const minutes=Number(pack.rescanMinutes)||Number(settings?.data.autoRescanMinutes)||30;
+    // Аккаунт группы недоступен: сервер пропускает скан и не подставляет другой аккаунт.
+    const unavailable=Number(pack.unavailableTotal)||0;
+    if(!quiet&&unavailable){
+      const first=Array.isArray(pack.unavailable)&&pack.unavailable[0]?.name?` («${pack.unavailable[0].name}»${unavailable>1?' и др.':''})`:'';
+      toast.error(`Аккаунт недоступен — скан пропущен: ${unavailable} групп${first}. Назначьте рабочий аккаунт.`);
+    }
     if(!ids.length){
-      if(!quiet)toast.message(`Нет групп к обходу (лимит: раз в ${minutes} мин)`);
+      if(!quiet&&!unavailable)toast.message(`Нет групп к обходу (лимит: раз в ${minutes} мин)`);
       return {scanned:0,added:0,skipped:true,due:Number(pack.total)||0};
     }
     let added=0,scanned=0,needJoin=0;
@@ -879,16 +885,12 @@ function WorkspaceHome(){
       try{
         const r=await api({action:'scan_group',id,force:!!opts?.force});
         if(r.skipped)continue;
-        // Членство потеряно: сами не вступаем — группа ждёт ручного «Вступить».
-        if(r.rejoinItem?.id){
-          if(!r.soft&&!r.preserved)needJoin++;
-          continue;
-        }
         scanned++;
         added+=r.added||0;
       }catch(err){
         const data=(err as any)?.data;
-        if(data?.rejoinItem?.id){
+        // Членство потеряно (409 needJoin): сами не вступаем — группа ждёт ручного «Вступить».
+        if(data?.needJoin){
           if(data?.soft||data?.preserved){
             if(data?.usernameMissing&&!quiet){
               const msg=String(data?.error||(err as Error).message||'').slice(0,120);
