@@ -68,6 +68,7 @@ import {
   type CatalogHit,
   type GroupNiche,
 } from '@/lib/group-catalog';
+import {initialCatalogMarket} from '@/lib/catalog-market';
 import {
   LEAD_TEMPERATURE_LABELS,
   type LeadTemperature,
@@ -2404,10 +2405,7 @@ function WorkspaceHome(){
   }
 
   function openCatalog(preferredMarket?:string){
-    // Полная база / «В базе» — без сужения AI в «Маркетплейсы».
-    const hasDb=list('group').length>0;
-    const marketId=preferredMarket||(hasDb?'db':'all');
-    setCatalogMarket(marketId);
+    setCatalogMarket(initialCatalogMarket(preferredMarket,list('group').length>0));
     setCatalogNiche(null);
     setCatalogHideAdded(false);
     setCatalogTab('links');
@@ -3194,7 +3192,7 @@ function WorkspaceHome(){
                     disabled={busy}
                     onClick={()=>void importFullCatalogToDb()}
                   >Залить каталог ({catalogStats().uniqueUrls})</Button>
-                  <Button onClick={openCatalog}><Search size={16}/>Поиск по темам</Button>
+                  <Button onClick={()=>openCatalog()}><Search size={16}/>Поиск по темам</Button>
                 </>
               ):view==='Настройки'||view==='Сбор аудитории'||view==='Инвайтинг'||view==='Рассылка'||view==='Уведомления'||view==='Сотрудники'?null:(
                 <Button onClick={()=>open(currentKind||'group',currentKind==='settings'?settings:undefined)}>
@@ -3597,7 +3595,7 @@ function WorkspaceHome(){
                 <div className="groups-page">
                   <div className="groups-top">
                     <div className="groups-top-actions">
-                      <Button onClick={openCatalog} disabled={busy}><Search size={15}/>Найти темы</Button>
+                      <Button onClick={()=>openCatalog()} disabled={busy}><Search size={15}/>Найти темы</Button>
                       <Button variant="outline" onClick={openManualGroup}><Plus size={15}/>Ссылка</Button>
                       <Button variant="outline" onClick={openMassGroups} disabled={busy}><Upload size={15}/>Массово</Button>
                       <Button
