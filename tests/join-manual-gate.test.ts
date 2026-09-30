@@ -21,6 +21,8 @@ let joinCalls=0;
 let workerReply:Record<string,unknown>={ok:true,join:'joined',status:'active'};
 /** Ответ воркера вместо workerReply: бросить (сеть/таймаут) или вернуть свой Response. */
 let workerFailure:(()=>Response)|null=null;
+let joinBodies:Record<string,unknown>[]=[];
+let scanReply:Record<string,unknown>={ok:false,error:'not stubbed'};
 
 function rec(id:string){
   const row=testDb().sqlite.prepare('SELECT data FROM records WHERE id=?').get(id) as {data:string};
@@ -61,9 +63,12 @@ describe('ручное вступление: хвосты очереди и го
     joinCalls=0;
     workerReply={ok:true,join:'joined',status:'active'};
     workerFailure=null;
-    vi.stubGlobal('fetch',vi.fn(async(url:string)=>{
+    joinBodies=[];
+    vi.stubGlobal('fetch',vi.fn(async(url:string,init?:RequestInit)=>{
+      if(String(url).endsWith('/scan-group'))return Response.json(scanReply);
       if(String(url).endsWith('/join-group')){
         joinCalls++;
+        joinBodies.push(JSON.parse(String(init?.body||'{}')));
         // Воркер отвечает не сразу: параллельный запрос успевает дойти до своей проверки темпа
         await new Promise(r=>setTimeout(r,20));
         if(workerFailure)return workerFailure();
@@ -264,6 +269,88 @@ describe('ручное вступление: хвосты очереди и го
       expect(await res.json()).toMatchObject({limitReached:true});
       expect(joinCalls).toBe(0);
       expect(rec(GROUP).accountId).toBe(ACC_A);
+    });
+  });
+
+  describe('вступление в обсуждение канала',()=>{
+    const DISCUSSION_ERR='Нужно вступить в обсуждение канала «Shop chat» — иначе комментарии недоступны';
+    const joinDiscussion=(id:string)=>POST(postRequest({action:'join_group',id,target:'discussion'}));
+    const joinedChannel={membership:'joined',status:'active',joinedAt:'2026-09-01T00:00:00Z',channelId:'101',accessHash:'11'};
+
+    it('скан без членства в обсуждении помечает группу needDiscussionJoin',async()=>{
+      await addAccount(ACC_A,{});
+      addGroup(GROUP,joinedChannel);
+      scanReply={ok:false,status:'setup',join:'need_join',needDiscussionJoin:true,error:DISCUSSION_ERR,messages:[]};
+
+      const res=await POST(postRequest({action:'scan_group',id:GROUP,force:true}));
+
+      expect(res.status).toBe(409);
+      expect(rec(GROUP).needDiscussionJoin).toBe(true);
+      expect(rec(GROUP).membership).toBe('joined');
+    });
+
+    it('успех: один join через тот же гейт, флаг и ошибка обсуждения снимаются, peer канала не трогается',async()=>{
+      await addAccount(ACC_A,{});
+      addGroup(GROUP,{...joinedChannel,needDiscussionJoin:true,error:DISCUSSION_ERR});
+      workerReply={ok:true,status:'active',join:'joined',member:true,discussionId:'202',discussionTitle:'Shop chat'};
+
+      const res=await joinDiscussion(GROUP);
+
+      expect(res.status).toBe(200);
+      expect(joinCalls).toBe(1);
+      expect(joinBodies[0]).toMatchObject({target:'discussion'});
+      expect(rec(GROUP)).toMatchObject({needDiscussionJoin:false,error:'',membership:'joined',channelId:'101',accessHash:'11'});
+      expect(rec(ACC_A).joinsToday).toBe(1);
+      expect(rec(ACC_A).lastJoinAt).toBeTruthy();
+    });
+
+    it('дневной лимит исчерпан — 429, воркер не зовётся, другой аккаунт не подставляется',async()=>{
+      await addAccount(ACC_A,{limits:{invite:3},joinsToday:3,joinsDay:moscowDayKey()});
+      await addAccount(ACC_B,{});
+      addGroup(GROUP,{...joinedChannel,needDiscussionJoin:true});
+
+      const res=await joinDiscussion(GROUP);
+
+      expect(res.status).toBe(429);
+      expect(await res.json()).toMatchObject({limitReached:true});
+      expect(joinCalls).toBe(0);
+      expect(rec(GROUP).accountId).toBe(ACC_A);
+      expect(rec(GROUP).needDiscussionJoin).toBe(true);
+    });
+
+    it('пауза темпа — 429 pace, воркер не зовётся',async()=>{
+      await addAccount(ACC_A,{lastJoinAt:new Date().toISOString(),joinsDay:moscowDayKey(),joinsToday:1});
+      addGroup(GROUP,{...joinedChannel,needDiscussionJoin:true});
+
+      const res=await joinDiscussion(GROUP);
+
+      expect(res.status).toBe(429);
+      expect(await res.json()).toMatchObject({pace:true});
+      expect(joinCalls).toBe(0);
+    });
+
+    it('канал ещё не вступлен — 409, сначала обычное «Вступить»',async()=>{
+      await addAccount(ACC_A,{});
+      addGroup(GROUP,{});
+
+      const res=await joinDiscussion(GROUP);
+
+      expect(res.status).toBe(409);
+      expect(joinCalls).toBe(0);
+      expect(rec(ACC_A).joinsToday||0).toBe(0);
+    });
+
+    it('отказ Telegram: флаг остаётся, ошибка видна, группа не теряет членство',async()=>{
+      await addAccount(ACC_A,{});
+      addGroup(GROUP,{...joinedChannel,needDiscussionJoin:true,error:DISCUSSION_ERR});
+      workerReply={ok:false,status:'error',join:'banned',error:'Аккаунт забанен в этой группе'};
+
+      const res=await joinDiscussion(GROUP);
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ok:false});
+      expect(rec(GROUP)).toMatchObject({needDiscussionJoin:true,error:'Аккаунт забанен в этой группе',membership:'joined',status:'active'});
+      expect(rec(GROUP).joinFailures||0).toBe(0);
     });
   });
 });

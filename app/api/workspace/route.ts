@@ -954,6 +954,15 @@ async function restoreJoinFields(owner:string,accountId:string,before:JoinAccoun
  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,accountId,'account').run();
 }
 
+/**
+ * Итог вступления в обсуждение канала: членство и peer канала не трогаем. Успех снимает флаг и
+ * ошибку, чтобы следующий скан пошёл; иначе флаг остаётся, а ошибка показывается в строке группы.
+ */
+function discussionJoinPatch(gdata:Record<string,unknown>,result:{error?:unknown},joined:boolean){
+ if(joined)return {...gdata,needDiscussionJoin:false,error:''};
+ return {...gdata,needDiscussionJoin:true,error:String(result.error||'Не удалось вступить в обсуждение').slice(0,500)};
+}
+
 type JoinGateRefusal=Extract<JoinGateResult,{ok:false}>;
 
 /** Ответ join_group, когда гейт аккаунта не пускает (отлёжка, лимит, темп, недоступен). */
@@ -1367,9 +1376,14 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'group').run();
    return reply({error:next.error,needUrl:true},400);
   }
+  // discussion: вступление в привязанное обсуждение уже вступленного канала — тот же гейт, один join
+  const target=z.enum(['group','discussion']).default('group').parse(b.target);
   const alreadyIn=groupLooksJoined(gdata);
+  if(target==='discussion'&&(!alreadyIn||gdata.membership==='pending'||gdata.status==='pending')){
+   return reply({error:'Сначала вступите в канал — кнопка «Вступить»',needJoin:true,group:gdata},409);
+  }
   const needsPeerRefresh=alreadyIn&&!(String(gdata.channelId||'')&&String(gdata.accessHash||''));
-  if(alreadyIn&&!needsPeerRefresh){
+  if(target==='group'&&alreadyIn&&!needsPeerRefresh){
    const next=gdata.membership==='pending'||gdata.status==='pending'?gdata:restoreJoinedMembership(gdata);
    if(next!==gdata){
     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'group').run();
@@ -1405,7 +1419,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   }
   try{
    const {payload}=await loadAccountSessionPayload(owner,gdata.accountId);
-   const result=await workerPost('/join-group',{...payload,url:gdata.url});
+   const result=await workerPost('/join-group',{...payload,url:gdata.url,...(target==='discussion'?{target}:{})});
    const frozen=result.status==='frozen'||result.join==='frozen'||/FROZEN|заморожен/i.test(String(result.error||''));
    const flood=result.join==='flood'||/FloodWait/i.test(String(result.error||''));
    // Слеп аккаунт, а не группа — попытку группе не засчитываем (иначе живые группы уходят в отказ)
@@ -1419,7 +1433,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const spentJoin=joinedOk&&result.join!=='already';
    const reallyJoined=result.join==='already'||(!!result.ok&&result.join!=='requested'&&result.join!=='flood'&&result.join!=='missing'&&result.join!=='frozen');
    const status=result.join==='requested'?'pending':reallyJoined?'active':frozen?'error':'error';
-   const next={
+   const next=target==='discussion'?discussionJoinPatch(gdata,result,reallyJoined):{
     ...gdata,
     status,
     error:(result.error||'').slice(0,500),
@@ -1436,8 +1450,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     name:result.title&&(!gdata.name||gdata.name.startsWith('http')||gdata.name==='Группа')?result.title:gdata.name,
    };
    // accessHash только от фактического join/already этой сессии
-   if(result.channelId)next.channelId=String(result.channelId).slice(0,40);
-   if(result.accessHash&&(reallyJoined||result.join==='already'||result.join==='requested')){
+   if(target==='group'&&result.channelId)next.channelId=String(result.channelId).slice(0,40);
+   if(target==='group'&&result.accessHash&&(reallyJoined||result.join==='already'||result.join==='requested')){
     next.accessHash=String(result.accessHash).slice(0,40);
    }
    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'group').run();
@@ -1613,6 +1627,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
       // Мягкий отказ только при свежем join или linked discussion — не по лидам/scanLog
       const soft={
        ...gdata,
+       ...(discussionOnly?{needDiscussionJoin:true}:{}),
        joinState:'',
        joinStateAt:'',
        joinStateError:'',
@@ -1636,6 +1651,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
       ...gdata,
       status:'setup',
       membership:'none',
+      needDiscussionJoin:false,
       joinedAt:'',
       error:errMsg,
       lastScanned:'',
@@ -1814,6 +1830,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     joinedAt:isPending?(gdata.joinedAt||''):(gdata.joinedAt||new Date().toISOString()),
     joinedAccountId:gdata.joinedAccountId||gdata.accountId||'',
     error:'',
+    needDiscussionJoin:false,
     joinState:'',
     joinStateAt:'',
     joinStateError:'',
