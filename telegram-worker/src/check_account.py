@@ -691,20 +691,172 @@ async def _is_member(client, entity) -> bool:
             return False
 
 
-async def join_group(client, url: str, peer_hint: dict | None = None) -> dict[str, Any]:
-    from telethon.tl.functions.messages import ImportChatInviteRequest, CheckChatInviteRequest
+async def _join_entity(client, entity) -> dict[str, Any]:
+    """JoinChannel в уже найденный entity + проверка членства. FloodWait — наверх вызывающему."""
     from telethon.tl.functions.channels import JoinChannelRequest
     from telethon.errors import (
         UserAlreadyParticipantError,
         InviteRequestSentError,
-        FloodWaitError,
         ChannelPrivateError,
         UserBannedInChannelError,
         RPCError,
     )
 
+    title = getattr(entity, "title", None) or getattr(entity, "username", "") or ""
+    peer = _peer_fields(entity)
+    # Уже участник — сразу ok
+    if await _is_member(client, entity):
+        return {
+            "ok": True,
+            "status": "active",
+            "join": "already",
+            "title": title,
+            "error": "",
+            "member": True,
+            **peer,
+        }
+    try:
+        await client(JoinChannelRequest(entity))
+    except UserAlreadyParticipantError:
+        return {
+            "ok": True,
+            "status": "active",
+            "join": "already",
+            "title": title,
+            "error": "",
+            "member": True,
+            **peer,
+        }
+    except InviteRequestSentError:
+        return {
+            "ok": True,
+            "status": "pending",
+            "join": "requested",
+            "title": title,
+            "error": "Заявка на вступление отправлена",
+            "member": False,
+            **peer,
+        }
+    except UserBannedInChannelError:
+        return {
+            "ok": False,
+            "status": "error",
+            "join": "banned",
+            "title": title,
+            "error": "Аккаунт забанен в этой группе",
+            "member": False,
+        }
+    except ChannelPrivateError:
+        return {
+            "ok": False,
+            "status": "error",
+            "join": "private",
+            "title": title,
+            "error": "Группа приватная — нужен инвайт-ссылка",
+            "member": False,
+        }
+    except RPCError as e:
+        if is_frozen_rpc(e):
+            return frozen_action_error("вступление в канал/группу")
+        raise
+    # Проверяем фактическое членство после JoinChannel
+    ok_member = await _is_member(client, entity)
+    if not ok_member:
+        return {
+            "ok": False,
+            "status": "error",
+            "join": "failed",
+            "title": title,
+            "error": "Telegram не подтвердил вступление. Попробуйте снова или инвайт-ссылку.",
+            "member": False,
+        }
+    return {
+        "ok": True,
+        "status": "active",
+        "join": "joined",
+        "title": title,
+        "error": "",
+        "member": True,
+        **peer,
+    }
+
+
+async def _resolve_for_join(client, url: str, peer_hint: dict | None):
+    """entity группы/канала по ссылке или готовый ответ-ошибка join_group."""
+    entity, resolve_err = await _resolve_entity(client, url, peer_hint=peer_hint)
+    if resolve_err:
+        return None, {
+            "ok": False,
+            "status": "error",
+            "join": resolve_err.get("join") or "missing",
+            "usernameMissing": bool(resolve_err.get("usernameMissing")),
+            "accountBlind": bool(resolve_err.get("accountBlind")),
+            "error": str(resolve_err.get("error") or "Не удалось найти группу")[:400],
+            "member": False,
+        }
+    if entity is None:
+        return None, {
+            "ok": False,
+            "status": "error",
+            "join": "missing",
+            "usernameMissing": True,
+            "error": f"Слот не видит @{parse_group_ref(url)['value']}",
+            "member": False,
+        }
+    return entity, None
+
+
+async def _join_linked_discussion(client, url: str, peer_hint: dict | None) -> dict[str, Any]:
+    """Вступить ТОЛЬКО в привязанное обсуждение канала, в котором аккаунт уже состоит."""
+    from telethon.tl.functions.channels import GetFullChannelRequest
+
+    channel, err = await _resolve_for_join(client, url, peer_hint)
+    if err:
+        return err
+    if not await _is_member(client, channel):
+        return {
+            "ok": False,
+            "status": "setup",
+            "join": "need_join",
+            "error": "Аккаунт не в канале — сначала нажмите «Вступить»",
+            "member": False,
+        }
+    full = await client(GetFullChannelRequest(channel))
+    linked_id = getattr(getattr(full, "full_chat", None), "linked_chat_id", None)
+    if not linked_id:
+        return {
+            "ok": False,
+            "status": "error",
+            "join": "no_discussion",
+            "error": "У канала нет обсуждения",
+            "member": False,
+        }
+    linked = await client.get_entity(int(linked_id))
+    res = await _join_entity(client, linked)
+    # peer обсуждения не должен перезаписать peer канала в записи группы
+    res.pop("channelId", None)
+    res.pop("accessHash", None)
+    res["discussionId"] = str(getattr(linked, "id", "") or "")
+    res["discussionTitle"] = str(res.pop("title", "") or "")
+    return res
+
+
+async def join_group(
+    client, url: str, peer_hint: dict | None = None, target: str = "group"
+) -> dict[str, Any]:
+    """target="discussion" — вступление только в обсуждение уже вступленного канала."""
+    from telethon.tl.functions.messages import ImportChatInviteRequest, CheckChatInviteRequest
+    from telethon.errors import (
+        UserAlreadyParticipantError,
+        InviteRequestSentError,
+        FloodWaitError,
+        RPCError,
+    )
+
     ref = parse_group_ref(url)
     try:
+        if target == "discussion":
+            return await _join_linked_discussion(client, url, peer_hint)
         if ref["kind"] == "invite":
             try:
                 await client(CheckChatInviteRequest(hash=ref["value"]))
@@ -752,104 +904,10 @@ async def join_group(client, url: str, peer_hint: dict | None = None) -> dict[st
                 if is_frozen_rpc(e):
                     return frozen_action_error("вступление по инвайту")
                 raise
-        else:
-            entity, resolve_err = await _resolve_entity(client, url, peer_hint=peer_hint)
-            if resolve_err:
-                return {
-                    "ok": False,
-                    "status": "error",
-                    "join": resolve_err.get("join") or "missing",
-                    "usernameMissing": bool(resolve_err.get("usernameMissing")),
-                    "accountBlind": bool(resolve_err.get("accountBlind")),
-                    "error": str(resolve_err.get("error") or "Не удалось найти группу")[:400],
-                    "member": False,
-                }
-            if entity is None:
-                return {
-                    "ok": False,
-                    "status": "error",
-                    "join": "missing",
-                    "usernameMissing": True,
-                    "error": f"Слот не видит @{ref['value']}",
-                    "member": False,
-                }
-            title = getattr(entity, "title", None) or getattr(entity, "username", "") or ""
-            peer = _peer_fields(entity)
-            # Уже участник — сразу ok
-            if await _is_member(client, entity):
-                return {
-                    "ok": True,
-                    "status": "active",
-                    "join": "already",
-                    "title": title,
-                    "error": "",
-                    "member": True,
-                    **peer,
-                }
-            try:
-                await client(JoinChannelRequest(entity))
-            except UserAlreadyParticipantError:
-                return {
-                    "ok": True,
-                    "status": "active",
-                    "join": "already",
-                    "title": title,
-                    "error": "",
-                    "member": True,
-                    **peer,
-                }
-            except InviteRequestSentError:
-                return {
-                    "ok": True,
-                    "status": "pending",
-                    "join": "requested",
-                    "title": title,
-                    "error": "Заявка на вступление отправлена",
-                    "member": False,
-                    **peer,
-                }
-            except UserBannedInChannelError:
-                return {
-                    "ok": False,
-                    "status": "error",
-                    "join": "banned",
-                    "title": title,
-                    "error": "Аккаунт забанен в этой группе",
-                    "member": False,
-                }
-            except ChannelPrivateError:
-                return {
-                    "ok": False,
-                    "status": "error",
-                    "join": "private",
-                    "title": title,
-                    "error": "Группа приватная — нужен инвайт-ссылка",
-                    "member": False,
-                }
-            except RPCError as e:
-                if is_frozen_rpc(e):
-                    return frozen_action_error("вступление в канал/группу")
-                raise
-            # Проверяем фактическое членство после JoinChannel
-            ok_member = await _is_member(client, entity)
-            if not ok_member:
-                return {
-                    "ok": False,
-                    "status": "error",
-                    "join": "failed",
-                    "title": title,
-                    "error": "Telegram не подтвердил вступление. Попробуйте снова или инвайт-ссылку.",
-                    "member": False,
-                }
-            return {
-                "ok": True,
-                "status": "active",
-                "join": "joined",
-                "title": title,
-                "error": "",
-                "member": True,
-                **peer,
-            }
+        entity, err = await _resolve_for_join(client, url, peer_hint)
+        if err:
+            return err
+        return await _join_entity(client, entity)
     except FloodWaitError as e:
         return {
             "ok": False,
@@ -2120,7 +2178,8 @@ async def run_action(payload: dict[str, Any]) -> dict[str, Any]:
             url = payload.get("url") or ""
             if action == "join":
                 peer_hint = payload.get("peerHint") if isinstance(payload.get("peerHint"), dict) else None
-                res = await join_group(client, url, peer_hint=peer_hint)
+                target = "discussion" if payload.get("target") == "discussion" else "group"
+                res = await join_group(client, url, peer_hint=peer_hint, target=target)
                 # Диагностика: новая авторизация на каждый вызов — главный подозреваемый в «слепоте»
                 res["sessionRefreshed"] = bool(getattr(client, "_uniseller_session_refreshed", False))
                 return res
