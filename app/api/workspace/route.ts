@@ -52,6 +52,7 @@ import {proxyCheckTimeoutMs,workerAppTimeoutMs,workerSlots} from '@/lib/worker-t
 import {WorkerBusyError,isRetryableTickError,tickRetryPatch} from '@/lib/processes/tick-retry';
 import {startTickSession,tickLockIsLive,tickLockWaitSec,updateTaskData,type TaskData,type TickSession,type TickTaskKind} from '@/lib/processes/tick-lock';
 import {mergeTaskSave} from '@/lib/processes/task-save-merge';
+import {JOIN_GATE_ROTATE_WAIT_SEC,JOIN_PENDING_ERROR,audienceJoinGate,classifyCollectFailure,insertAudienceUsers,interpretAudienceJoin,isDeadSessionError,isSlotBlindError,listAudienceUsers,loadAudienceSeenIds,type AudienceUserData} from '@/lib/processes/audience-tick';
 import {authorizeWorkspaceAction,keepOwnerSecretsOnSave,visibleRecordsFor,type WorkspaceActor} from '@/lib/security/workspace-authz';
 import {ALL_CRM_ACCESS} from '@/lib/staff-types';
 import {INBOX_CURSOR_MARGIN_SEC,applySendOutcome,findSendBlock,leadReplies,markLeadOpened,mergeIncomingDm,nextInboxCursor,withPendingSend,type LeadData,type ReplyEntry,type SendOutcome} from '@/lib/lead-conversation';
@@ -3443,23 +3444,26 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const saved=await tickRun.finish(next);
    return reply({ok:false,error:next.error,task:saved});
   }
-  // Недавние userId задачи — один раз на тик
-  const existingUsers=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='audience_user'").bind(owner).all();
-  const seenIds:string[]=[];
-  for(const r of existingUsers.results){
-   try{
-    const u=JSON.parse(String(r.data));
-    if(u.taskId===id&&u.userId)seenIds.push(String(u.userId));
-   }catch{/* */}
-  }
-
-  const isSlotBlindErr=(msg:string)=>
-   /не видит @|usernameMissing|no user has|nobody is using|username_not_occupied|join.?missing/i.test(msg);
-  const isDeadSessionErr=(msg:string)=>
-   isDeadAccountMailingError(msg)||/tdesktopunauthorized|fromtdesktop/i.test(msg);
-  const isProxyOrNetErr=(msg:string)=>
-   /прокси|proxy|socks|ECONN|connection to telegram|не удалось подключ|aborted due to timeout|operation was aborted|TimeoutError|network/i.test(msg);
-
+  // Последние userId этой задачи — SQL-фильтр по задаче, не скан всей аудитории владельца (REQ-A6)
+  const seenIds=await loadAudienceSeenIds(db,owner,id);
+  const slotName=(aid:string)=>bracketLabel(String(accMap.get(aid)?.name||aid));
+  const saveAccount=async(aid:string,next:Record<string,unknown>)=>{
+   accMap.set(aid,next);
+   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,aid,'account').run();
+  };
+  const waitTick=async(waitSec:number,text:string,extra:Record<string,unknown>={})=>{
+   const next={
+    ...data,
+    ...extra,
+    status:'running',
+    error:'',
+    nextAt:new Date(Date.now()+waitSec*1000).toISOString(),
+    tickLockUntil:'',
+    log:pushTaskLog(data.log,'warn',text),
+   };
+   const saved=await tickRun.finish(next);
+   return reply({ok:true,retry:true,waitSec,task:saved});
+  };
   const retryAudienceTick=async(e:unknown)=>{
    const retry=tickRetryPatch(e);
    const saved=await tickRun.finish({...data,...retry.patch},[{level:'warn',text:retry.text}]);
@@ -3469,6 +3473,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   let payload:any=null;
   let result:any=null;
   const sessionErrors:string[]=[];
+  let floodWaitSec=0;
+  let transientOnly=true;
   let tried=0;
   // За тик максимум несколько слотов — иначе AbortSignal/прокси убивают весь тик
   const perTick=Math.min(6,liveIds.length);
@@ -3483,86 +3489,80 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      :(data.sourceAccountId===aid&&data.sourceChannelId&&data.sourceAccessHash)
        ?{channelId:String(data.sourceChannelId),accessHash:String(data.sourceAccessHash)}
        :undefined;
+    const statusFilters=normalizeStatusFilters(data.statusFilters,data.statusFilter);
     result=await post('/collect-audience',{
      ...payload,
      url:data.url,
      collectMode:data.collectMode,
      rangeMode:data.rangeMode,
      messageLimit:data.messageLimit,
+     scannedMessages:Number(data.scannedMessages)||0,
      periodDays:data.periodDays,
      audienceScope:data.audienceScope,
      premiumFilter:data.premiumFilter,
-     statusFilters:normalizeStatusFilters(data.statusFilters,data.statusFilter),
-     statusFilter:normalizeStatusFilters(data.statusFilters,data.statusFilter).length
-       ?normalizeStatusFilters(data.statusFilters,data.statusFilter)[0]
-       :'all',
+     statusFilters,
+     statusFilter:statusFilters.length?statusFilters[0]:'all',
      batchSize:80,
      cursor:data.cursor||'',
-     seenIds:seenIds.slice(-5000),
+     seenIds,
      ...(peerHint?{peerHint}:{}),
     },workerAppTimeoutMs('collect'));
    }catch(e){
     // Worker full / our own timeout: nothing is wrong with the slot or its proxy (REQ-I2)
     if(isRetryableTickError(e))return retryAudienceTick(e);
     const errMsg=String((e as Error).message||e).slice(0,500);
-    sessionErrors.push(errMsg);
-    if(isDeadSessionErr(errMsg)){
-     try{
-      await putAccountUnauthorized(owner,accountId,accMap.get(accountId)||{},{lastError:errMsg});
-      accMap.set(accountId,{...(accMap.get(accountId)||{}),status:'unauthorized'});
-     }catch{/* */}
-     data={...data,log:pushTaskLog(data.log,'warn',`Слот ${bracketLabel(String(accMap.get(accountId)?.name||accountId))}: сессия мертва — следующий`)};
+    if(isDeadSessionError(errMsg)){
+     sessionErrors.push(errMsg);
+     transientOnly=false;
+     try{await putAccountUnauthorized(owner,accountId,accMap.get(accountId)||{},{lastError:errMsg})}catch{/* */}
+     accMap.set(accountId,{...(accMap.get(accountId)||{}),status:'unauthorized'});
+     data={...data,log:pushTaskLog(data.log,'warn',`Слот ${slotName(accountId)}: сессия мертва — следующий`)};
      continue;
     }
-    if(isSlotBlindErr(errMsg)||isProxyOrNetErr(errMsg)){
-     if(isProxyOrNetErr(errMsg)&&!isSlotBlindErr(errMsg)){
-      try{
-       const cur=accMap.get(accountId)||{};
-       if(cur.proxyId)await markProxyTelegramBad(owner,String(cur.proxyId),errMsg).catch(()=>{});
-       await putAccountDisconnected(owner,accountId,cur,{lastError:errMsg,status:'proxy_error'}).catch(()=>{});
-       accMap.set(accountId,{...cur,status:'proxy_error'});
-      }catch{/* */}
-      data={...data,log:pushTaskLog(data.log,'warn',`Слот ${bracketLabel(String(accMap.get(accountId)?.name||accountId))}: прокси/сеть — следующий`)};
-     }else{
-      data={...data,log:pushTaskLog(data.log,'warn',`Слот ${bracketLabel(String(accMap.get(accountId)?.name||accountId))}: не видит источник — следующий`)};
-     }
-     continue;
-    }
-    const next={...data,status:'error',error:errMsg,tickLockUntil:'',accountRotateAt:(Number(data.accountRotateAt)||0)+tried,log:pushTaskLog(data.log,'error',errMsg)};
-    const saved=await tickRun.finish(next);
-    return reply({ok:false,error:errMsg,task:saved},503);
+    // Транспорт до нашего воркера (ECONNREFUSED, 5xx) — не прокси аккаунта (REQ-A2): повтор тика
+    return retryAudienceTick(e);
    }
    if(result?.ok||result?.join==='need_join')break;
    const errMsg=String(result?.error||'Сбор не удался').slice(0,500);
-   if(isDeadSessionErr(errMsg)||result?.status==='disconnected'||result?.status==='unauthorized'){
-    sessionErrors.push(errMsg);
-    try{
-     await putAccountUnauthorized(owner,accountId,accMap.get(accountId)||{},{lastError:errMsg});
-     accMap.set(accountId,{...(accMap.get(accountId)||{}),status:'unauthorized'});
-    }catch{/* */}
-    data={...data,log:pushTaskLog(data.log,'warn',`Слот ${bracketLabel(String(accMap.get(accountId)?.name||accountId))}: tdata/session недействителен — следующий`)};
-    result=null;
+   const failure=classifyCollectFailure(result||{});
+   if(failure.kind==='source')break;
+   if(failure.kind==='timeout')return retryAudienceTick(new Error(errMsg));
+   sessionErrors.push(errMsg);
+   result=null;
+   if(failure.kind==='dead_session'){
+    transientOnly=false;
+    try{await putAccountUnauthorized(owner,accountId,accMap.get(accountId)||{},{lastError:errMsg})}catch{/* */}
+    accMap.set(accountId,{...(accMap.get(accountId)||{}),status:'unauthorized'});
+    data={...data,log:pushTaskLog(data.log,'warn',`Слот ${slotName(accountId)}: tdata/session недействителен — следующий`)};
     continue;
    }
-   if(result?.status==='proxy_error'||isProxyOrNetErr(errMsg)){
-    sessionErrors.push(errMsg);
+   if(failure.kind==='frozen'){
+    transientOnly=false;
+    await saveAccount(accountId,withFrozenStatus(accMap.get(accountId)||{},errMsg)).catch(()=>{});
+    data={...data,log:pushTaskLog(data.log,'warn',`Слот ${slotName(accountId)}: аккаунт заморожен — следующий`)};
+    continue;
+   }
+   if(failure.kind==='flood'){
+    // FloodWait на чтение участников — лимит метода, не статус аккаунта (REQ-A1)
+    floodWaitSec=floodWaitSec?Math.min(floodWaitSec,failure.waitSec):failure.waitSec;
+    data={...data,log:pushTaskLog(data.log,'warn',`Слот ${slotName(accountId)}: FloodWait ${failure.waitSec} с — следующий`)};
+    continue;
+   }
+   if(failure.kind==='proxy'){
+    const cur=accMap.get(accountId)||{};
     try{
-     const cur=accMap.get(accountId)||{};
      if(cur.proxyId)await markProxyTelegramBad(owner,String(cur.proxyId),errMsg).catch(()=>{});
-     await putAccountDisconnected(owner,accountId,cur,{lastError:errMsg,status:'proxy_error'}).catch(()=>{});
-     accMap.set(accountId,{...cur,status:'proxy_error'});
+     await putAccountConnectFailed(owner,accountId,cur,{attempts:1,lastError:errMsg,status:'proxy_error'}).catch(()=>{});
     }catch{/* */}
-    data={...data,log:pushTaskLog(data.log,'warn',`Слот ${bracketLabel(String(accMap.get(accountId)?.name||accountId))}: прокси/сеть — следующий`)};
-    result=null;
+    accMap.set(accountId,{...cur,status:'proxy_error'});
+    data={...data,log:pushTaskLog(data.log,'warn',`Слот ${slotName(accountId)}: прокси/сеть — следующий`)};
     continue;
    }
-   if(result?.usernameMissing||result?.join==='missing'||isSlotBlindErr(errMsg)){
-    sessionErrors.push(errMsg);
-    data={...data,log:pushTaskLog(data.log,'warn',`Слот ${bracketLabel(String(accMap.get(accountId)?.name||accountId))}: не видит источник — следующий`)};
-    result=null;
-    continue;
-   }
-   break;
+   if(failure.kind==='slot_blind')transientOnly=false;
+   data={...data,log:pushTaskLog(data.log,'warn',
+    failure.kind==='slot_blind'
+     ?`Слот ${slotName(accountId)}: не видит источник — следующий`
+     :`Слот ${slotName(accountId)}: ${errMsg.slice(0,120)} — следующий`)};
   }
   // Если за тик не нашли рабочий слот, но слоты ещё есть — не паузим, крутим дальше
   if(!result&&liveIds.length>perTick){
@@ -3576,6 +3576,73 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const saved=await tickRun.finish(next);
    return reply({ok:false,rotated:true,error:sessionErrors[0]||'rotate',task:saved});
   }
+  if(!result&&floodWaitSec)return waitTick(floodWaitSec,`FloodWait у всех слотов — пауза ${floodWaitSec} с`);
+  if(!result&&transientOnly&&sessionErrors.length){
+   return waitTick(JOIN_GATE_ROTATE_WAIT_SEC,`Сбой Telegram у слотов — повтор через ${JOIN_GATE_ROTATE_WAIT_SEC} с`,{accountRotateAt:(Number(data.accountRotateAt)||0)+tried});
+  }
+  /** Слот не в источнике: вступаем через общий гейт квоты/темпа (REQ-A4), заявка → пауза (REQ-A3). */
+  const joinAudienceSource=async()=>{
+   const account=accMap.get(accountId)||{};
+   const gate=audienceJoinGate(String(data.url||''),accountId,account,liveIds.length>1);
+   const rotate={accountRotateAt:(Number(data.accountRotateAt)||0)+1};
+   if(!gate.ok)return waitTick(gate.waitSec,`Слот ${slotName(accountId)}: ${gate.message} — вступим позже`,rotate);
+   const joinRes=await post('/join-group',{...payload,url:data.url},workerAppTimeoutMs('join'));
+   const step=interpretAudienceJoin(joinRes,account,accountId);
+   if(step.kind==='flood'){
+    await saveAccount(accountId,step.account);
+    return waitTick(step.waitSec,`Слот ${slotName(accountId)}: FloodWait на вступление ${step.waitSec} с`,rotate);
+   }
+   if(step.kind==='frozen'){
+    await saveAccount(accountId,step.account);
+    return waitTick(JOIN_GATE_ROTATE_WAIT_SEC,`Слот ${slotName(accountId)}: аккаунт заморожен — следующий`,rotate);
+   }
+   if(step.kind==='pending'){
+    await saveAccount(accountId,step.account);
+    const next={
+     ...data,
+     ...(step.peer||{}),
+     status:'paused',
+     error:JOIN_PENDING_ERROR,
+     nextAt:'',
+     tickLockUntil:'',
+     log:pushTaskLog(data.log,'warn',JOIN_PENDING_ERROR),
+    };
+    const saved=await tickRun.finish(next);
+    return reply({ok:false,pending:true,error:next.error,task:saved});
+   }
+   if(step.kind==='member'){
+    if(step.account)await saveAccount(accountId,step.account);
+    const next={...data,...(step.peer||{}),tickLockUntil:'',log:pushTaskLog(data.log,'ok','Вступили в источник')};
+    const saved=await tickRun.finish(next);
+    return reply({ok:true,joined:true,task:saved});
+   }
+   const joinErr=step.error;
+   const joinBlind=!!joinRes.usernameMissing||joinRes.join==='missing'||isSlotBlindError(joinErr);
+   if(joinBlind||isDeadSessionError(joinErr)){
+    if(isDeadSessionError(joinErr)){
+     try{await putAccountUnauthorized(owner,accountId,account,{lastError:joinErr})}catch{/* */}
+    }
+    // Ротация: пробуем следующий слот на следующем тике
+    const next={
+     ...data,
+     status:'running',
+     ...rotate,
+     tickLockUntil:'',
+     log:pushTaskLog(data.log,'warn',`Слот ${slotName(accountId)}: join не удался — следующий`),
+    };
+    const saved=await tickRun.finish(next);
+    return reply({ok:false,needJoin:true,rotated:true,error:joinErr.slice(0,300),task:saved});
+   }
+   const next={
+    ...data,
+    status:'error',
+    error:joinErr.slice(0,500)||'Не удалось вступить',
+    tickLockUntil:'',
+    log:pushTaskLog(data.log,'error',joinErr.slice(0,200)||'join failed'),
+   };
+   const saved=await tickRun.finish(next);
+   return reply({ok:false,error:next.error,task:saved,needJoin:true});
+  };
   try{
    if(!result){
     const errMsg=(sessionErrors[0]||'Нет рабочих сессий для сбора').slice(0,500);
@@ -3590,42 +3657,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     const saved=await tickRun.finish(next);
     return reply({ok:false,error:errMsg,task:saved});
    }
-   if(result.join==='need_join'){
-    const joinRes=await post('/join-group',{...payload,url:data.url},workerAppTimeoutMs('join'));
-    const joinErr=String(joinRes.error||'');
-    const joinBlind=!!joinRes.usernameMissing||joinRes.join==='missing'||isSlotBlindErr(joinErr);
-    if(!joinRes.ok&&joinRes.join!=='already'){
-     if(joinBlind||isDeadSessionErr(joinErr)){
-      if(isDeadSessionErr(joinErr)){
-       try{
-        await putAccountUnauthorized(owner,accountId,accMap.get(accountId)||{},{lastError:joinErr});
-       }catch{/* */}
-      }
-      // Ротация: пробуем следующий слот на следующем тике
-      const next={
-       ...data,
-       status:'running',
-       accountRotateAt:(Number(data.accountRotateAt)||0)+1,
-       tickLockUntil:'',
-       log:pushTaskLog(data.log,'warn',`Слот ${bracketLabel(String(accMap.get(accountId)?.name||accountId))}: join не удался — следующий`),
-      };
-      const saved=await tickRun.finish(next);
-      return reply({ok:false,needJoin:true,rotated:true,error:joinErr.slice(0,300),task:saved});
-     }
-     const next={
-      ...data,
-      status:'error',
-      error:joinErr.slice(0,500)||'Не удалось вступить',
-      tickLockUntil:'',
-      log:pushTaskLog(data.log,'error',joinErr.slice(0,200)||'join failed'),
-     };
-     const saved=await tickRun.finish(next);
-     return reply({ok:false,error:next.error,task:saved,needJoin:true});
-    }
-    data={...data,tickLockUntil:'',log:pushTaskLog(data.log,'ok','Вступили в источник')};
-    const saved=await tickRun.finish(data);
-    return reply({ok:true,joined:true,task:saved});
-   }
+   if(result.join==='need_join')return await joinAudienceSource();
    if(!result.ok){
     const errMsg=String(result.error||'Сбор не удался').slice(0,500);
     const next={...data,status:'error',error:errMsg,tickLockUntil:'',log:pushTaskLog(data.log,'error',errMsg)};
@@ -3633,12 +3665,12 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     return reply({ok:false,error:errMsg,trace:result.trace||'',task:saved});
    }
    const seen=new Set(seenIds);
-   let added=0;
+   const fresh:AudienceUserData[]=[];
    for(const u of result.users||[]){
     const userId=String(u.userId||'');
     if(!userId||seen.has(userId))continue;
     seen.add(userId);
-    const userData={
+    fresh.push({
      taskId:id,
      userId,
      username:String(u.username||'').slice(0,64),
@@ -3649,11 +3681,11 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      invited:false,
      accessHash:String(u.accessHash||'').slice(0,40),
      collectedByAccountId:accountId,
-    };
-    await db.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)').bind(crypto.randomUUID(),owner,'audience_user',JSON.stringify(userData),null,new Date().toISOString()).run();
-    added++;
+    });
    }
+   const added=await insertAudienceUsers(db,owner,id,fresh);
    const collected=(Number(data.collected)||0)+added;
+   const scannedMessages=(Number(data.scannedMessages)||0)+(Number(result.messagesScanned)||0);
    // hasMore от воркера — даже если батч пустой из‑за фильтров, продолжаем курсор
    const hasMore=result.hasMore===true;
    const cursorSame=String(result.cursor||'')===String(data.cursor||'');
@@ -3663,9 +3695,12 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    // Не стопаем по streak, пока hasMore и курсор двигается
    const forceDone=(!added&&(!hasMore||(cursorSame&&emptyStreak>=3)));
    const done=!hasMore||hitLimit||forceDone;
+   const warning=String(result.warning||'').slice(0,300);
+   const log=warning?pushTaskLog(data.log,'warn',warning):data.log;
    const next={
     ...data,
     collected,
+    scannedMessages,
     total:Math.max(Number(data.total)||0,collected),
     cursor:String(result.cursor||data.cursor||''),
     hasMore:!done&&hasMore,
@@ -3677,8 +3712,9 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     accountRotateAt:preferId&&accountId===preferId?(Number(data.accountRotateAt)||0):(Number(data.accountRotateAt)||0)+1,
     tickLockUntil:'',
     error:forceDone&&!collected?'Фильтры слишком жёсткие — никого не нашли':'',
+    ...(warning?{warning}:{}),
     log:pushTaskLog(
-     data.log,
+     log,
      added?'ok':(done?'ok':'info'),
      done
       ?(added?`Сбор завершён · ${collected}`:`Сбор завершён · некого собирать · ${collected}`)
@@ -3699,14 +3735,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const format=z.enum(['json','csv']).default('csv').parse(b.format??'csv');
   const row:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'audience_task').first();
   if(!row)return reply({error:'Задача сбора не найдена'},404);
-  const all=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='audience_user'").bind(owner).all();
-  const users:any[]=[];
-  for(const r of all.results){
-   try{
-    const u=JSON.parse(String(r.data));
-    if(u.taskId===id)users.push(u);
-   }catch{/* */}
-  }
+  const users:any[]=await listAudienceUsers(db,owner,id);
   if(format==='json')return reply({ok:true,format,users,count:users.length});
   const lines=['userId,username,name,premium,status'];
   for(const u of users){

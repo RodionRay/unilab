@@ -59,6 +59,8 @@ export const TICK_PROGRESS_KEYS: Readonly<Record<TickTaskKind, readonly string[]
     "sourceChannelId",
     "sourceAccessHash",
     "sourceAccountId",
+    "scannedMessages",
+    "warning",
   ],
 };
 
