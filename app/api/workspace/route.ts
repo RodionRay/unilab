@@ -1,5 +1,5 @@
 import {getSessionUser} from '@/lib/auth';
-import {GROUP_CATALOG,isCatalogPlaceholderUrl} from '@/lib/group-catalog';
+import {catalogForProject,isCatalogPlaceholderUrl} from '@/lib/group-catalog';
 import {JOIN_SUCCESS_PATCH,JOIN_WORKER_ERROR_RETRY_MS,accountBlindPatch,type JoinAccountState,type JoinProxyState,evaluateAccountJoinReadiness,isAccountBlindResult,isAccountResolveBlind,isJoinFarmCandidate,joinFailurePatch,planGroupHeal,sanitizeJoinStateError} from '@/lib/processes/join-flow';
 import {database,seal,unseal} from '@/lib/server-store';
 import {aiChatText,envAiApiKey,resolveAiConfig} from '@/lib/ai-client';
@@ -2729,7 +2729,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   if(!healed.ok&&!healed.reassigned)return reply({error:healed.error||'Нет живых аккаунтов',reassigned:0,items:[]},400);
   return reply({ok:true,reassigned:healed.reassigned,items:healed.items,liveAccounts:healed.liveAccounts||0});
  }
- /** Залить весь каталог (verified t.me) в «Группы и каналы» текущего workspace. */
+ /** Залить verified-чаты каталога с узкими нишами проекта (lib/group-catalog.ts::catalogForProject), не весь каталог. */
  if(b.action==='import_catalog'){
   const accountId=typeof b.accountId==='string'?b.accountId:'';
   if(accountId){
@@ -2748,7 +2748,9 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     if(k)byUrl.set(k,String(r.id));
    }catch{/* */}
   }
-  const ready=GROUP_CATALOG.filter(g=>g.verified&&g.url&&!isCatalogPlaceholderUrl(g.url));
+  const settingsRow=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='settings' LIMIT 1").bind(owner).first<{data:string}>();
+  const {niches,groups:ready}=catalogForProject(settingsRow?JSON.parse(String(settingsRow.data)):{});
+  if(!ready.length)return reply({error:'В настройках AI нет ниш продукта — опишите продукт или выберите чаты в каталоге вручную'},400);
   let added=0;
   let skipped=0;
   const created:{id:string;name:string;url:string}[]=[];
@@ -2780,7 +2782,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    added++;
    created.push({id,name:g.name,url});
   }
-  return reply({ok:true,added,skipped,total:ready.length,created:created.slice(0,20)});
+  return reply({ok:true,added,skipped,total:ready.length,niches,created:created.slice(0,20)});
  }
  if(b.action==='mark_auto_rescan'){
   const config:any=await db.prepare('SELECT * FROM records WHERE owner=? AND kind=? LIMIT 1').bind(owner,'settings').first();

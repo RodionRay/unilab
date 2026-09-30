@@ -715,12 +715,52 @@ export function isCatalogPlaceholderUrl(url: string): boolean {
   return catalogPlaceholderUsernames().has(name);
 }
 
-export function nichesFromProjectText(...parts: (string | undefined)[]): GroupNiche[] {
-  const text = parts.filter(Boolean).join(" ").toLowerCase();
+function nicheWords(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/[^\p{L}\p{N}\s-]/gu, " ")
+    .split(/[\s-]+/)
+    .filter(Boolean);
+}
+
+/** Word-start match, so «автоматизация» is not «авто»; a short alias (wb, ям) may only take an ending. */
+function aliasMatchesWord(alias: string, word: string): boolean {
+  if (alias.length <= 4) return word === alias || (word.startsWith(alias) && word.length <= alias.length + 2);
+  return word.startsWith(alias);
+}
+
+/** Aliases too generic to prove a chat is on-topic, whatever niche they map to. */
+export const GENERIC_NICHE_ALIASES: ReadonlySet<string> = new Set([
+  "сервис",
+  "сервисы",
+  "telegram",
+  "автоматиз",
+  "интеграц",
+  "бот",
+  "чат-бот",
+  "цен",
+]);
+
+function aliasNiches(parts: (string | undefined)[], skipAliases: ReadonlySet<string> = new Set()): Set<GroupNiche> {
+  const words = nicheWords(parts.filter(Boolean).join(" "));
   const found = new Set<GroupNiche>();
   for (const [alias, niches] of Object.entries(NICHE_ALIASES)) {
-    if (text.includes(alias)) niches.forEach((n) => found.add(n));
+    if (skipAliases.has(alias)) continue;
+    const aliasWords = nicheWords(alias);
+    for (let i = 0; i + aliasWords.length <= words.length; i++) {
+      if (aliasWords.every((a, j) => aliasMatchesWord(a, words[i + j]!))) {
+        niches.forEach((n) => found.add(n));
+        break;
+      }
+    }
   }
+  return found;
+}
+
+export function nichesFromProjectText(...parts: (string | undefined)[]): GroupNiche[] {
+  const text = parts.filter(Boolean).join(" ").toLowerCase();
+  const found = aliasNiches(parts);
   if (!found.size && /продаж|товар|кабинет|fbo|fbs|услуг|клиент|заявк/.test(text)) {
     found.add("business");
     found.add("saas");
@@ -728,6 +768,59 @@ export function nichesFromProjectText(...parts: (string | undefined)[]): GroupNi
     found.add("b2b");
   }
   return [...found];
+}
+
+/** Niches too wide to prove a catalog chat is on-topic (every blog is «business/marketing»). */
+export const BROAD_NICHES: ReadonlySet<GroupNiche> = new Set<GroupNiche>([
+  "blogs",
+  "business",
+  "marketing",
+  "smm",
+  "content",
+  "leadgen",
+  "startup",
+  "networking",
+  "freelance",
+  "education",
+  "b2b",
+  "design",
+  "hr",
+]);
+
+export type ProjectNicheText = {
+  product?: string;
+  audience?: string;
+  keywords?: string;
+  leadCriteria?: string;
+  hotSignals?: string;
+  name?: string;
+  pains?: string;
+  valueProps?: string;
+};
+
+/**
+ * Verified catalog chats that share a narrow niche with the project settings.
+ * No narrow niche named in the settings → nothing (no generic-word guess): bulk import must never
+ * dump the whole catalog.
+ */
+export function catalogForProject(settings: ProjectNicheText): { niches: GroupNiche[]; groups: CatalogGroup[] } {
+  const found = aliasNiches([
+    settings.product,
+    settings.audience,
+    settings.keywords,
+    settings.leadCriteria,
+    settings.hotSignals,
+    settings.name,
+    settings.pains,
+    settings.valueProps,
+  ], GENERIC_NICHE_ALIASES);
+  const niches = [...found].filter((n) => !BROAD_NICHES.has(n));
+  if (!niches.length) return { niches: [], groups: [] };
+  const wanted = new Set(niches);
+  const groups = GROUP_CATALOG.filter(
+    (g) => g.verified && g.url && !isCatalogPlaceholderUrl(g.url) && g.niches.some((n) => wanted.has(n)),
+  );
+  return { niches, groups };
 }
 
 export type CatalogHit = CatalogGroup & {
