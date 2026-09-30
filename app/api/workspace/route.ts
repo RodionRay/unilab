@@ -25,6 +25,7 @@ import {
 import {appendLearnExamples,extractTermsFromHotMessages,extractStopTermsFromMessage,mergeKeywords,mergeKeywordsPreferNew,parseKeywordCsv} from '@/lib/ai-keywords';
 import {sanitizeMinusTerms,scanStopTerms} from '@/lib/lead-stopwords';
 import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpChatCounters,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasInviteQuota,hasMemberInviteQuota,hasMessageQuota,isAccountUsable,isDayLimitCooldown,isOnCooldown,joinWaitSec,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
+import {INVITE_SOFT_FAIL_LIMIT,interpretInviteWorkerResult,inviteAccountStillLive,inviteBatchLimit,inviteUserPatch} from '@/lib/processes/invite-tick';
 import {bracketLabel,formatRuWhen,inviteUserFailText,inviteUserOkText,normalizeStatusFilters,normalizeTgRef,pushTaskLog,pushTaskLogs,randomPauseSec} from '@/lib/audience-invite';
 import {canonicalizeTgUrl,duplicateReason,isDuplicateKind,telegramEntityKey} from '@/lib/record-identity';
 import {
@@ -327,6 +328,10 @@ const schemas={
   total:z.coerce.number().int().min(0).default(0),
   invitedToday:z.coerce.number().int().min(0).default(0),
   inviteDay:z.string().max(20).default(''),
+  /** Уже были в целевой группе — не инвайт, квоту не тратят */
+  alreadyMembers:z.coerce.number().int().min(0).default(0),
+  /** Постоянно пропущены (privacy и т.п.) */
+  skipped:z.coerce.number().int().min(0).default(0),
   nextAt:z.string().max(40).default(''),
   accountIndex:z.coerce.number().int().min(0).default(0),
   cursorUserId:z.string().max(40).default(''),
@@ -3661,14 +3666,10 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    return reply({ok:true,task:next,already:true});
   }
   // Пересчитать total из базы аудитории
-  const users=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='audience_user'").bind(owner).all();
-  let total=0;
-  for(const r of users.results){
-   try{
-    const u=JSON.parse(String(r.data));
-    if(u.taskId===data.audienceTaskId&&!u.invited)total++;
-   }catch{/* */}
-  }
+  const left:any=await db.prepare(`SELECT COUNT(*) AS n FROM records WHERE owner=? AND kind='audience_user'
+   AND json_extract(data,'$.taskId')=? AND coalesce(json_extract(data,'$.invited'),0)=0
+   AND coalesce(json_extract(data,'$.inviteSoftFails'),0)<${INVITE_SOFT_FAIL_LIMIT}`).bind(owner,String(data.audienceTaskId||'')).first();
+  const total=Number(left?.n)||0;
   const next={
    ...data,
    total:Math.max(Number(data.done)||0,Number(data.total)||0,total+(Number(data.done)||0)),
@@ -3696,10 +3697,16 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const day=moscowDayKey();
   let invitedToday=Number(data.invitedToday)||0;
   if(data.inviteDay!==day){invitedToday=0;data={...data,inviteDay:day,invitedToday:0}}
-  if(data.dailyLimitEnabled&&invitedToday>=Number(data.dailyLimit||50)){
-   const next={...data,status:'paused',tickLockUntil:'',log:pushTaskLog(data.log,'warn','Дневной лимит задачи достигнут')};
+  // Дневной лимит задачи: батч не больше остатка; исчерпан — ждём полуночи МСК (REQ-V3)
+  const batchSize=inviteBatchLimit(data,invitedToday);
+  if(!batchSize){
+   const resumeIso=moscowNextMidnightIso();
+   const next={...data,status:'scheduled',error:'',nextAt:resumeIso,tickLockUntil:'',log:pushTaskLogs(data.log,[
+    {level:'warn',text:`Дневной лимит задачи достигнут (${invitedToday})`},
+    {level:'info',text:`Задача продолжится автоматически ${formatRuWhen(resumeIso)}`},
+   ])};
    const saved=await tickRun.finish(next);
-   return reply({ok:true,dailyLimit:true,task:saved});
+   return reply({ok:true,dailyLimit:true,scheduled:true,task:saved});
   }
   const accountIds:string[]=Array.isArray(data.accountIds)?data.accountIds:[];
   if(!accountIds.length){
@@ -3794,38 +3801,27 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   if(accountIndex>=liveIds.length)accountIndex=0;
   const accountId=liveIds[accountIndex%liveIds.length];
   const accountLabel=accName(accountId);
-  // Кандидаты из базы — сначала с username (иначе get_input_entity(id) часто падает)
-  const allUsers=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='audience_user'").bind(owner).all();
-  const batchSize=Math.max(1,Math.min(20,Number(data.batchSize)||1));
-  const candidates:{id:string;userId:string;username:string;accessHash:string;accountId:string}[]=[];
-  for(const r of allUsers.results){
+  // Кандидаты — SQL-фильтр по аудитории задачи + LIMIT (REQ-V6): сначала собранные этим же слотом
+  // (accessHash валиден), затем с username (иначе get_input_entity(id) часто падает)
+  const candidateRows=await db.prepare(`SELECT id,data FROM records WHERE owner=? AND kind='audience_user'
+   AND json_extract(data,'$.taskId')=? AND coalesce(json_extract(data,'$.invited'),0)=0
+   AND coalesce(json_extract(data,'$.inviteSoftFails'),0)<${INVITE_SOFT_FAIL_LIMIT}
+   ORDER BY coalesce(json_extract(data,'$.collectedByAccountId'),json_extract(data,'$.accountId'),'')=? DESC,
+    coalesce(json_extract(data,'$.username'),'')<>'' DESC, created, id
+   LIMIT ?`).bind(owner,String(data.audienceTaskId||''),accountId,batchSize).all();
+  const batch:{id:string;userId:string;username:string;accessHash:string;accountId:string}[]=[];
+  for(const r of candidateRows.results){
    try{
     const u=JSON.parse(String(r.data));
-    if(u.taskId!==data.audienceTaskId||u.invited)continue;
-    if(Number(u.inviteSoftFails||0)>=3){
-     // После 3 soft-fail — списываем, чтобы не крутить вечно
-     try{
-      await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...u,invited:true,skipReason:u.skipReason||'soft_fail_limit'}),owner,String(r.id),'audience_user').run();
-     }catch{/* */}
-     continue;
-    }
-    candidates.push({
+    batch.push({
      id:String(r.id),
      userId:String(u.userId),
      username:String(u.username||''),
      accessHash:String(u.accessHash||''),
-     accountId:String(u.accountId||''),
+     accountId:String(u.collectedByAccountId||u.accountId||''),
     });
-   }catch{/* */}
+   }catch{/* битая строка аудитории — пропускаем */}
   }
-  // Предпочитаем юзеров этого же слота (accessHash валиден) и с username
-  candidates.sort((a,b)=>{
-   const aSame=a.accountId&&a.accountId===accountId?1:0;
-   const bSame=b.accountId&&b.accountId===accountId?1:0;
-   if(aSame!==bSame)return bSame-aSame;
-   return (b.username?1:0)-(a.username?1:0);
-  });
-  const batch=candidates.slice(0,batchSize);
   if(!batch.length){
    const next={...data,status:'completed',hasMore:false,tickLockUntil:'',log:pushTaskLog(data.log,'ok',`Готово · ${data.done||0} инвайтов`)};
    const saved=await tickRun.finish(next);
@@ -3844,7 +3840,19 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    tickRun.finish({...data,...patch},entries);
   // Прогресс до сбоя (для catch): инвайты, уже отмеченные в базе аудитории
   let okN=0;
-  const progressPatch=()=>({done:(Number(data.done)||0)+okN,invitedToday:invitedToday+okN,inviteDay:day});
+  let alreadyN=0;
+  let skippedN=0;
+  const progressPatch=()=>({
+   done:(Number(data.done)||0)+okN,
+   invitedToday:invitedToday+okN,
+   inviteDay:day,
+   alreadyMembers:(Number(data.alreadyMembers)||0)+alreadyN,
+   skipped:(Number(data.skipped)||0)+skippedN,
+  });
+  const updateInviteAccount=async(aid:string,next:Record<string,unknown>)=>{
+   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,aid,'account').run();
+   accMap.set(aid,next);
+  };
   try{
    const {payload,account}=await loadAccountSessionPayload(owner,accountId);
    const joinRes=await post('/join-group',{...payload,url:data.targetUrl},workerAppTimeoutMs('join'));
@@ -3855,14 +3863,24 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...(accMap.get(accountId)||{}),...accountBlindPatch(),error:String(joinRes.error||'').slice(0,500)}),owner,accountId,'account').run();
     }
     logEntries.push({level:'error',text:`Аккаунт ${bracketLabel(accountLabel)} не смог вступить в группу: ${String(joinRes.error||'').slice(0,120)}`});
+    // Цель не видит ни один живой слот подряд — это цель, а не ферма: стоп вместо вечной ротации (REQ-V2)
+    const targetMiss=['missing','private'].includes(String(joinRes.join||''))&&!isAccountBlindResult(joinRes);
+    const targetMissStreak=targetMiss?(Number(data.targetMissStreak)||0)+1:0;
+    if(targetMissStreak>=liveIds.length){
+     const error=`Целевая группа недоступна ни одному аккаунту: ${String(joinRes.error||'не найдена').slice(0,300)}`;
+     const next=await persistInviteTask({status:'error',error,nextAt:'',targetMissStreak:0},[...logEntries,{level:'error',text:error}]);
+     return reply({ok:false,error,targetError:'target_missing',task:next});
+    }
     logEntries.push({level:'info',text:`Ожидание ${pause} секунд`});
     const next=await persistInviteTask({
      accountIndex:(accountIndex+1)%liveIds.length,
      nextAt:new Date(Date.now()+pause*1000).toISOString(),
      status:'running',
+     targetMissStreak,
     },logEntries);
     return reply({ok:true,needJoin:true,task:next});
    }
+   data={...data,targetMissStreak:0};
    if(sourceUrl){
     try{await post('/join-group',{...payload,url:sourceUrl},workerAppTimeoutMs('join'))}catch{/* источник опционален */}
    }
@@ -3878,100 +3896,74 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     })),
    },workerAppTimeoutMs('invite'));
 
-   // PEER_FLOOD / spamblock / frozen → статус аккаунта. FloodWait — только пауза тика.
-   let accountWentCooldown=false;
-   let cooldownUntil='';
-   if(result.status==='spamblock'||String(result.error||'').includes('PEER_FLOOD')){
-    cooldownUntil=cooldownHoursFromNow(24);
-    accountWentCooldown=true;
+   // Разбор ответа — lib/processes/invite-tick.ts (REQ-V7). Квота слота бампится за реальные инвайты
+   // при любом исходе, в т.ч. FloodWait (REQ-V5); «уже в группе» квоту не тратит (REQ-V4).
+   const accRow:any=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,accountId,'account').first();
+   const accBefore=accRow?JSON.parse(accRow.data):(accMap.get(accountId)||{});
+   const outcome=interpretInviteWorkerResult(result,accBefore);
+   if(outcome.accountPatch){
+    const accountPatch=outcome.kind==='account_blind'?{...outcome.accountPatch,...accountBlindPatch()}:outcome.accountPatch;
+    await updateInviteAccount(accountId,accountPatch);
+   }else if(outcome.kind==='account_blind'){
+    await updateInviteAccount(accountId,{...accBefore,...accountBlindPatch(),error:outcome.message});
+   }
+   if(outcome.kind==='spamblock'){
     logEntries.push({level:'error',text:`Аккаунт ${bracketLabel(accountLabel)} получил блокировку на неопределённое время (PEER_FLOOD)`});
-    logEntries.push({level:'info',text:`Аккаунт ${bracketLabel(accountLabel)} ушёл в спамблок до ${formatRuWhen(cooldownUntil)}`});
-    const arow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,accountId,'account').first();
-    if(arow){
-     const adata=JSON.parse(arow.data);
-     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(withSpamblockStatus(adata,'PEER_FLOOD')),owner,accountId,'account').run();
-    }
-   }else if(result.status==='frozen'){
-    accountWentCooldown=true;
+    logEntries.push({level:'info',text:`Аккаунт ${bracketLabel(accountLabel)} ушёл в спамблок до ${formatRuWhen(String(outcome.accountPatch?.cooldownUntil||''))}`});
+   }else if(outcome.kind==='frozen'){
     logEntries.push({level:'error',text:`Аккаунт ${bracketLabel(accountLabel)} заморожен`});
-    const arow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,accountId,'account').first();
-    if(arow){
-     const adata=JSON.parse(arow.data);
-     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(withFrozenStatus(adata,result.error||'')),owner,accountId,'account').run();
-    }
    }
 
-   // Сначала разбираем успешные из батча — даже при FloodWait
-   for(const r of result.results||[]){
-    const hit=batch.find(x=>x.userId===String(r.userId));
-    const uname=String(r.username||hit?.username||'');
-    const uid=String(r.userId||hit?.userId||'');
-    if(r.ok){
-     okN++;
-     logEntries.push({level:'ok',text:inviteUserOkText(uname,uid)});
-     if(hit){
-      const urow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,hit.id,'audience_user').first();
-      if(urow){
-       const ud=JSON.parse(urow.data);
-       await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...ud,invited:true,skipReason:''}),owner,hit.id,'audience_user').run();
-      }
-     }
-    }else{
-     const reason=String(r.error||'fail').slice(0,120);
-     logEntries.push({level:'error',text:inviteUserFailText(uname,reason,uid)});
-     if(hit){
-      const softFail=/no_entity|privacy|USER_PRIVACY|не удалось|access_hash/i.test(reason);
-      const urow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,hit.id,'audience_user').first();
-      if(urow){
-       const ud=JSON.parse(urow.data);
-       // soft: не помечаем invited — другой слот может пройти
-       if(softFail){
-        await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...ud,invited:false,skipReason:reason,inviteSoftFails:(Number(ud.inviteSoftFails)||0)+1}),owner,hit.id,'audience_user').run();
-       }else{
-        await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...ud,invited:true,skipReason:reason}),owner,hit.id,'audience_user').run();
-       }
-      }
-     }
-    }
+   const byUserId=new Map(batch.map(x=>[x.userId,x]));
+   for(const u of outcome.users){
+    const hit=byUserId.get(u.userId);
+    const uname=u.username||hit?.username||'';
+    logEntries.push(u.verdict==='invited'
+     ?{level:'ok',text:inviteUserOkText(uname,u.userId)}
+     :{level:u.verdict==='already'?'info':'error',text:inviteUserFailText(uname,u.reason,u.userId)});
+    if(!hit)continue;
+    const urow:any=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,hit.id,'audience_user').first();
+    if(!urow)continue;
+    const ud=JSON.parse(urow.data);
+    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...ud,...inviteUserPatch(u,ud)}),owner,hit.id,'audience_user').run();
    }
+   okN=outcome.okN;
+   alreadyN=outcome.alreadyN;
+   skippedN=outcome.skippedN;
 
-   if(result.status==='floodwait'||Number(result.floodWait)>0){
-    const waitSec=Math.max(60,Number(result.floodWait)||900);
-    logEntries.push({level:'error',text:`Аккаунт ${bracketLabel(accountLabel)} получил FloodWait ${waitSec}с — пауза тика`});
+   if(outcome.kind==='target_error'){
+    // Ошибка цели (нет прав, группа полна, канал, нет цели): останавливаем, пользователей не отмечаем (REQ-V2)
+    logEntries.push({level:'error',text:outcome.message});
+    const channel=outcome.code==='broadcast'?{channelTargetUrl:String(data.targetUrl||'')}:{};
+    const next=await persistInviteTask({...progressPatch(),...channel,status:'error',error:outcome.message,nextAt:''},logEntries);
+    return reply({ok:false,error:outcome.message,targetError:outcome.code,invited:okN,task:next});
+   }
+   if(outcome.kind==='flood'||outcome.kind==='account_blind'){
+    const waitSec=outcome.kind==='flood'?outcome.waitSec:randomPauseSec(data.pauseFromSec,data.pauseToSec);
+    logEntries.push(outcome.kind==='flood'
+     ?{level:'error',text:`Аккаунт ${bracketLabel(accountLabel)} получил FloodWait ${waitSec}с — пауза тика`}
+     :{level:'error',text:`Аккаунт ${bracketLabel(accountLabel)} не резолвит цель: ${outcome.message.slice(0,120)}`});
     logEntries.push({level:'info',text:`Ожидание ${waitSec} секунд`});
     const next=await persistInviteTask({
-     done:(Number(data.done)||0)+okN,
-     invitedToday:invitedToday+okN,
-     inviteDay:day,
+     ...progressPatch(),
      accountIndex:(accountIndex+1)%liveIds.length,
      nextAt:new Date(Date.now()+waitSec*1000).toISOString(),
      status:'running',
     },logEntries);
-    return reply({ok:true,invited:okN,task:next,floodWait:waitSec});
+    return reply({ok:true,invited:okN,task:next,floodWait:outcome.kind==='flood'?waitSec:undefined});
    }
 
-   const arow2:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,accountId,'account').first();
-   if(arow2&&okN&&!accountWentCooldown){
-    const adata=JSON.parse(arow2.data);
-    const mday=adata.memberInviteDay===day?Number(adata.memberInvitesToday)||0:0;
-    const bumped=applyQuotaCooldownIfExhausted({...adata,memberInviteDay:day,memberInvitesToday:mday+okN});
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(bumped),owner,accountId,'account').run();
-    accMap.set(accountId,bumped);
-   }
-
-   const stillLive=liveIds.filter(aid=>{
-    if(aid!==accountId)return true;
-    if(accountWentCooldown)return false;
-    return hasMemberInviteQuota(accMap.get(accountId));
-   });
+   const accountWentCooldown=outcome.wentCooldown;
+   const stillLive=liveIds.filter(aid=>aid!==accountId||inviteAccountStillLive(accMap.get(accountId),accountWentCooldown));
    if(!stillLive.length){
-    const resumeIso=accountWentCooldown?(cooldownUntil||cooldownHoursFromNow(24)):moscowNextMidnightIso();
-    logEntries.push({level:'info',text:accountWentCooldown?'Нет активных аккаунтов':'Ферма: дневной лимит инвайтов, берём следующий аккаунт после полуночи'});
+    const spamUntil=String(outcome.accountPatch?.cooldownUntil||'');
+    const resumeIso=outcome.kind==='spamblock'||outcome.kind==='frozen'
+     ?(spamUntil&&Date.parse(spamUntil)>Date.now()?spamUntil:cooldownHoursFromNow(24))
+     :moscowNextMidnightIso();
+    logEntries.push({level:'info',text:outcome.kind==='batch'?'Ферма: дневной лимит инвайтов, берём следующий аккаунт после полуночи':'Нет активных аккаунтов'});
     logEntries.push({level:'info',text:`Задача остановлена и запустится автоматически ${formatRuWhen(resumeIso)}`});
     const next=await persistInviteTask({
-     done:(Number(data.done)||0)+okN,
-     invitedToday:invitedToday+okN,
-     inviteDay:day,
+     ...progressPatch(),
      accountIndex:0,
      lastTickAt:new Date().toISOString(),
      nextAt:resumeIso,
@@ -3983,14 +3975,11 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
 
    const pause=randomPauseSec(data.pauseFromSec,data.pauseToSec);
    logEntries.push({level:'info',text:`Ожидание ${pause} секунд`});
-   const nextLive=stillLive.length?stillLive:liveIds;
    const nextIndex=accountWentCooldown
     ?0
-    :(accountIndex+1)%nextLive.length;
+    :(accountIndex+1)%stillLive.length;
    const next=await persistInviteTask({
-    done:(Number(data.done)||0)+okN,
-    invitedToday:invitedToday+okN,
-    inviteDay:day,
+    ...progressPatch(),
     accountIndex:nextIndex,
     lastTickAt:new Date().toISOString(),
     nextAt:new Date(Date.now()+pause*1000).toISOString(),
@@ -5010,6 +4999,12 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
  if(kind==='invite_task'){
   data.targetUrl=canonicalizeTgUrl(normalizeTgRef(data.targetUrl));
   if(!data.name)data.name=data.targetUrl;
+  // Канал (витрина) не принимает инвайты: известен как канал-источник аудитории или по прошлому тику (REQ-V2)
+  const knownChannel=await db.prepare(`SELECT id FROM records WHERE owner=? AND (
+   (kind='audience_task' AND json_extract(data,'$.sourceKind')='channel' AND json_extract(data,'$.url')=?)
+   OR (kind='invite_task' AND json_extract(data,'$.channelTargetUrl')=?)
+  ) LIMIT 1`).bind(owner,data.targetUrl,data.targetUrl).first();
+  if(knownChannel)return reply({error:'Цель — канал, не группа: инвайт участников работает только в супергруппу или чат'},400);
  }
  if(kind==='audience_task'||kind==='invite_task'||kind==='mailing_task'){
   const ids:string[]=Array.isArray(data.accountIds)?data.accountIds:[];
