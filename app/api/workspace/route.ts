@@ -42,7 +42,7 @@ import {
 } from '@/lib/mailing';
 import {checkProxyTarget} from '@/lib/security/net-guard';
 import {proxyCheckTimeoutMs,workerAppTimeoutMs,workerSlots} from '@/lib/worker-timeouts';
-import {TickLockLostError,WorkerBusyError,isAbortTimeout,isRetryableTickError,tickRetryPatch} from '@/lib/processes/tick-retry';
+import {WorkerBusyError,isRetryableTickError,tickRetryPatch} from '@/lib/processes/tick-retry';
 import {startTickSession,tickLockIsLive,tickLockWaitSec,updateTaskData,type TaskData,type TickSession,type TickTaskKind} from '@/lib/processes/tick-lock';
 import {mergeTaskSave} from '@/lib/processes/task-save-merge';
 import {authorizeWorkspaceAction,keepOwnerSecretsOnSave,visibleRecordsFor,type WorkspaceActor} from '@/lib/security/workspace-authz';
@@ -4175,7 +4175,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   let activeAccountId=accountId;
   let okN=0;
   let failN=0;
-  let aiPool:string[]=Array.isArray(data.aiPool)?[...data.aiPool]:[];
+  const aiPool:string[]=Array.isArray(data.aiPool)?[...data.aiPool]:[];
   let aiPoolUsed=Number(data.aiPoolUsed)||0;
   let deliveries:MailingDelivery[]=Array.isArray(data.deliveries)?[...data.deliveries]:[];
   const newKeys:string[]=[...deliveredKeys];
