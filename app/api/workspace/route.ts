@@ -53,6 +53,8 @@ import {checkProxyTarget} from '@/lib/security/net-guard';
 import {proxyCheckTimeoutMs,workerSlots} from '@/lib/worker-timeouts';
 import {authorizeWorkspaceAction,keepOwnerSecretsOnSave,visibleRecordsFor,type WorkspaceActor} from '@/lib/security/workspace-authz';
 import {ALL_CRM_ACCESS} from '@/lib/staff-types';
+import {INBOX_CURSOR_MARGIN_SEC,applySendOutcome,findSendBlock,leadReplies,markLeadOpened,mergeIncomingDm,nextInboxCursor,withPendingSend,type LeadData,type ReplyEntry,type SendOutcome} from '@/lib/lead-conversation';
+import type {D1LikeDatabase} from '@/lib/db';
 import {env} from 'cloudflare:workers';
 import {z} from 'zod';
 export const dynamic='force-dynamic';
@@ -1450,6 +1452,231 @@ function sameMailingPeer(lead:any,msg:any){
  return !!(a&&b&&a===b);
 }
 
+/** Lead rows change under us (manager reply, DM poll, save): writes are compare-and-swap on the row text. */
+class LeadUpdateConflictError extends Error{}
+
+/**
+ * Worker send job may take 120 s (worker-app.mjs timeoutForAction) after waiting for a slot; aborting kills the job,
+ * so a shorter app timeout turns a slow-but-delivered reply into an «unknown» result.
+ */
+const SEND_MESSAGE_TIMEOUT_MS=185_000;
+/** /inbox-dms: 120 s worker job + queue margin. */
+const INBOX_DMS_TIMEOUT_MS=150_000;
+/** One poll_dm_replies per owner; covers the worst case of up to 4 accounts × INBOX_DMS_TIMEOUT_MS. */
+const DM_POLL_LEASE_MS=11*60_000;
+
+type LiveAccount={id:string;data:Record<string,unknown>};
+type InboxMessage=Record<string,unknown>;
+type DmOutreach={taskId:string;leadId:string;userId:string;username:string;preview:string;groupId:string;accountId:string};
+
+const dmPollLeaseId=(owner:string)=>`dm-poll-lease:${owner}`;
+
+/** Lease row lives with the AI guard rows (kind ai_guard is hidden from GET); returns the stamp to release with. */
+async function acquireDmPollLease(db:D1LikeDatabase,owner:string):Promise<string|null>{
+ const now=Date.now();
+ const stamp=new Date(now).toISOString();
+ const r=await db.prepare('INSERT INTO records(id,owner,kind,data,created) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET created=excluded.created WHERE records.created < ?')
+  .bind(dmPollLeaseId(owner),owner,'ai_guard','{}',stamp,new Date(now-DM_POLL_LEASE_MS).toISOString()).run();
+ return r.meta.changes?stamp:null;
+}
+
+/** Releases only our own lease (an expired one may already belong to another poll). */
+async function releaseDmPollLease(db:D1LikeDatabase,owner:string,stamp:string){
+ await db.prepare('UPDATE records SET created=? WHERE id=? AND owner=? AND created=?').bind(new Date(0).toISOString(),dmPollLeaseId(owner),owner,stamp).run();
+}
+
+/** Outreach targets: DM deliveries of mailings plus leads we already wrote to. */
+async function loadDmOutreach(db:D1LikeDatabase,owner:string){
+ const mailingRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='mailing_task'").bind(owner).all();
+ const hits:DmOutreach[]=[];
+ const mailingAccountIds=new Set<string>();
+ for(const r of mailingRows.results){
+  try{
+   const d=JSON.parse(String(r.data));
+   for(const del of (Array.isArray(d.deliveries)?d.deliveries:[])){
+    if(!del||del.ok===false)continue;
+    if(String(del.mode||'dm')!=='dm')continue;
+    const aid=String(del.accountId||'');
+    if(aid)mailingAccountIds.add(aid);
+    hits.push({taskId:String(r.id),leadId:String(del.leadId||''),userId:String(del.userId||del.chatId||''),username:String(del.username||''),preview:String(del.textPreview||'').slice(0,800),groupId:'',accountId:aid});
+   }
+  }catch{/* */}
+ }
+ const leadRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='lead'").bind(owner).all();
+ const leads=leadRows.results.map(r=>{
+  try{return {id:String(r.id),data:JSON.parse(String(r.data)) as LeadData}}catch{return null}
+ }).filter(Boolean) as {id:string;data:LeadData}[];
+ const match=(msg:InboxMessage):DmOutreach|null=>{
+  const byDelivery=hits.find(h=>sameMailingPeer(h,msg));
+  if(byDelivery)return byDelivery;
+  const byLead=leads.find(L=>{
+   if(!sameMailingPeer(L.data,msg))return false;
+   const d=L.data||{};
+   if(d.conversationOpen||d.mailingTaskId)return true;
+   return leadReplies(d).some(x=>x.from==='us'||x.mode==='dm');
+  });
+  if(!byLead)return null;
+  return {taskId:String(byLead.data.mailingTaskId||''),leadId:byLead.id,userId:String(byLead.data.senderId||''),username:String(byLead.data.senderUsername||''),preview:String(byLead.data.message||''),groupId:String(byLead.data.groupId||''),accountId:String(byLead.data.accountId||'')};
+ };
+ return {leads,match,mailingAccountIds};
+}
+
+/**
+ * Records one incoming DM: merged into the freshly re-read lead (CAS) or a new «Рассылка · ответ» lead.
+ * Returns the client name when something new was recorded (and notified), null for an already known message.
+ */
+async function recordIncomingDm(db:D1LikeDatabase,owner:string,accountId:string,msg:InboxMessage,outreach:DmOutreach,leads:{id:string;data:LeadData}[]):Promise<string|null>{
+ const text=String(msg.text||'').trim()||(msg.hasMedia?'[медиа]':'');
+ if(!text)return null;
+ const nowIso=new Date().toISOString();
+ const incoming:ReplyEntry={
+  text:text.slice(0,4000),
+  mode:'dm',
+  at:String(msg.at||nowIso).slice(0,40),
+  ok:true,
+  error:'',
+  messageId:String(msg.messageId||'').slice(0,40),
+  link:msg.username?`https://t.me/${String(msg.username).replace(/^@/,'')}`:'',
+  chatId:String(msg.userId||'').slice(0,40),
+  from:'client',
+  accountId,
+ };
+ const leadRow=(outreach.leadId?leads.find(L=>L.id===outreach.leadId):undefined)||leads.find(L=>sameMailingPeer(L.data,msg));
+ if(leadRow){
+  const ctx={accountId,taskId:outreach.taskId,userId:String(msg.userId||''),username:String(msg.username||''),nowIso};
+  const done=await mutateLead(db,owner,leadRow.id,cur=>{
+   const next=mergeIncomingDm(cur,incoming,ctx);
+   return {next:next??undefined,result:!!next};
+  });
+  if(!done)return null;
+  leadRow.data=done.lead;
+  if(!done.result)return null;
+  const name=String(done.lead.name||msg.name||msg.username||'Клиент');
+  void notifyConversationEvent(db,owner,String(done.lead.name||''),String(done.lead.senderUsername||msg.username||''),incoming.text);
+  return name;
+ }
+ const newId=crypto.randomUUID();
+ const data={
+  name:String(msg.name||msg.username||'Клиент').slice(0,80),
+  message:outreach.preview||incoming.text,
+  source:'Рассылка · ответ',
+  status:'working',
+  temperature:'hot',
+  draft:'',
+  tgMsgId:'',
+  groupId:outreach.groupId||'',
+  reason:'Клиент ответил на рассылку',
+  viewed:false,
+  viewedAt:'',
+  excludeFromTraining:false,
+  senderId:String(msg.userId||'').slice(0,40),
+  senderUsername:String(msg.username||'').slice(0,64),
+  messageKind:'',
+  peerId:String(msg.userId||'').slice(0,40),
+  replyToMsgId:'',
+  replies:[incoming],
+  conversationOpen:true,
+  conversationAt:nowIso,
+  incomingLastText:incoming.text,
+  needsManager:true,
+  mailingTaskId:outreach.taskId,
+  accountId,
+ };
+ await db.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)').bind(newId,owner,'lead',JSON.stringify(data),null,nowIso).run();
+ leads.push({id:newId,data});
+ void notifyConversationEvent(db,owner,data.name,data.senderUsername,incoming.text);
+ return data.name;
+}
+
+/** One inbox pass over a rotating slice of live accounts (caller holds the per-owner lease). */
+async function pollDmReplies(db:D1LikeDatabase,owner:string,live:LiveAccount[]){
+ const {leads,match,mailingAccountIds}=await loadDmOutreach(db,owner);
+ const settingsRow=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='settings' LIMIT 1").bind(owner).first<{id:string;data:string}>();
+ let cursor=0;
+ if(settingsRow){
+  try{cursor=Math.max(0,Number(JSON.parse(String(settingsRow.data)).inboxPollCursor)||0)}catch{/* */}
+ }
+ const preferred=live.filter(a=>mailingAccountIds.has(a.id));
+ const rest=live.filter(a=>!mailingAccountIds.has(a.id));
+ const pool=(preferred.length?preferred.concat(rest):live);
+ const take=Math.min(4,Math.max(2,pool.length));
+ const slice=pool.slice(cursor%pool.length).concat(pool.slice(0,cursor%pool.length)).slice(0,take);
+ const nextCursor=(cursor+slice.length)%Math.max(1,pool.length);
+
+ let opened=0;
+ const names:string[]=[];
+ for(const acc of slice){
+  let result:{ok?:unknown;messages?:unknown;complete?:unknown;nextOffsetDate?:unknown;scanStartedTs?:unknown};
+  try{
+   const {payload}=await loadAccountSessionPayload(owner,acc.id);
+   result=await workerPost('/inbox-dms',{
+    ...payload,
+    sinceTs:Number(acc.data.inboxSinceTs)||0,
+    offsetDate:Number(acc.data.inboxPageOffset)||0,
+    maxUserDialogs:30,
+   },INBOX_DMS_TIMEOUT_MS);
+  }catch{
+   continue;
+  }
+  if(!result?.ok)continue;
+  const msgs:InboxMessage[]=Array.isArray(result.messages)?result.messages:[];
+  let persisted=true;
+  let maxTs=0;
+  for(const msg of msgs){
+   maxTs=Math.max(maxTs,Number(msg.ts)||0);
+   const outreach=match(msg);
+   if(!outreach)continue;
+   try{
+    const name=await recordIncomingDm(db,owner,acc.id,msg,outreach,leads);
+    if(name){opened++;names.push(name)}
+   }catch(e){
+    persisted=false;
+    console.error('[workspace] poll_dm_replies:',String((e as Error)?.message||e).slice(0,300));
+   }
+  }
+  // Курсор двигаем только по тому, что воркер реально просмотрел и мы сохранили
+  if(persisted){
+   const next=nextInboxCursor(acc.data,result,maxTs?maxTs-INBOX_CURSOR_MARGIN_SEC:0);
+   await db.prepare("UPDATE records SET data=json_set(data,'$.inboxSinceTs',?,'$.inboxPageOffset',?,'$.inboxPageStartTs',?) WHERE owner=? AND id=? AND kind='account'")
+    .bind(next.inboxSinceTs,next.inboxPageOffset,next.inboxPageStartTs,owner,acc.id).run();
+  }
+ }
+ if(settingsRow){
+  await db.prepare("UPDATE records SET data=json_set(data,'$.inboxPollCursor',?) WHERE owner=? AND id=? AND kind='settings'").bind(nextCursor,owner,String(settingsRow.id)).run();
+ }
+ return {ok:true,opened,names:names.slice(0,12),nextCursor};
+}
+
+/** A thrown send: busy worker = not sent (retry allowed); our timeout/abort = maybe sent (retry blocked). */
+function sendFailureOutcome(e:unknown):{outcome:SendOutcome;httpStatus:number}{
+ if(e instanceof WorkerBusyError){
+  return {outcome:{status:'failed',error:'Telegram-воркер занят — повторите через минуту'},httpStatus:429};
+ }
+ const name=String((e as Error)?.name||'');
+ if(name==='TimeoutError'||name==='AbortError'){
+  console.error('[workspace] send_lead_message: worker timeout, delivery unknown');
+  return {outcome:{status:'unknown',error:'Нет ответа Telegram-воркера — сообщение могло уйти. Проверьте переписку в Telegram перед повтором.'},httpStatus:504};
+ }
+ return {outcome:{status:'failed',error:internalError('send_lead_message',e,'Не удалось отправить сообщение. Повторите попытку.')},httpStatus:503};
+}
+
+/**
+ * Re-reads the lead, applies `fn` and writes only if the row is unchanged since the read (retries on a race).
+ * `fn` returns `next` to write (or none to skip the write) and a result; null when the lead is gone.
+ */
+async function mutateLead<T>(db:D1LikeDatabase,owner:string,id:string,fn:(lead:LeadData)=>{next?:LeadData;result:T}):Promise<{result:T;lead:LeadData}|null>{
+ for(let attempt=0;attempt<5;attempt++){
+  const row=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'lead').first<{data:string}>();
+  if(!row)return null;
+  const lead=JSON.parse(String(row.data)) as LeadData;
+  const {next,result}=fn(lead);
+  if(!next)return {result,lead};
+  const upd=await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=? AND data=?').bind(JSON.stringify(next),owner,id,'lead',String(row.data)).run();
+  if(upd.meta.changes)return {result,lead:next};
+ }
+ throw new LeadUpdateConflictError('Лид одновременно изменён — повторите');
+}
+
 export async function GET(){const session=await getSessionUser();if(!session?.userId)return reply({error:'Войдите в рабочее пространство'},401);
  const actor=await readActor();
  if(!actor)return reply({error:'Войдите в рабочее пространство'},401);
@@ -2283,20 +2510,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
  }
  if(b.action==='mark_lead_viewed'){
   const id=z.string().uuid().parse(b.id);
-  const row:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'lead').first();
-  if(!row)return reply({error:'Лид не найден'},404);
-  const data=JSON.parse(row.data);
-  const alreadyViewed=!!data.viewed;
-  const needsManager=!!data.needsManager;
-  if(alreadyViewed&&!needsManager)return reply({ok:true,already:true});
-  const next={
-   ...data,
-   viewed:true,
-   viewedAt:data.viewedAt||new Date().toISOString(),
-   needsManager:false,
-  };
-  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'lead').run();
-  return reply({ok:true,lead:next});
+  const nowIso=new Date().toISOString();
+  const done=await mutateLead(db,owner,id,lead=>{
+   const patch=markLeadOpened(lead,nowIso);
+   return {next:patch?{...lead,...patch}:undefined,result:!patch};
+  });
+  if(!done)return reply({error:'Лид не найден'},404);
+  return done.result?reply({ok:true,already:true}):reply({ok:true,lead:done.lead});
  }
  if(b.action==='set_lead_training_exclude'){
   const id=z.string().uuid().parse(b.id);
@@ -2566,12 +2786,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(data),owner,config.id,'settings').run();
   return reply({ok:true,lead:leadNext,data,minusAdded:minusAdd,minusSkippedAsProduct,minusKeywords:data.minusKeywords});
  }
-  if(b.action==='send_lead_message'){
+ if(b.action==='send_lead_message'){
   const id=z.string().uuid().parse(b.id);
   const mode=z.enum(['dm','chat']).parse(b.mode||'dm');
   const text=z.string().trim().min(1).max(4000).parse(b.text);
+  const clientMsgId=z.string().trim().max(80).optional().parse(b.clientMsgId)||'';
+  const force=b.force===true;
   const silent=b.silent===true;
-  const deleteDialog=b.deleteDialog===true;
   const row:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'lead').first();
   if(!row)return reply({error:'Лид не найден'},404);
   const lead=JSON.parse(row.data);
@@ -2593,123 +2814,140 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    sendAccountId=farm[0]?.id||'';
   }
   if(!sendAccountId)return reply({error:'Назначьте аккаунт для ответа'},400);
-  let arow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,sendAccountId,'account').first();
+  const arow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,sendAccountId,'account').first();
   let adata=arow?JSON.parse(arow.data):null;
   let rotatedAccount=false;
-  // Для уже открытой переписки держим тот же аккаунт (чужой peer → invalid Peer)
+  // Открытая переписка держит свой аккаунт (чужой peer → invalid Peer): не ротируем, но и не обходим отлёжку/лимит
   const keepConversationAccount=!!lead.conversationOpen||(Array.isArray(lead.replies)&&lead.replies.some((x:any)=>x&&x.from==='us'&&x.ok));
+  const keepAccount=keepConversationAccount&&!!adata&&canPollDmInbox(adata);
   const currentOk=adata&&isAccountUsable(adata)&&hasMessageQuota(adata);
-  const currentAlive=adata&&canPollDmInbox(adata);
-  if(!currentOk&&mode==='dm'&&!(keepConversationAccount&&currentAlive)){
+  if(!currentOk&&mode==='dm'&&!keepAccount){
    const farm=await listMessageFarmCandidates(owner);
    const pick=farm.find(x=>x.id!==sendAccountId)||farm[0];
    if(pick){
     sendAccountId=pick.id;
     adata=pick.data;
-    arow={id:pick.id};
     rotatedAccount=true;
    }
   }
   if(!adata)return reply({error:'Аккаунт не найден'},404);
-  if(!isAccountUsable(adata)&&!(keepConversationAccount&&currentAlive)){
-   return reply({error:'Аккаунт на отлежке — отправка недоступна',cooldown:true},429);
-  }
-  if(!hasMessageQuota(adata)&&!(keepConversationAccount&&currentAlive)){
+  if(!isAccountUsable(adata)){
    return reply({
-    error:mode==='dm'
+    error:keepAccount
+     ?'Аккаунт этой переписки на отлежке или в спамблоке — с другого аккаунта ответить нельзя. Повторите позже.'
+     :'Аккаунт на отлежке — отправка недоступна',
+    cooldown:true,
+    cooldownUntil:String(adata.cooldownUntil||''),
+   },429);
+  }
+  if(!hasMessageQuota(adata)){
+   return reply({
+    error:keepAccount
+     ?'Дневной лимит сообщений аккаунта этой переписки исчерпан — ответ после полуночи (МСК)'
+     :mode==='dm'
      ?'Дневной лимит сообщений на всех рабочих аккаунтах фермы'
      :'Дневной лимит сообщений этого аккаунта — для чата нужен тот же слот',
     limitReached:true,
-    farmExhausted:mode==='dm',
+    farmExhausted:mode==='dm'&&!keepAccount,
    },429);
   }
+  let payload:Record<string,unknown>;
   try{
-   const {payload}=await loadAccountSessionPayload(owner,sendAccountId);
-   // Берём лучший peer из истории переписки (chatId после успешной отправки)
-   const replyPeers=(Array.isArray(lead.replies)?lead.replies:[])
-    .filter((x:any)=>x&&x.ok!==false&&(x.chatId||x.from==='client'))
-    .map((x:any)=>String(x.chatId||'').replace(/^-/,'').trim())
-    .filter(Boolean);
-   let senderId=String(lead.senderId||'').replace(/^-/,'').trim();
-   if((!senderId||senderId.startsWith('100'))&&replyPeers[0])senderId=replyPeers[0];
-   // access_hash чужого аккаунта ломает SendMessage → invalid Peer
-   const sameAccount=String(lead.accountId||'')===String(sendAccountId);
-   let accessHash=sameAccount?String(lead.senderAccessHash||''):'';
-   const result=await workerPost('/send-message',{
-    ...payload,
-    mode,
-    text,
-    url:gdata.url,
-    replyTo:mode==='chat'?(lead.tgMsgId||''):'',
-    tgMsgId:lead.tgMsgId||'',
-    senderId:senderId||lead.senderId||'',
-    senderUsername:lead.senderUsername||'',
-    senderAccessHash:accessHash,
-    silent,
-    deleteDialog:false,
-   });
-   // Повтор без access_hash, если peer битый
-   let finalResult=result;
-   if(!result.ok&&/invalid peer/i.test(String(result.error||''))&&accessHash){
-    finalResult=await workerPost('/send-message',{
-     ...payload,
-     mode,
-     text,
-     url:gdata.url,
-     replyTo:mode==='chat'?(lead.tgMsgId||''):'',
-     tgMsgId:lead.tgMsgId||'',
-     senderId:senderId||lead.senderId||'',
-     senderUsername:lead.senderUsername||'',
-     senderAccessHash:'',
-     silent,
-     deleteDialog:false,
-    });
-   }
-   const link=String(finalResult.link||'').slice(0,300);
-   const messageId=String(finalResult.messageId||'').slice(0,40);
-   const entry={
-    text,
-    mode,
-    at:new Date().toISOString(),
-    ok:!!finalResult.ok,
-    error:(finalResult.error||'').slice(0,400),
-    messageId,
-    link,
-    chatId:String(finalResult.chatId||senderId||'').slice(0,40),
-    from:'us' as const,
-   };
-   const replies=[...(Array.isArray(lead.replies)?lead.replies:[]),entry].slice(-40);
-   const next={
-    ...lead,
-    replies,
-    draft:text,
-    status:lead.status==='new'?'working':lead.status,
-    viewed:true,
-    viewedAt:lead.viewedAt||new Date().toISOString(),
-    conversationOpen:true,
-    accountId:sendAccountId||lead.accountId||'',
-    needsManager:false,
-    senderId:String(finalResult.chatId||senderId||lead.senderId||'').replace(/^-/,'').slice(0,40),
-    senderUsername:String(finalResult.chatUsername||lead.senderUsername||'').slice(0,64),
-    senderAccessHash:String(finalResult.senderAccessHash||(finalResult.ok?accessHash:lead.senderAccessHash)||'').slice(0,40),
-   };
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'lead').run();
-   if(finalResult.flood||finalResult.status==='flood'){
-    const sec=Number(finalResult.waitSec)||900;
-    // FloodWait на ЛС — пауза ответа, аккаунт не уводим в «Отлежка».
-    return reply({ok:false,error:finalResult.error||'FloodWait',waitSec:sec,lead:next,rotatedAccount,pace:true},429);
-   }
-   if(!finalResult.ok)return reply({ok:false,error:finalResult.error||'Не удалось отправить',lead:next,rotatedAccount},502);
-   const accRow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,sendAccountId,'account').first();
-   if(accRow){
-    const acc=JSON.parse(accRow.data);
-    const bumped=applyQuotaCooldownIfExhausted({...acc,...bumpMessageCounters(acc,1)});
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(bumped),owner,sendAccountId,'account').run();
-   }
-   return reply({ok:true,lead:next,mode,link,messageId,rotatedAccount,accountId:sendAccountId});
+   ({payload}=await loadAccountSessionPayload(owner,sendAccountId));
   }catch(e){
    return reply({error:internalError('send_lead_message',e,'Не удалось отправить сообщение. Повторите попытку.')},503);
   }
+  // Берём лучший peer из истории лички (chatId ответа в чат — это группа, не клиент)
+  const replyPeers=(Array.isArray(lead.replies)?lead.replies:[])
+   .filter((x:any)=>x&&x.mode!=='chat'&&x.ok!==false&&(x.chatId||x.from==='client'))
+   .map((x:any)=>String(x.chatId||'').replace(/^-/,'').trim())
+   .filter(Boolean);
+  let senderId=String(lead.senderId||'').replace(/^-/,'').trim();
+  if((!senderId||senderId.startsWith('100'))&&replyPeers[0])senderId=replyPeers[0];
+  // access_hash чужого аккаунта ломает SendMessage → invalid Peer
+  const sameAccount=String(lead.accountId||'')===String(sendAccountId);
+  const accessHash=sameAccount?String(lead.senderAccessHash||''):'';
+
+  // Запись «отправляется» до вызова воркера: повтор после таймаута не шлёт дубль
+  const sendKey=clientMsgId||`srv:${crypto.randomUUID()}`;
+  const pendingEntry:ReplyEntry={text,mode,at:new Date().toISOString(),ok:false,status:'pending',error:'',messageId:'',link:'',chatId:'',from:'us',sendKey,accountId:sendAccountId};
+  const claim=await mutateLead(db,owner,id,cur=>{
+   const block=findSendBlock(cur,{clientMsgId,text,mode},Date.now());
+   if(block&&!(force&&block.kind==='unknown'))return {result:block};
+   return {next:{...withPendingSend(cur,pendingEntry,block?.entry.sendKey||''),draft:text},result:null};
+  });
+  if(!claim)return reply({error:'Лид не найден'},404);
+  const block=claim.result;
+  if(block?.kind==='delivered'){
+   return reply({ok:true,duplicate:true,lead:claim.lead,mode,link:block.entry.link,messageId:block.entry.messageId,rotatedAccount:false,accountId:String(claim.lead.accountId||'')});
+  }
+  if(block){
+   return reply({
+    error:block.kind==='inflight'
+     ?'Это сообщение уже отправляется — дождитесь результата'
+     :'Результат прошлой отправки этого сообщения неизвестен. Проверьте переписку в Telegram — если сообщения нет, отправьте ещё раз.',
+    inflight:block.kind==='inflight',
+    unknown:block.kind==='unknown',
+    lead:claim.lead,
+   },409);
+  }
+
+  const sendBody={
+   ...payload,
+   mode,
+   text,
+   url:gdata.url,
+   replyTo:mode==='chat'?(lead.tgMsgId||''):'',
+   tgMsgId:lead.tgMsgId||'',
+   senderId:senderId||lead.senderId||'',
+   senderUsername:lead.senderUsername||'',
+   silent,
+   deleteDialog:false,
+  };
+  let finalResult:Record<string,unknown>={};
+  let usedHash=accessHash;
+  let outcome:SendOutcome;
+  let failStatus=502;
+  try{
+   finalResult=await workerPost('/send-message',{...sendBody,senderAccessHash:accessHash},SEND_MESSAGE_TIMEOUT_MS);
+   // Повтор без access_hash, если peer битый
+   if(!finalResult.ok&&/invalid peer/i.test(String(finalResult.error||''))&&accessHash){
+    usedHash='';
+    finalResult=await workerPost('/send-message',{...sendBody,senderAccessHash:''},SEND_MESSAGE_TIMEOUT_MS);
+   }
+   outcome={
+    status:finalResult.ok?'sent':'failed',
+    error:String(finalResult.error||(finalResult.ok?'':'Не удалось отправить')),
+    messageId:String(finalResult.messageId||''),
+    link:String(finalResult.link||''),
+    chatId:String(finalResult.chatId||''),
+    chatUsername:String(finalResult.chatUsername||''),
+    senderAccessHash:String(finalResult.senderAccessHash||''),
+   };
+  }catch(e){
+   ({outcome,httpStatus:failStatus}=sendFailureOutcome(e));
+  }
+  const saved=await mutateLead(db,owner,id,cur=>({
+   next:applySendOutcome(cur,{sendKey,mode,accountId:sendAccountId,peerId:senderId,accessHash:usedHash,nowIso:new Date().toISOString()},outcome),
+   result:null,
+  }));
+  const next=saved?.lead||lead;
+  if(outcome.status==='unknown')return reply({ok:false,unknown:true,error:outcome.error,lead:next,rotatedAccount},504);
+  if(finalResult.flood||finalResult.status==='flood'){
+   const sec=Number(finalResult.waitSec)||900;
+   // FloodWait на ЛС — пауза ответа, аккаунт не уводим в «Отлежка».
+   return reply({ok:false,error:finalResult.error||'FloodWait',waitSec:sec,lead:next,rotatedAccount,pace:true},429);
+  }
+  if(outcome.status!=='sent')return reply({ok:false,error:outcome.error,busy:failStatus===429,lead:next,rotatedAccount},failStatus);
+  const accRow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,sendAccountId,'account').first();
+  if(accRow){
+   const acc=JSON.parse(accRow.data);
+   const bumped=applyQuotaCooldownIfExhausted({...acc,...bumpMessageCounters(acc,1)});
+   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(bumped),owner,sendAccountId,'account').run();
+  }
+  const link=String(finalResult.link||'').slice(0,300);
+  const messageId=String(finalResult.messageId||'').slice(0,40);
+  return reply({ok:true,lead:next,mode,link,messageId,rotatedAccount,accountId:sendAccountId});
  }
  if(b.action==='rescan_groups'){
   const force=b.force===true;
@@ -4708,7 +4946,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
 
  if(b.action==='poll_dm_replies'){
   const accRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='account'").bind(owner).all();
-  const live:{id:string;data:any}[]=[];
+  const live:LiveAccount[]=[];
   for(const r of accRows.results){
    try{
     const a=JSON.parse(String(r.data));
@@ -4716,179 +4954,14 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    }catch{/* */}
   }
   if(!live.length)return reply({ok:true,opened:0,skipped:true,reason:'no_accounts'});
-
-  const mailingRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='mailing_task'").bind(owner).all();
-  type Hit={taskId:string;leadId:string;userId:string;username:string;preview:string;groupId:string;accountId:string};
-  const hits:Hit[]=[];
-  const mailingAccountIds=new Set<string>();
-  for(const r of mailingRows.results){
-   try{
-    const d=JSON.parse(String(r.data));
-    for(const del of (Array.isArray(d.deliveries)?d.deliveries:[])){
-     if(!del||del.ok===false)continue;
-     if(String(del.mode||'dm')!=='dm')continue;
-     const aid=String(del.accountId||'');
-     if(aid)mailingAccountIds.add(aid);
-     hits.push({
-      taskId:String(r.id),
-      leadId:String(del.leadId||''),
-      userId:String(del.userId||del.chatId||''),
-      username:String(del.username||''),
-      preview:String(del.textPreview||'').slice(0,800),
-      groupId:'',
-      accountId:aid,
-     });
-    }
-   }catch{/* */}
+  // Каждая вкладка опрашивает раз в 15 с — одновременно работает один опрос на владельца
+  const lease=await acquireDmPollLease(db,owner);
+  if(!lease)return reply({ok:true,opened:0,skipped:true,reason:'busy'});
+  try{
+   return reply(await pollDmReplies(db,owner,live));
+  }finally{
+   await releaseDmPollLease(db,owner,lease);
   }
-  const leadRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='lead'").bind(owner).all();
-  const leads=leadRows.results.map((r:any)=>{
-   try{return {id:String(r.id),data:JSON.parse(String(r.data))}}catch{return null}
-  }).filter(Boolean) as {id:string;data:any}[];
-
-  const matchOutreach=(msg:any)=>{
-   const byDelivery=hits.find(h=>sameMailingPeer(h,msg));
-   if(byDelivery)return byDelivery;
-   const byLead=leads.find(L=>{
-    if(!sameMailingPeer(L.data,msg))return false;
-    const d=L.data||{};
-    if(d.conversationOpen||d.mailingTaskId)return true;
-    if(Array.isArray(d.replies)&&d.replies.some((x:any)=>x&&(x.from==='us'||x.mode==='dm')))return true;
-    return false;
-   });
-   if(byLead)return {taskId:String(byLead.data.mailingTaskId||''),leadId:byLead.id,userId:String(byLead.data.senderId||''),username:String(byLead.data.senderUsername||''),preview:String(byLead.data.message||''),groupId:String(byLead.data.groupId||''),accountId:String(byLead.data.accountId||'')};
-   return null;
-  };
-
-  let settingsRow:any=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='settings' LIMIT 1").bind(owner).first();
-  let settingsData:any={};
-  let settingsId='';
-  if(settingsRow){
-   settingsId=String(settingsRow.id);
-   try{settingsData=JSON.parse(String(settingsRow.data))}catch{settingsData={}}
-  }
-  const cursor=Math.max(0,Number(settingsData.inboxPollCursor)||0);
-  const preferred=live.filter(a=>mailingAccountIds.has(a.id));
-  const rest=live.filter(a=>!mailingAccountIds.has(a.id));
-  const pool=(preferred.length?preferred.concat(rest):live);
-  const take=Math.min(4,Math.max(2,pool.length));
-  const slice=pool.slice(cursor%pool.length).concat(pool.slice(0,cursor%pool.length)).slice(0,take);
-  const nextCursor=(cursor+slice.length)%Math.max(1,pool.length);
-
-  let opened=0;
-  const names:string[]=[];
-  for(const acc of slice){
-   let result:any;
-   try{
-    const {payload}=await loadAccountSessionPayload(owner,acc.id);
-    result=await workerPost('/inbox-dms',{...payload,sinceTs:Number(acc.data.inboxSinceTs)||0,limitDialogs:30},90_000);
-   }catch{
-    continue;
-   }
-   const msgs:any[]=Array.isArray(result?.messages)?result.messages:[];
-   let maxSafeTs=Number(acc.data.inboxSinceTs)||0;
-   let unmatchedHit=false;
-   for(const msg of msgs){
-    const ts=Number(msg.ts)||0;
-    const outreach=matchOutreach(msg);
-    if(!outreach){
-     if(hits.some(h=>sameMailingPeer(h,msg)))unmatchedHit=true;
-     else if(ts>maxSafeTs)maxSafeTs=ts;
-     continue;
-    }
-    if(ts>maxSafeTs)maxSafeTs=ts;
-    const mid=String(msg.messageId||'');
-    let leadRow=outreach.leadId?leads.find(L=>L.id===outreach.leadId):undefined;
-    if(!leadRow)leadRow=leads.find(L=>sameMailingPeer(L.data,msg));
-    const text=String(msg.text||'').trim()||(msg.hasMedia?'[медиа]':'');
-    if(!text)continue;
-    const incoming={
-     text:text.slice(0,4000),
-     mode:'dm' as const,
-     at:String(msg.at||new Date().toISOString()).slice(0,40),
-     ok:true,
-     error:'',
-     messageId:mid.slice(0,40),
-     link:msg.username?`https://t.me/${String(msg.username).replace(/^@/,'')}`:'',
-     chatId:String(msg.userId||'').slice(0,40),
-     from:'client' as const,
-    };
-    if(leadRow){
-     const already=(Array.isArray(leadRow.data.replies)?leadRow.data.replies:[]).some((x:any)=>String(x.messageId||'')===mid&&mid);
-     if(already)continue;
-     const replies=[...(Array.isArray(leadRow.data.replies)?leadRow.data.replies:[]),incoming].slice(-40);
-     const next={
-      ...leadRow.data,
-      replies,
-      status:'working',
-      conversationOpen:true,
-      conversationAt:new Date().toISOString(),
-      incomingLastText:incoming.text,
-      needsManager:true,
-      viewed:false,
-      temperature:'hot',
-      accountId:acc.id,
-      senderId:leadRow.data.senderId||String(msg.userId||''),
-      senderUsername:leadRow.data.senderUsername||String(msg.username||''),
-      mailingTaskId:leadRow.data.mailingTaskId||outreach.taskId,
-      draft:leadRow.data.draft||'',
-     };
-     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,leadRow.id,'lead').run();
-     leadRow.data=next;
-     opened++;
-     names.push(String(next.name||msg.name||msg.username||'Клиент'));
-     void notifyConversationEvent(db,owner,String(next.name||''),String(next.senderUsername||msg.username||''),incoming.text);
-    }else{
-     const newId=crypto.randomUUID();
-     const data={
-      name:String(msg.name||msg.username||'Клиент').slice(0,80),
-      message:outreach.preview||incoming.text,
-      source:'Рассылка · ответ',
-      status:'working',
-      temperature:'hot',
-      draft:'',
-      tgMsgId:'',
-      groupId:outreach.groupId||'',
-      reason:'Клиент ответил на рассылку',
-      viewed:false,
-      viewedAt:'',
-      excludeFromTraining:false,
-      senderId:String(msg.userId||'').slice(0,40),
-      senderUsername:String(msg.username||'').slice(0,64),
-      messageKind:'',
-      peerId:String(msg.userId||'').slice(0,40),
-      replyToMsgId:'',
-      replies:[incoming],
-      conversationOpen:true,
-      conversationAt:new Date().toISOString(),
-      incomingLastText:incoming.text,
-      needsManager:true,
-      mailingTaskId:outreach.taskId,
-      accountId:acc.id,
-     };
-     await db.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)').bind(newId,owner,'lead',JSON.stringify(data),null,new Date().toISOString()).run();
-     leads.push({id:newId,data});
-     opened++;
-     names.push(String(data.name));
-     void notifyConversationEvent(db,owner,data.name,data.senderUsername,incoming.text);
-    }
-   }
-   if(maxSafeTs&&!unmatchedHit){
-    const fresh:any=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,acc.id,'account').first();
-    if(fresh){
-     try{
-      const adata=JSON.parse(String(fresh.data));
-      await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...adata,inboxSinceTs:maxSafeTs}),owner,acc.id,'account').run();
-     }catch{/* */}
-    }
-   }
-  }
-  if(settingsId){
-   try{
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...settingsData,inboxPollCursor:nextCursor}),owner,settingsId,'settings').run();
-   }catch{/* */}
-  }
-  return reply({ok:true,opened,names:names.slice(0,12),nextCursor});
  }
 
  const kind=kindSchema.parse(b.kind);
