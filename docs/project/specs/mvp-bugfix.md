@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done (verifier PASSED 2026-09-30; REQ-V2 save-time check covers known channels only — unknown channels fail on first tick)
 size: full
 model: claude-opus-5-5 (effort: session)
 budget: 600M tokens
