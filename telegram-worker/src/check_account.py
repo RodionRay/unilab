@@ -667,7 +667,12 @@ def parse_group_ref(url: str) -> dict[str, str]:
     )
     if m:
         return {"kind": "invite", "value": m.group(1)}
-    m = re.search(r"(?:https?://)?t\.me/([a-zA-Z0-9_]{5,32})", u, re.I)
+    # t.me/c/<id>/<msg> — ссылка на сообщение приватного канала: только внутренний id
+    m = re.search(r"(?:https?://)?t\.me/c/(\d+)", u, re.I)
+    if m:
+        return {"kind": "channel_id", "value": m.group(1)}
+    # t.me/s/<name> — веб-превью публичного канала
+    m = re.search(r"(?:https?://)?t\.me/(?:s/)?([a-zA-Z0-9_]{5,32})", u, re.I)
     if m:
         return {"kind": "username", "value": m.group(1)}
     raise RuntimeError("Некорректная ссылка на группу/канал")
@@ -1488,6 +1493,36 @@ async def _account_resolve_blind(client) -> bool:
         return False
 
 
+PRIVATE_LINK_ERROR = (
+    "Ссылка t.me/c/… открывается только участникам: слот не состоит в канале — "
+    "нужна инвайт-ссылка или аккаунт, который уже в канале"
+)
+
+
+async def _resolve_channel_id(client, channel_id: int):
+    """t.me/c/<id>: без access_hash канал виден только слоту, который в нём состоит."""
+    from telethon.tl.types import PeerChannel
+
+    try:
+        async for dialog in client.iter_dialogs(limit=500):
+            ent = getattr(dialog, "entity", None)
+            if ent is not None and getattr(ent, "id", None) == channel_id:
+                return ent, None
+    except Exception:
+        pass
+    try:
+        return await client.get_entity(PeerChannel(channel_id)), None
+    except (ValueError, TypeError):
+        return None, {
+            "ok": False,
+            "status": "error",
+            "join": "private",
+            "error": PRIVATE_LINK_ERROR,
+            "users": [],
+            "hasMore": False,
+        }
+
+
 async def _resolve_entity(client, url: str, peer_hint: dict | None = None):
     from telethon.tl.functions.messages import CheckChatInviteRequest
     from telethon.tl.types import ChatInviteAlready
@@ -1510,6 +1545,8 @@ async def _resolve_entity(client, url: str, peer_hint: dict | None = None):
                 "hasMore": False,
             }
         return invite.chat, None
+    if ref["kind"] == "channel_id":
+        return await _resolve_channel_id(client, int(ref["value"]))
     uname = str(ref.get("value") or "").lstrip("@")
     want = uname.lower()
     hint_cid = str((peer_hint or {}).get("channelId") or "").strip()
@@ -1572,6 +1609,124 @@ async def _resolve_entity(client, url: str, peer_hint: dict | None = None):
         raise
 
 
+TELEGRAM_PARTICIPANTS_CAP = 10_000
+PARTICIPANTS_PAGE_SIZE = 200
+
+
+def _collect_failure(exc: BaseException) -> dict[str, Any] | None:
+    """REQ-A1: ответ на ошибку сбора. Unauthorized — только мёртвый ключ; None — неизвестная ошибка."""
+    from telethon import errors as tg
+
+    base: dict[str, Any] = {"ok": False, "users": [], "hasMore": False}
+    detail = f"{type(exc).__name__}: {exc}"[:400]
+    # FloodWait несёт code 420 — проверяем раньше is_frozen_rpc
+    if isinstance(exc, tg.FloodError):
+        wait = int(getattr(exc, "seconds", 0) or 60)
+        return {**base, "status": "flood", "waitSec": wait, "error": f"FloodWait {wait}с"}
+    if isinstance(exc, (tg.UnauthorizedError, tg.AuthKeyError)):
+        status = "frozen" if classify_error(exc) == "frozen" else "unauthorized"
+        return {**base, "status": status, "error": detail}
+    if isinstance(exc, tg.RPCError) and is_frozen_rpc(exc):
+        return {**frozen_action_error("сбор аудитории"), **base}
+    if isinstance(exc, (tg.ChannelPrivateError, tg.ChannelInvalidError, tg.ChatForbiddenError, tg.ChannelBannedError)):
+        return {
+            **base,
+            "status": "source_error",
+            "join": "private",
+            "error": f"Источник закрыт для аккаунта (приватный или недоступный) — нужна инвайт-ссылка ({type(exc).__name__})",
+        }
+    if isinstance(exc, (tg.InviteHashExpiredError, tg.InviteHashInvalidError)):
+        return {
+            **base,
+            "status": "source_error",
+            "join": "invite_invalid",
+            "error": "Инвайт-ссылка истекла или недействительна — нужна новая",
+        }
+    if isinstance(exc, tg.UserBannedInChannelError):
+        return {**base, "status": "source_error", "join": "banned", "error": "Аккаунт забанен в источнике"}
+    if isinstance(exc, (tg.ServerError, ConnectionError, OSError, asyncio.TimeoutError)):
+        return {**base, "status": "transient", "error": detail}
+    if isinstance(exc, tg.RPCError):
+        return {**base, "status": "source_error", "join": "rpc", "error": detail}
+    return None
+
+
+def _participant_user_id(participant) -> int | None:
+    uid = getattr(participant, "user_id", None)
+    if uid is None:
+        uid = getattr(getattr(participant, "peer", None), "user_id", None)
+    return uid
+
+
+async def _participants_by_offset(
+    client,
+    entity,
+    *,
+    offset: int,
+    batch_size: int,
+    accept,
+    admin_ids: set[str],
+    cap_reached,
+) -> dict[str, Any]:
+    """REQ-A5: GetParticipants(offset) — тик продолжает с сохранённого offset, а не читает всё с нуля.
+
+    Telegram отдаёт супергруппу поиском максимум ~10k участников: остаток помечаем truncated.
+    """
+    from telethon.tl.functions.channels import GetParticipantsRequest
+    from telethon.tl.types import (
+        ChannelParticipantAdmin,
+        ChannelParticipantCreator,
+        ChannelParticipantsSearch,
+    )
+
+    users: list[dict[str, Any]] = []
+    total = 0
+    scanned = 0
+    exhausted = False
+    while len(users) < batch_size and not cap_reached():
+        res = await client(
+            GetParticipantsRequest(entity, ChannelParticipantsSearch(""), offset, PARTICIPANTS_PAGE_SIZE, 0)
+        )
+        total = max(total, int(getattr(res, "count", 0) or 0))
+        parts = list(getattr(res, "participants", None) or [])
+        by_id = {getattr(u, "id", None): u for u in (getattr(res, "users", None) or [])}
+        if not parts:
+            exhausted = True
+            break
+        for part in parts:
+            offset += 1
+            scanned += 1
+            user = by_id.get(_participant_user_id(part))
+            if user is None:
+                continue
+            is_admin = isinstance(part, (ChannelParticipantAdmin, ChannelParticipantCreator)) or str(
+                getattr(user, "id", "")
+            ) in admin_ids
+            u = _serialize_audience_user(user, is_admin=is_admin)
+            if accept(u):
+                users.append(u)  # type: ignore[arg-type]
+                if len(users) >= batch_size or cap_reached():
+                    break
+        else:
+            if len(parts) < PARTICIPANTS_PAGE_SIZE:
+                exhausted = True
+                break
+    out: dict[str, Any] = {
+        "users": users,
+        "cursor": str(offset),
+        "hasMore": not exhausted and not cap_reached(),
+        "scanned": scanned,
+        "participantsTotal": total,
+    }
+    if exhausted and total > offset:
+        out["truncated"] = True
+        out["warning"] = (
+            f"Telegram отдал {offset} из {total} участников (лимит выдачи ~{TELEGRAM_PARTICIPANTS_CAP}); "
+            "остальных можно собрать режимом «Комментарии/сообщения»"
+        )
+    return out
+
+
 async def collect_audience(client, payload: dict[str, Any]) -> dict[str, Any]:
     """Батч сбора участников / авторов сообщений / комментаторов."""
     from datetime import datetime, timedelta, timezone
@@ -1600,6 +1755,9 @@ async def collect_audience(client, payload: dict[str, Any]) -> dict[str, Any]:
     cursor = str(payload.get("cursor") or "")
     seen_ids = set(str(x) for x in (payload.get("seenIds") or []) if x)
     peer_hint = payload.get("peerHint") if isinstance(payload.get("peerHint"), dict) else None
+    # REQ-A8: сколько сообщений уже прочитано прошлыми тиками — лимит на всю задачу, не на батч
+    scanned_before = max(0, int(payload.get("scannedMessages") or 0))
+    message_budget = message_limit - scanned_before if range_mode == "count" else None
 
     try:
         entity, err = await _resolve_entity(client, url, peer_hint=peer_hint)
@@ -1637,7 +1795,25 @@ async def collect_audience(client, payload: dict[str, Any]) -> dict[str, Any]:
                 return False
             return True
 
+        def budget_exhausted() -> bool:
+            return message_budget is not None and message_budget <= 0
+
+        def exhausted_result(mode_label: str) -> dict[str, Any]:
+            return {
+                "ok": True,
+                "title": title,
+                "users": [],
+                "cursor": cursor,
+                "hasMore": False,
+                "scanned": 0,
+                "messagesScanned": 0,
+                "mode": mode_label,
+                "error": "",
+            }
+
         async def collect_from_messages(target, mode_label: str) -> dict[str, Any]:
+            if budget_exhausted():
+                return exhausted_result(mode_label)
             users: list[dict[str, Any]] = []
             next_cursor = cursor
             has_more = False
@@ -1648,6 +1824,8 @@ async def collect_audience(client, payload: dict[str, Any]) -> dict[str, Any]:
             if range_mode == "period":
                 cutoff = datetime.now(timezone.utc) - timedelta(days=period_days)
             limit_left = max(batch_size * 8, 200)
+            if message_budget is not None:
+                limit_left = min(limit_left, message_budget)
             kwargs: dict[str, Any] = {"limit": limit_left}
             if offset_id > 0:
                 kwargs["offset_id"] = offset_id
@@ -1660,9 +1838,6 @@ async def collect_audience(client, payload: dict[str, Any]) -> dict[str, Any]:
                     if md < cutoff:
                         has_more = False
                         break
-                if range_mode == "count" and offset_id == 0 and fetched > message_limit:
-                    has_more = False
-                    break
                 try:
                     sender = await msg.get_sender()
                 except Exception:
@@ -1684,6 +1859,8 @@ async def collect_audience(client, payload: dict[str, Any]) -> dict[str, Any]:
             else:
                 # Дочитали окно сообщений: конец ленты, если fetch не упёрся в лимит
                 has_more = fetched >= limit_left
+            if message_budget is not None and fetched >= message_budget:
+                has_more = False
             return {
                 "ok": True,
                 "title": title,
@@ -1691,9 +1868,46 @@ async def collect_audience(client, payload: dict[str, Any]) -> dict[str, Any]:
                 "cursor": next_cursor,
                 "hasMore": has_more,
                 "scanned": scanned,
+                "messagesScanned": fetched,
                 "mode": mode_label,
                 "error": "",
             }
+
+        def take(u: dict[str, Any] | None) -> bool:
+            if not accept(u):
+                return False
+            seen_ids.add(u["userId"])  # type: ignore[index]
+            return True
+
+        def user_cap_reached() -> bool:
+            return range_mode == "count" and len(seen_ids) >= message_limit
+
+        async def participants_page(channel_entity) -> dict[str, Any]:
+            return await _participants_by_offset(
+                client,
+                channel_entity,
+                offset=int(cursor) if str(cursor).isdigit() else 0,
+                batch_size=batch_size,
+                accept=take,
+                admin_ids=admin_ids,
+                cap_reached=user_cap_reached,
+            )
+
+        async def small_chat_participants(chat) -> dict[str, Any]:
+            # Обычный чат (до 200 участников) отдаётся целиком; skip = позиция в списке
+            users: list[dict[str, Any]] = []
+            skip = int(cursor) if str(cursor).isdigit() else 0
+            scanned = 0
+            async for user in client.iter_participants(chat):
+                scanned += 1
+                if scanned <= skip:
+                    continue
+                u = _serialize_audience_user(user, is_admin=str(getattr(user, "id", "")) in admin_ids)
+                if take(u):
+                    users.append(u)  # type: ignore[arg-type]
+                if len(users) >= batch_size or user_cap_reached():
+                    return {"users": users, "cursor": str(scanned), "hasMore": not user_cap_reached(), "scanned": scanned}
+            return {"users": users, "cursor": str(scanned), "hasMore": False, "scanned": scanned}
 
         if collect_mode == "comments" or is_broadcast:
             target = entity
@@ -1716,6 +1930,8 @@ async def collect_audience(client, payload: dict[str, Any]) -> dict[str, Any]:
             primary = await collect_from_messages(target, mode_label)
             if primary["users"] or primary.get("hasMore") or int(primary.get("scanned") or 0) > 0:
                 return primary
+            if budget_exhausted():
+                return primary
 
             # 2) Комментарии к постам канала (reply_to)
             if is_broadcast:
@@ -1729,6 +1945,8 @@ async def collect_audience(client, payload: dict[str, Any]) -> dict[str, Any]:
                 if range_mode == "period":
                     cutoff = datetime.now(timezone.utc) - timedelta(days=period_days)
                 kwargs: dict[str, Any] = {"limit": max(40, batch_size)}
+                if message_budget is not None:
+                    kwargs["limit"] = min(kwargs["limit"], message_budget)
                 if offset_id > 0:
                     kwargs["offset_id"] = offset_id
                 from telethon.tl.types import User
@@ -1766,6 +1984,8 @@ async def collect_audience(client, payload: dict[str, Any]) -> dict[str, Any]:
                         break
                 else:
                     has_more = fetched >= kwargs["limit"]
+                if message_budget is not None and fetched >= message_budget:
+                    has_more = False
                 if users or fetched:
                     return {
                         "ok": True,
@@ -1774,6 +1994,7 @@ async def collect_audience(client, payload: dict[str, Any]) -> dict[str, Any]:
                         "cursor": next_cursor,
                         "hasMore": has_more,
                         "scanned": scanned,
+                        "messagesScanned": fetched,
                         "mode": "channel_comments",
                         "error": "",
                     }
@@ -1781,88 +2002,22 @@ async def collect_audience(client, payload: dict[str, Any]) -> dict[str, Any]:
             # 3) Участники linked-группы (часто мало без прав)
             if linked is not None:
                 try:
-                    users = []
-                    skip = int(cursor) if str(cursor).isdigit() else 0
-                    scanned = 0
-                    has_more = False
-                    next_cursor = str(skip)
-                    async for user in client.iter_participants(linked):
-                        scanned += 1
-                        if scanned <= skip:
-                            continue
-                        uid = getattr(user, "id", None)
-                        if not uid:
-                            continue
-                        is_admin = str(uid) in admin_ids
-                        u = _serialize_audience_user(user, is_admin=is_admin)
-                        if accept(u):
-                            users.append(u)  # type: ignore[arg-type]
-                            seen_ids.add(u["userId"])  # type: ignore[index]
-                            if len(users) >= batch_size:
-                                has_more = True
-                                next_cursor = str(scanned)
-                                break
-                    else:
-                        next_cursor = str(scanned)
-                        has_more = False
-                    return {
-                        "ok": True,
-                        "title": title,
-                        "users": users,
-                        "cursor": next_cursor,
-                        "hasMore": has_more,
-                        "scanned": scanned,
-                        "mode": "discussion_participants",
-                        "error": "",
-                    }
+                    page = await participants_page(linked)
+                    return {"ok": True, "title": title, **page, "mode": "discussion_participants", "error": ""}
                 except Exception:
                     pass
             return primary
-        # discussions = участники чата/супергруппы (курсор = skip count, не userId)
-        users: list[dict[str, Any]] = []
-        skip = int(cursor) if str(cursor).isdigit() else 0
-        scanned = 0
-        has_more = False
-        next_cursor = str(skip)
+        # discussions = участники чата/супергруппы (курсор = offset в списке участников)
         try:
-            async for user in client.iter_participants(entity):
-                scanned += 1
-                if scanned <= skip:
-                    continue
-                uid = getattr(user, "id", None)
-                if not uid:
-                    continue
-                is_admin = str(uid) in admin_ids
-                u = _serialize_audience_user(user, is_admin=is_admin)
-                if accept(u):
-                    users.append(u)  # type: ignore[arg-type]
-                    seen_ids.add(u["userId"])  # type: ignore[index]
-                    if len(users) >= batch_size:
-                        has_more = True
-                        next_cursor = str(scanned)
-                        break
-                if range_mode == "count" and len(seen_ids) >= message_limit:
-                    has_more = False
-                    next_cursor = str(scanned)
-                    break
+            if isinstance(entity, Channel):
+                page = await participants_page(entity)
             else:
-                next_cursor = str(scanned)
-                has_more = False
+                page = await small_chat_participants(entity)
         except (ChatAdminRequiredError, RPCError) as e:
             if "CHAT_ADMIN_REQUIRED" in str(e).upper() or isinstance(e, ChatAdminRequiredError):
                 return await collect_from_messages(entity, "messages_fallback")
             raise
-
-        return {
-            "ok": True,
-            "title": title,
-            "users": users,
-            "cursor": next_cursor,
-            "hasMore": has_more,
-            "scanned": scanned,
-            "mode": "participants",
-            "error": "",
-        }
+        return {"ok": True, "title": title, **page, "mode": "participants", "error": ""}
     except UserNotParticipantError:
         return {
             "ok": False,
@@ -1871,11 +2026,10 @@ async def collect_audience(client, payload: dict[str, Any]) -> dict[str, Any]:
             "users": [],
             "hasMore": False,
         }
-    except RPCError as e:
-        if is_frozen_rpc(e):
-            return frozen_action_error("сбор аудитории")
-        raise
     except Exception as e:
+        classified = _collect_failure(e)
+        if classified is not None:
+            return classified
         import traceback
 
         return {
@@ -1885,6 +2039,7 @@ async def collect_audience(client, payload: dict[str, Any]) -> dict[str, Any]:
             "users": [],
             "hasMore": False,
         }
+
 
 async def invite_users(client, payload: dict[str, Any]) -> dict[str, Any]:
     """Батч инвайтов в целевую группу. mode: ordinary | advanced."""
