@@ -225,11 +225,16 @@ describe('request without a product / niche / marketplace anchor is not a lead',
     'подскажите сервис доставки цветов',
     'Подскажите сервис доставки цветов по Москве, чтобы к утру привезли',
     'Посоветуйте сервис для записи к парикмахеру, кто что знает?',
+    'Ищу сервис доставки цветов на выходные',
   ])('generic service request is rejected: %s',(msg)=>{
     const d=explainLeadDecision(msg,baseSettings);
     expect(d.buyer).toBe(true);
     expect(d.pass).toBe(false);
     expect(d.score).toBeLessThan(45);
+  });
+
+  it('a lone ask object from criteria («сервис») is not a topic hit',()=>{
+    expect(distinctTopicHits(['сервис','сервисы','платформа','остатки','ищу сервис'])).toEqual(['остатки']);
   });
 
   it.each([

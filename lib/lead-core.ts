@@ -7,6 +7,8 @@ import {
   WEAK_PLUS_TERMS,
   findMinusHit,
   hasBuyerIntent,
+  hasMarketplaceContext,
+  hasNamedToolAsk,
   hasProductFit,
   hasSoftAsk,
   leadMessageFingerprint,
@@ -23,6 +25,8 @@ export const LEAD_SCORE_HOT = 70;
 export const LEAD_SCORE_WARM = 45;
 /** Soft ask (подскажите / кто пользуется) needs this many settings hits to be warm. */
 const SOFT_ASK_WARM_MIN_HITS = 2;
+/** Ceiling for an ask with nothing tying it to the product / niche: below warm. */
+const UNANCHORED_ASK_MAX_SCORE = 30;
 
 export type LeadCoreSettings = {
   keywords?: string;
@@ -173,12 +177,19 @@ export function hardReject(
 }
 
 /**
+ * A lone word naming what is asked for, not the niche: «сервис» from criteria «ищет сервис для …»
+ * hits «подскажите сервис доставки цветов», so it is no evidence of product fit.
+ */
+const GENERIC_ASK_OBJECT_RE =
+  /^(?:сервис|инструмент|платформ|решени|программ|подрядчик|агентств|приложени)\p{L}*$/u;
+
+/**
  * Settings hits that name a topic: ask phrases themselves ("кто пользуется", "ищу сервис") do not
  * count, and a hit contained in another hit ("склад" in "мойсклад") is the same evidence.
  */
 export function distinctTopicHits(hits: readonly string[]): string[] {
   const topical = [...new Set(hits.map((h) => h.toLowerCase().trim()))].filter(
-    (h) => h && !hasBuyerIntent(h) && !hasSoftAsk(h),
+    (h) => h && !hasBuyerIntent(h) && !hasSoftAsk(h) && !GENERIC_ASK_OBJECT_RE.test(h),
   );
   return topical.filter((h) => !topical.some((other) => other !== h && other.includes(h)));
 }
@@ -219,9 +230,10 @@ export function scoreLead(text: string, settings: LeadCoreSettings): LeadScoreRe
     (t) => plusTermHit(body, t) && !plusHits.includes(t) && !signalHits.includes(t),
   );
 
-  // Fit только из настроек AI-ассистента. Builtin Uniseller-fit — запасной, если настроек мало.
-  const settingsFit =
-    criteriaHits.length >= 1 || signalHits.length >= 1 || plusHits.length >= 1;
+  // Fit только из настроек AI-ассистента и только по теме (не «ищу сервис» / «сервис»).
+  // Builtin Uniseller-fit — запасной, если настроек мало.
+  const topicHitCount = distinctTopicHits([...plusHits, ...signalHits, ...criteriaHits]).length;
+  const settingsFit = topicHitCount >= 1;
   const builtinFit =
     !hasAssistantFitConfig(settings) && hasProductFit(text);
   const fit = settingsFit || builtinFit;
@@ -261,15 +273,20 @@ export function scoreLead(text: string, settings: LeadCoreSettings): LeadScoreRe
   }
 
   // Soft + ≥2 совпадений с настройками AI — это вопрос по теме продукта, минимум warm
-  const topicHitCount = distinctTopicHits([...plusHits, ...signalHits, ...criteriaHits]).length;
   if (softAsk && !buyer && topicHitCount >= SOFT_ASK_WARM_MIN_HITS) {
     score = Math.max(score, LEAD_SCORE_WARM);
   }
 
   // Soft без привязки к настройкам ассистента — слабо
   if (softAsk && !buyer && !settingsFit && !builtinFit) {
-    score = Math.min(score, 30);
+    score = Math.min(score, UNANCHORED_ASK_MAX_SCORE);
     reasons.push("Вопрос без совпадения с настройками AI-ассистента");
+  }
+
+  // «подскажите сервис» = buyer + soft (60) без fit: запрос без привязки к продукту/нише/маркетплейсу — не лид
+  if (buyer && !fit && !hasMarketplaceContext(text) && !hasNamedToolAsk(text)) {
+    score = Math.min(score, UNANCHORED_ASK_MAX_SCORE);
+    reasons.push("Запрос без привязки к продукту, нише или маркетплейсу");
   }
 
   score = Math.max(0, Math.min(100, score));

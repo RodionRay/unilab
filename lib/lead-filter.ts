@@ -29,6 +29,10 @@ const BUYER_INTENT_RE =
 const SOFT_ASK_RE =
   /(?:^|[^\p{L}])(?:подскаж(?:ите|и)|посоветуйте|помогите\s+настроить|скажите\s+пожалуйста|кто\s+пользуется|кто\s+пользовался)/iu;
 
+/** «кто пользуется MPstats» — вопрос про конкретный (латиницей) инструмент, сам себе привязка к нише. */
+const NAMED_TOOL_ASK_RE =
+  /(?:^|[^\p{L}])кто\s+(?:пользовался|пользуется)\s+[a-z][a-z0-9]*(?![\p{L}\p{N}])/iu;
+
 /** Анонсы/рассылки каналов — не лид. */
 const BROADCAST_AD_RE =
   /(?:вам\s+срочное\s+сообщение|каталоге\s+решений|нельзя\s+пропустить|новинки[,]?\s+которые|гайд\s+для\s+продавцов|подписывайтесь|наш\s+сервис\s+помогает)/iu;
@@ -213,6 +217,10 @@ export function hasProductFit(text: string): boolean {
 
 export function hasMarketplaceContext(text: string): boolean {
   return MP_CONTEXT_RE.test(text || "");
+}
+
+export function hasNamedToolAsk(text: string): boolean {
+  return NAMED_TOOL_ASK_RE.test(text || "");
 }
 
 export function looksLikeServiceAd(text: string): boolean {
