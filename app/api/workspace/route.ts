@@ -1,6 +1,6 @@
 import {getSessionUser} from '@/lib/auth';
 import {GROUP_CATALOG,isCatalogPlaceholderUrl} from '@/lib/group-catalog';
-import {JOIN_SUCCESS_PATCH,JOIN_WORKER_ERROR_RETRY_MS,LIVE_JOIN_STATES,accountBlindPatch,clearStaleJoinState,type JoinAccountState,type JoinProxyState,evaluateAccountJoinReadiness,isAccountBlindResult,isJoinFarmCandidate,joinFailurePatch,sanitizeJoinStateError} from '@/lib/processes/join-flow';
+import {JOIN_SUCCESS_PATCH,JOIN_WORKER_ERROR_RETRY_MS,LIVE_JOIN_STATES,accountBlindPatch,clearStaleJoinState,type JoinAccountState,type JoinGateResult,type JoinProxyState,evaluateAccountJoinReadiness,isAccountBlindResult,isJoinFarmCandidate,joinFailurePatch,sanitizeJoinStateError} from '@/lib/processes/join-flow';
 import {database,seal,unseal} from '@/lib/server-store';
 import {aiChatText,envAiApiKey,resolveAiConfig} from '@/lib/ai-client';
 import {buildProjectBrief,leadMessageFingerprint,normalizeLeadMessage,parseLeadTemperature,ratingFromTemperatures,strongPlusTerms,type LeadTemperature} from '@/lib/lead-filter';
@@ -948,6 +948,49 @@ async function restoreJoinFields(owner:string,accountId:string,before:JoinAccoun
  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,accountId,'account').run();
 }
 
+type JoinGateRefusal=Extract<JoinGateResult,{ok:false}>;
+
+/** Ответ join_group, когда гейт аккаунта не пускает (отлёжка, лимит, темп, недоступен). */
+async function joinGateRefusal(owner:string,gdata:{accountId:string},adata:JoinAccountState,gate:JoinGateRefusal){
+ const db=database();
+ const accountId=gdata.accountId;
+ if(gate.reason==='cooldown'||gate.reason==='spamblock'||gate.reason==='frozen'){
+  const until=String(adata.cooldownUntil||'');
+  return reply({
+   error:until?`Аккаунт на отлежке до ${new Date(until).toLocaleString('ru-RU')}`:'Аккаунт на отлёжке (спамблок/заморозка/лимит)',
+   waitSec:until?Math.max(60,Math.ceil((Date.parse(until)-Date.now())/1000)||300):300,
+   cooldown:true,
+  },429);
+ }
+ if(gate.reason==='resolve_blind'){
+  return reply({
+   error:'Аккаунт группы не резолвит @username (ограничен Telegram) — дождитесь отлёжки или назначьте группе другой аккаунт',
+   waitSec:gate.waitSec,
+   accountBlind:true,
+   cooldown:true,
+  },429);
+ }
+ if(gate.reason==='quota'){
+  const inviteLimit=Number(adata.limits?.invite??DEFAULT_ACCOUNT_LIMITS.invite);
+  const cooled=applyQuotaCooldownIfExhausted(adata);
+  if(cooled!==adata){
+   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(cooled),owner,accountId,'account').run();
+  }
+  return reply({error:`Дневной лимит вступлений аккаунта группы (${inviteLimit}). Завтра или назначьте группе другой аккаунт.`,limitReached:true,cooldown:cooled.status==='cooldown'},429);
+ }
+ if(gate.reason==='pace'){
+  const wait=gate.waitSec||JOIN_GAP_DEFAULT_SEC;
+  return reply({
+   error:`Пауза между вступлениями: подождите ${Math.ceil(wait/60)} мин (${wait} с), чтобы не словить бан`,
+   waitSec:wait,
+   nextJoinAt:new Date(Date.now()+wait*1000).toISOString(),
+   pace:true,
+   group:gdata,
+  },429);
+ }
+ return reply({error:gate.message,accountUnavailable:true,reason:gate.reason,group:gdata},409);
+}
+
 /** Аккаунт годится для групп, которым предстоит вступление: готов сейчас или ждёт только паузу темпа. */
 async function accountCanJoinGroups(owner:string,adata:JoinAccountState|null){
  if(!adata)return false;
@@ -1330,48 +1373,21 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   // Вступает только назначенный группе аккаунт: недоступен — ошибка, другой не подставляем.
   const arow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,gdata.accountId,'account').first();
   if(!arow)return reply({error:'Аккаунт группы не найден — назначьте группе другой аккаунт'},404);
-  const adata=JSON.parse(arow.data);
-  const gate=await accountJoinGate(owner,adata);
-  if(!gate.ok){
-   if(gate.reason==='cooldown'||gate.reason==='spamblock'||gate.reason==='frozen'){
-    const until=String(adata.cooldownUntil||'');
-    return reply({
-     error:until?`Аккаунт на отлежке до ${new Date(until).toLocaleString('ru-RU')}`:'Аккаунт на отлёжке (спамблок/заморозка/лимит)',
-     waitSec:until?Math.max(60,Math.ceil((Date.parse(until)-Date.now())/1000)||300):300,
-     cooldown:true,
-    },429);
-   }
-   if(gate.reason==='resolve_blind'){
-    return reply({
-     error:'Аккаунт группы не резолвит @username (ограничен Telegram) — дождитесь отлёжки или назначьте группе другой аккаунт',
-     waitSec:gate.waitSec,
-     accountBlind:true,
-     cooldown:true,
-    },429);
-   }
-   if(gate.reason==='quota'){
-    const inviteLimit=Number(adata.limits?.invite??DEFAULT_ACCOUNT_LIMITS.invite);
-    const cooled=applyQuotaCooldownIfExhausted(adata);
-    if(cooled!==adata){
-     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(cooled),owner,gdata.accountId,'account').run();
-    }
-    return reply({error:`Дневной лимит вступлений аккаунта группы (${inviteLimit}). Завтра или назначьте группе другой аккаунт.`,limitReached:true,cooldown:cooled.status==='cooldown'},429);
-   }
-   if(gate.reason==='pace'){
-    const wait=gate.waitSec||JOIN_GAP_DEFAULT_SEC;
-    return reply({
-     error:`Пауза между вступлениями: подождите ${Math.ceil(wait/60)} мин (${wait} с), чтобы не словить бан`,
-     waitSec:wait,
-     nextJoinAt:new Date(Date.now()+wait*1000).toISOString(),
-     pace:true,
-     group:gdata,
-    },429);
-   }
-   return reply({error:gate.message,accountUnavailable:true,reason:gate.reason,group:gdata},409);
-  }
+  let adata=JSON.parse(arow.data);
+  let gate=await accountJoinGate(owner,adata);
+  if(!gate.ok)return await joinGateRefusal(owner,gdata,adata,gate);
   // Слот темпа и дневной счётчик занимаем до воркера условным UPDATE: параллельный клик по
   // другой группе того же аккаунта проигрывает сравнение data и получает паузу темпа.
-  const reserved=await reserveJoinSlot(owner,gdata.accountId,String(arow.data),adata);
+  let reserved=await reserveJoinSlot(owner,gdata.accountId,String(arow.data),adata);
+  if(!reserved){
+   // Запись аккаунта могла смениться не из-за вступления (проверка, прокси, имя): одно перечтение и повтор
+   const fresh=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,gdata.accountId,'account').first<{data:string}>();
+   if(!fresh)return reply({error:'Аккаунт группы не найден — назначьте группе другой аккаунт'},404);
+   adata=JSON.parse(fresh.data);
+   gate=await accountJoinGate(owner,adata);
+   if(!gate.ok)return await joinGateRefusal(owner,gdata,adata,gate);
+   reserved=await reserveJoinSlot(owner,gdata.accountId,fresh.data,adata);
+  }
   if(!reserved){
    return reply({
     error:`Аккаунт группы уже вступает в другую группу — подождите ${Math.ceil(JOIN_GAP_DEFAULT_SEC/60)} мин`,

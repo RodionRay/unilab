@@ -34,6 +34,20 @@ function addGroup(id:string,data:Record<string,unknown>){
   addRecord(id,'group',{name:'Целевая',url:`https://t.me/chat_${id.slice(0,4)}`,membership:'none',status:'setup',joinedAt:'',accountId:ACC_A,...data});
 }
 const join=(id:string)=>POST(postRequest({action:'join_group',id}));
+/** Один раз меняет запись аккаунта между её чтением и резервом слота (на запросе прокси гейта). */
+function mutateAccountDuringGate(accountId:string,patch:Record<string,unknown>){
+  const {db,sqlite}=testDb();
+  const original=db.prepare.bind(db);
+  let pending=true;
+  vi.spyOn(db,'prepare').mockImplementation((sql:string)=>{
+    if(pending&&sql.includes("kind='proxy'")){
+      pending=false;
+      const next={...rec(accountId),...patch};
+      sqlite.prepare('UPDATE records SET data=? WHERE id=?').run(JSON.stringify(next),accountId);
+    }
+    return original(sql);
+  });
+}
 const ago=(ms:number)=>new Date(Date.now()-ms).toISOString();
 
 describe('ручное вступление: хвосты очереди и гонки',()=>{
@@ -187,6 +201,34 @@ describe('ручное вступление: хвосты очереди и го
       expect(rec(ACC_A).joinsToday||0).toBe(0);
       expect(rec(ACC_A).lastJoinAt).toBeTruthy();
       expect(rec(GROUP).membership).toBe('joined');
+    });
+
+    it('запись аккаунта сменилась не из-за вступления — резерв повторяется и join проходит',async()=>{
+      await addAccount(ACC_A,{});
+      addGroup(GROUP,{});
+      mutateAccountDuringGate(ACC_A,{lastChecked:new Date().toISOString()});
+
+      const res=await join(GROUP);
+
+      expect(res.status).toBe(200);
+      expect(joinCalls).toBe(1);
+      expect(rec(ACC_A).joinsToday).toBe(1);
+      expect(rec(ACC_A).lastChecked).toBeTruthy();
+    });
+
+    it('после перечтения гейт не пускает (параллельное вступление) — 429 темп, воркер не зовётся',async()=>{
+      await addAccount(ACC_A,{});
+      addGroup(GROUP,{});
+      mutateAccountDuringGate(ACC_A,{lastJoinAt:new Date().toISOString(),joinsDay:moscowDayKey(),joinsToday:1});
+
+      const res=await join(GROUP);
+      const body=await res.json() as {pace?:boolean;error?:string};
+
+      expect(res.status).toBe(429);
+      expect(body.pace).toBe(true);
+      expect(body.error).toMatch(/Пауза между вступлениями/);
+      expect(joinCalls).toBe(0);
+      expect(rec(ACC_A).joinsToday).toBe(1);
     });
 
     it('исчерпан дневной лимит — 429 limitReached, второй живой аккаунт не подставляется',async()=>{
