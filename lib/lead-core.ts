@@ -5,6 +5,7 @@
 
 import {
   WEAK_PLUS_TERMS,
+  findMinusHit,
   hasBuyerIntent,
   hasProductFit,
   hasSoftAsk,
@@ -19,6 +20,8 @@ import {
 
 export const LEAD_SCORE_HOT = 70;
 export const LEAD_SCORE_WARM = 45;
+/** Soft ask (подскажите / кто пользуется) needs this many settings hits to be warm. */
+const SOFT_ASK_WARM_MIN_HITS = 2;
 
 export type LeadCoreSettings = {
   keywords?: string;
@@ -163,7 +166,7 @@ export function hardReject(
   const minus = splitTerms(
     [settings.minusKeywords || "", settings.avoidTopics || ""].join(", "),
   );
-  const hit = minus.find((m) => m.length >= 3 && body.includes(m));
+  const hit = findMinusHit(body, minus);
   if (hit) return `Стоп-слово: ${hit}`;
   return "";
 }
@@ -243,6 +246,12 @@ export function scoreLead(text: string, settings: LeadCoreSettings): LeadScoreRe
   if (!buyer && !softAsk) {
     score = Math.min(score, LEAD_SCORE_WARM - 1);
     if (score > 0) reasons.push("Нет запроса услуги — только тема чата");
+  }
+
+  // Soft + ≥2 совпадений с настройками AI — это вопрос по теме продукта, минимум warm
+  const settingsHitCount = plusHits.length + signalHits.length + criteriaHits.length;
+  if (softAsk && !buyer && settingsHitCount >= SOFT_ASK_WARM_MIN_HITS) {
+    score = Math.max(score, LEAD_SCORE_WARM);
   }
 
   // Soft без привязки к настройкам ассистента — слабо

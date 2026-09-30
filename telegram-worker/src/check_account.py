@@ -865,6 +865,33 @@ async def join_group(client, url: str, peer_hint: dict | None = None) -> dict[st
         raise
 
 
+MIN_MINUS_TERM_LENGTH = 3
+
+
+def compile_minus_terms(terms: list[str]) -> list[tuple[str, re.Pattern[str]]]:
+    """Minus terms as word-start patterns; terms shorter than 3 chars are dropped.
+
+    Substring matching made "нал" kill "канал"/"анализ" and "бот" kill "работа".
+    Mirrors lib/lead-filter.ts::findMinusHit.
+    """
+    out: list[tuple[str, re.Pattern[str]]] = []
+    for raw in terms:
+        term = (raw or "").strip().lower()
+        if len(term) < MIN_MINUS_TERM_LENGTH:
+            continue
+        phrase = r"\s+".join(re.escape(w) for w in term.split())
+        # (?<![^\W_]) = not preceded by a letter/digit (underscore does not count, as in the TS core)
+        out.append((term, re.compile(r"(?<![^\W_])" + phrase)))
+    return out
+
+
+def find_minus_hit(text_low: str, patterns: list[tuple[str, re.Pattern[str]]]) -> str | None:
+    for term, pattern in patterns:
+        if pattern.search(text_low):
+            return term
+    return None
+
+
 async def scan_group(
     client,
     url: str,
@@ -893,7 +920,7 @@ async def scan_group(
         )
 
     kws = [k.strip().lower() for k in keywords if k and k.strip()]
-    minus = [k.strip().lower() for k in minus_keywords if k and k.strip()]
+    minus = compile_minus_terms(minus_keywords)
     # Только общий intent; нишевые алиасы не хардкодим — приходят в keywords из настроек AI
     intent_markers = (
         "ищу сервис", "ищу crm", "ищем сервис", "нужен сервис", "нужна crm",
@@ -949,7 +976,7 @@ async def scan_group(
             if md < cutoff:
                 return
         low = text.lower()
-        if minus and any(x in low for x in minus):
+        if minus and find_minus_hit(low, minus):
             skipped_minus += 1
             return
         # чужая реклама / эзотерика / CTA @ / рассылки — не кандидат

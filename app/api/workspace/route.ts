@@ -14,6 +14,7 @@ import {
  type LeadCoreSettings,
 } from '@/lib/lead-core';
 import {appendLearnExamples,extractTermsFromHotMessages,extractStopTermsFromMessage,mergeKeywords,mergeKeywordsPreferNew} from '@/lib/ai-keywords';
+import {sanitizeMinusTerms} from '@/lib/lead-stopwords';
 import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpChatCounters,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasInviteQuota,hasMemberInviteQuota,hasMessageQuota,isAccountUsable,isDayLimitCooldown,isOnCooldown,joinWaitSec,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
 import {bracketLabel,formatRuWhen,inviteUserFailText,inviteUserOkText,normalizeStatusFilters,normalizeTgRef,pushTaskLog,pushTaskLogs,randomPauseSec} from '@/lib/audience-invite';
 import {canonicalizeTgUrl,duplicateReason,isDuplicateKind,telegramEntityKey} from '@/lib/record-identity';
@@ -2340,12 +2341,16 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     }
    }catch{/* heuristic only */}
   }
+  const learnedKeywords=mergeKeywordsPreferNew(settings.keywords||'',plusAdd,8000);
+  const learnedExamples=appendLearnExamples(settings.learnExamples||'',learnBits).slice(0,4000);
+  const learnedSignals=mergeKeywordsPreferNew(settings.hotSignals||'',plusAdd.slice(0,8),4000);
+  minusAdd=sanitizeMinusTerms(minusAdd,{...settings,keywords:learnedKeywords,learnExamples:learnedExamples,hotSignals:learnedSignals});
   const next={
    ...settings,
-   keywords:mergeKeywordsPreferNew(settings.keywords||'',plusAdd,8000),
+   keywords:learnedKeywords,
    minusKeywords:mergeKeywordsPreferNew(settings.minusKeywords||'',minusAdd,8000),
-   learnExamples:appendLearnExamples(settings.learnExamples||'',learnBits).slice(0,4000),
-   hotSignals:mergeKeywordsPreferNew(settings.hotSignals||'',plusAdd.slice(0,8),4000),
+   learnExamples:learnedExamples,
+   hotSignals:learnedSignals,
   };
   const data=settingsSchema.parse(next);
   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(data),owner,config.id,'settings').run();
@@ -2384,9 +2389,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     }
    }catch{/* heuristic only */}
   }
-  // Убрать из минуса то, что уже в плюсе
-  const plusSet=new Set(String(settings.keywords||'').toLowerCase().split(/[,;\n]+/).map((s:string)=>s.trim()).filter(Boolean));
-  minusAdd=minusAdd.filter(t=>t&&!plusSet.has(t.toLowerCase().trim()));
+  // Не пускать в стоп-лист слова продукта/плюса/контекста маркетплейсов — иначе скан режет целевые лиды
+  minusAdd=sanitizeMinusTerms(minusAdd,settings);
   const next={
    ...settings,
    minusKeywords:mergeKeywordsPreferNew(settings.minusKeywords||'',minusAdd,8000),
@@ -2440,25 +2444,12 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     }
    }catch{/* heuristic only */}
   }
-  const plusSet=new Set(String(settings.keywords||'').toLowerCase().split(/[,;\n]+/).map((s:string)=>s.trim()).filter(Boolean));
-  const generic=new Set(['помогите','помоги','подскажите','нужен','нужна','нужно','ищу','ищем','скажите','пожалуйста']);
-  minusAdd=minusAdd
-   .map(t=>String(t||'').trim().slice(0,60))
-   .filter(t=>t.length>=3&&!plusSet.has(t.toLowerCase())&&!generic.has(t.toLowerCase()));
-  // уникальные, порядок сохранён
-  const uniq:string[]=[];
-  const seen=new Set<string>();
-  for(const t of minusAdd){
-   const k=t.toLowerCase();
-   if(seen.has(k))continue;
-   seen.add(k);
-   uniq.push(t);
-  }
-  minusAdd=uniq.slice(0,10);
+  // Без коротких/общих слов, контекста маркетплейсов и терминов продукта (уникальные, порядок сохранён)
+  minusAdd=sanitizeMinusTerms(minusAdd.map(t=>String(t||'').trim().slice(0,60)),settings).slice(0,10);
   // Если всё уже было в минусе — всё равно добавим короткую цитату-фразу из сообщения
   if(!minusAdd.length){
    const clip=msg.replace(/\s+/g,' ').trim().slice(0,48).toLowerCase();
-   if(clip.length>=8)minusAdd=[clip];
+   if(clip.length>=8)minusAdd=sanitizeMinusTerms([clip],settings);
   }
 
   const next={
