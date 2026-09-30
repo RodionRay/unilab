@@ -2,7 +2,10 @@ import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {testDb} from './helpers/workspace-harness';
 
 vi.mock('cloudflare:workers',async()=>(await import('./helpers/workspace-harness')).cfModule);
-vi.mock('@/lib/users',()=>({listUserIdsForCron:async()=>[{userId:'owner-1',email:'o1@example.com',name:'O1'}]}));
+vi.mock('@/lib/users',()=>({listUserIdsForCron:async()=>[
+  {userId:'owner-1',email:'o1@example.com',name:'O1'},
+  {userId:'owner-2',email:'o2@example.com',name:'O2'},
+]}));
 
 import {POST} from '@/app/api/cron/tasks-tick/route';
 import {verifySessionToken} from '@/lib/auth';
@@ -20,8 +23,8 @@ function task(owner:string,kind:string,data:Record<string,unknown>){
   return id;
 }
 
-function call(auth?:string){
-  return POST(new Request('https://app.test/api/cron/tasks-tick',{method:'POST',headers:auth?{authorization:auth}:{}}));
+function call(auth?:string,url='https://app.test/api/cron/tasks-tick'){
+  return POST(new Request(url,{method:'POST',headers:auth?{authorization:auth}:{}}));
 }
 
 describe('POST /api/cron/tasks-tick (REQ-I4)',()=>{
@@ -32,6 +35,7 @@ describe('POST /api/cron/tasks-tick (REQ-I4)',()=>{
     seen.length=0;
     vi.stubEnv('CRON_SECRET',SECRET);
     vi.stubEnv('SESSION_SECRET','s'.repeat(40));
+    vi.stubEnv('APP_URL','https://app.test');
     vi.stubGlobal('fetch',vi.fn(async(url:string,init:{body:string;headers:Record<string,string>})=>{
       const body=JSON.parse(init.body) as {action:string;id:string};
       const token=String(init.headers.Cookie).split('=').slice(1).join('=');
@@ -79,6 +83,28 @@ describe('POST /api/cron/tasks-tick (REQ-I4)',()=>{
     expect(seen.every(s=>s.origin==='https://app.test|https://app.test')).toBe(true);
   });
 
+  it('calls APP_URL, never the origin from the request Host header',async()=>{
+    task('owner-1','invite_task',{status:'running'});
+    await call(`Bearer ${SECRET}`,'https://evil.test/api/cron/tasks-tick');
+    expect(seen.map(s=>s.origin)).toEqual(['https://app.test|https://app.test']);
+  });
+
+  it('without APP_URL calls loopback on the request port',async()=>{
+    vi.stubEnv('APP_URL','');
+    task('owner-1','invite_task',{status:'running'});
+    await call(`Bearer ${SECRET}`,'http://evil.test:5173/api/cron/tasks-tick');
+    expect(seen.map(s=>s.origin)).toEqual(['http://127.0.0.1:5173|http://127.0.0.1:5173']);
+  });
+
+  it('does not mint a session for an owner that is not an active user',async()=>{
+    const ghost=task('ghost-owner','mailing_task',{status:'running'});
+    const live=task('owner-1','invite_task',{status:'running'});
+    const body=await (await call(`Bearer ${SECRET}`)).json() as {due:number;skipped:number};
+    expect(seen.map(s=>s.id)).toEqual([live]);
+    expect(seen.map(s=>s.id)).not.toContain(ghost);
+    expect(body.skipped).toBe(1);
+  });
+
   it('nothing due → no workspace calls',async()=>{
     task('owner-1','invite_task',{status:'running',nextAt:future()});
     const body=await (await call(`Bearer ${SECRET}`)).json() as {due:number};
@@ -104,11 +130,10 @@ describe('listDueTasks / runDueTicks',()=>{
       tasks,
       budgetMs:100,
       callTimeoutMs:50,
-      minStartMs:30,
       concurrency:1,
       now:()=>clock,
       tick:async(t,timeoutMs)=>{
-        expect(timeoutMs).toBeLessThanOrEqual(50);
+        expect(timeoutMs).toBe(50);
         clock+=40;
         return {task:t,ok:true,note:''};
       },

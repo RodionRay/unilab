@@ -34,8 +34,10 @@ describe("скан · gate", () => {
   });
 
   it("блокирует отлёжку / spam / freeze / hard-dead", () => {
-    const cool = withDayLimitCooldown({ status: "active" }, "invite");
+    // Отлёжка без вида лимита блокирует; дневной лимит вступлений скан не останавливает
+    const cool = { status: "cooldown", cooldownUntil: new Date(Date.now() + 3600_000).toISOString() };
     expect(evaluateScanGate(cool).reason).toBe("cooldown");
+    expect(evaluateScanGate(withDayLimitCooldown({ status: "active" }, "invite"))).toEqual({ ok: true });
     expect(evaluateScanGate(withSpamblockStatus({ status: "active" })).reason).toBe(
       "cooldown",
     );
@@ -110,5 +112,14 @@ describe("скан · tombstones и серверные поля (REQ-L6, REQ-L10
     );
     expect(merged).toEqual({ replies: [{ text: "a" }], coreScore: 70, status: "working", draft: "x" });
     expect(keepServerOwnedFields("account", { status: "a" }, { status: "b" })).toEqual({ status: "b" });
+  });
+
+  it("save лида не даёт клиенту задать серверное поле, которого нет в сохранённом лиде", () => {
+    const merged = keepServerOwnedFields(
+      "lead",
+      { status: "new" },
+      { status: "working", senderId: "666", peerId: "777", mailingTaskId: "x", accountId: "acc" },
+    );
+    expect(merged).toEqual({ status: "working" });
   });
 });

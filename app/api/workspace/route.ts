@@ -24,7 +24,7 @@ import {
 } from '@/lib/processes/scan-flow';
 import {appendLearnExamples,extractTermsFromHotMessages,extractStopTermsFromMessage,mergeKeywords,mergeKeywordsPreferNew,parseKeywordCsv} from '@/lib/ai-keywords';
 import {sanitizeMinusTerms,scanStopTerms} from '@/lib/lead-stopwords';
-import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpChatCounters,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasInviteQuota,hasMemberInviteQuota,hasMessageQuota,isAccountFlooded,isAccountUsable,isDayLimitCooldown,isOnCooldown,joinWaitSec,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
+import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpChatCounters,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasInviteQuota,hasMemberInviteQuota,hasMessageQuota,isAccountFlooded,isAccountUsable,isDayLimitCooldown,isDayLimitedFor,dayLimitCooldownKind,isOnCooldown,joinWaitSec,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
 import {INVITE_SOFT_FAIL_LIMIT,interpretInviteWorkerResult,inviteAccountStillLive,inviteBatchLimit,inviteUserPatch} from '@/lib/processes/invite-tick';
 import {bracketLabel,formatRuWhen,inviteUserFailText,inviteUserOkText,normalizeStatusFilters,normalizeTgRef,pushTaskLog,pushTaskLogs,randomPauseSec} from '@/lib/audience-invite';
 import {canonicalizeTgUrl,duplicateReason,isDuplicateKind,telegramEntityKey} from '@/lib/record-identity';
@@ -46,11 +46,11 @@ import {
  type MailingSourceKind,
 } from '@/lib/mailing';
 import {interpretMailingSendResult,isAmbiguousSendError,mailingPersonKey,notePeerMiss,untriedAccountIds,type PeerMissState} from '@/lib/processes/mailing-tick';
-import {claimMailingRecipient,loadContactedRecipients,releaseMailingRecipient,settleMailingRecipient,type MailingRecipientEntry} from '@/lib/processes/mailing-recipients';
+import {CONTACTED_CHUNK,STALE_CLAIM_ERROR,claimMailingRecipient,expireStalePendingClaims,findContactedRecipients,releaseMailingRecipient,settleMailingRecipient,staleClaimDelivery,type MailingRecipientEntry} from '@/lib/processes/mailing-recipients';
 import {checkProxyTarget} from '@/lib/security/net-guard';
 import {proxyCheckTimeoutMs,workerAppTimeoutMs,workerSlots} from '@/lib/worker-timeouts';
 import {WorkerBusyError,isRetryableTickError,tickRetryPatch} from '@/lib/processes/tick-retry';
-import {startTickSession,tickLockIsLive,tickLockWaitSec,updateTaskData,type TaskData,type TickSession,type TickTaskKind} from '@/lib/processes/tick-lock';
+import {commitTaskEdit,startTickSession,tickLockIsLive,tickLockWaitSec,updateTaskData,type TaskData,type TickSession,type TickTaskKind} from '@/lib/processes/tick-lock';
 import {mergeTaskSave} from '@/lib/processes/task-save-merge';
 import {JOIN_GATE_ROTATE_WAIT_SEC,JOIN_PENDING_ERROR,audienceJoinGate,classifyCollectFailure,insertAudienceUsers,interpretAudienceJoin,isDeadSessionError,isSlotBlindError,listAudienceUsers,loadAudienceSeenIds,type AudienceUserData} from '@/lib/processes/audience-tick';
 import {authorizeWorkspaceAction,keepOwnerSecretsOnSave,visibleRecordsFor,type WorkspaceActor} from '@/lib/security/workspace-authz';
@@ -576,6 +576,18 @@ async function openTaskTick(owner:string,id:string,kind:TickTaskKind,notFound:st
   return {response:reply({ok:true,skipped:true,status:task.status,task})};
  }
  return {session};
+}
+
+/**
+ * Worker call inside a tick: started only when its timeout still fits the tick's wall budget
+ * (else TickBudgetExhaustedError → commit and continue next tick), lock renewed first.
+ */
+function tickWorkerPost(tickRun:TickSession){
+ return async(path:string,body:unknown,timeoutMs:number)=>{
+  tickRun.budget.assertFits(timeoutMs);
+  await tickRun.renew();
+  return workerPost(path,body,timeoutMs);
+ };
 }
 
 /** Pause/start/save never clear a lock a tick still holds (REQ-I1). */
@@ -2093,7 +2105,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     }
    }
   }
-  if(isDayLimitCooldown(adata)||String(adata.status||'')==='spamblock'||String(adata.status||'')==='frozen'){
+  if(isDayLimitedFor(adata,'invite')||String(adata.status||'')==='spamblock'||String(adata.status||'')==='frozen'){
    const until=String(adata.cooldownUntil||'');
    return reply({
     error:until?`Аккаунт на отлежке до ${new Date(until).toLocaleString('ru-RU')}`:'Аккаунт на отлёжке (спамблок/заморозка/лимит)',
@@ -2103,7 +2115,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   }
   if(!hasInviteQuota(adata)){
    const inviteLimit=Number(adata.limits?.invite??DEFAULT_ACCOUNT_LIMITS.invite);
-   const cooled=applyQuotaCooldownIfExhausted(adata);
+   const cooled=applyQuotaCooldownIfExhausted(adata,'invite');
    if(cooled!==adata){
     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(cooled),owner,gdata.accountId,'account').run();
    }
@@ -2153,7 +2165,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    }
    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'group').run();
    if(joinedOk){
-    const bumped=applyQuotaCooldownIfExhausted({...adata,...bumpJoinCounters(adata)});
+    const bumped=applyQuotaCooldownIfExhausted({...adata,...bumpJoinCounters(adata)},'invite');
     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(bumped),owner,gdata.accountId,'account').run();
    }
    if(flood){
@@ -3338,8 +3350,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const data=JSON.parse(row.data);
   if(b.action==='pause_audience'){
    const next={...data,status:'paused',error:'',nextAt:'',log:pushTaskLog(data.log,'info','Пауза')};
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'audience_task').run();
-   return reply({ok:true,task:next});
+   const saved=await commitTaskEdit(db,owner,id,'audience_task',data,next)??next;
+   return reply({ok:true,task:saved});
   }
   if(!data.accountIds?.length)return reply({error:'Выберите хотя бы один аккаунт'},400);
   const next={
@@ -3351,8 +3363,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    ...keepLiveLock(data),
    log:pushTaskLog(data.log,'info','Запуск сбора'),
   };
-  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'audience_task').run();
-  return reply({ok:true,task:next});
+  const saved=await commitTaskEdit(db,owner,id,'audience_task',data,next)??next;
+  return reply({ok:true,task:saved});
  }
  if(b.action==='tick_audience'){
   const id=z.string().uuid().parse(b.id);
@@ -3361,7 +3373,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const tickRun=opened.session;
   // Play / start всегда → running (как mailing); scheduled тоже подхватываем
   let data:any={...tickRun.base,status:'running',nextAt:''};
-  const post=async(path:string,body:unknown,timeoutMs:number)=>{await tickRun.renew();return workerPost(path,body,timeoutMs)};
+  const post=tickWorkerPost(tickRun);
   // Уже нечего собирать — сразу завершаем (без лишнего вызова воркера)
   if(data.hasMore===false&&(Number(data.collected)||0)>0){
    const next={
@@ -3389,8 +3401,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const liveIdsRaw=accountIds.filter(aid=>{
    const a=accMap.get(aid);
    if(!a)return false;
-   // status=cooldown без живого таймера раньше проходил isAccountUsable — для сбора не берём
-   if(String(a.status||'')==='cooldown')return false;
+   // status=cooldown без вида лимита (даже с истёкшим таймером) — для сбора не берём; дневной лимит ЛС/вступлений чтению не мешает
+   if(String(a.status||'')==='cooldown'&&dayLimitCooldownKind(a)===null)return false;
    return isAccountUsable(a);
   });
   // Аккаунт, уже вступивший в этот источник (из «Группы») — первым
@@ -3476,9 +3488,11 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   let floodWaitSec=0;
   let transientOnly=true;
   let tried=0;
-  // За тик максимум несколько слотов — иначе AbortSignal/прокси убивают весь тик
+  // За тик максимум несколько слотов и только пока вызов влезает в стену тика (tick-budget.ts)
   const perTick=Math.min(6,liveIds.length);
+  let budgetCut=false;
   for(const aid of liveIds.slice(0,perTick)){
+   if(tried>0&&!tickRun.budget.fits(workerAppTimeoutMs('collect'))){budgetCut=true;break}
    accountId=aid;
    tried++;
    try{
@@ -3565,7 +3579,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      :`Слот ${slotName(accountId)}: ${errMsg.slice(0,120)} — следующий`)};
   }
   // Если за тик не нашли рабочий слот, но слоты ещё есть — не паузим, крутим дальше
-  if(!result&&liveIds.length>perTick){
+  if(!result&&(budgetCut||liveIds.length>perTick)){
    const next={
     ...data,
     status:'running',
@@ -3752,8 +3766,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const data=JSON.parse(row.data);
   if(b.action==='pause_invite'){
    const next={...data,status:'paused',nextAt:'',...keepLiveLock(data),log:pushTaskLog(data.log,'info','Задача остановлена')};
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'invite_task').run();
-   return reply({ok:true,task:next});
+   const saved=await commitTaskEdit(db,owner,id,'invite_task',data,next)??next;
+   return reply({ok:true,task:saved});
   }
   // Уже запущена — не дублируем лог (двойной клик / гонка с poller)
   if(data.status==='running'){
@@ -3765,8 +3779,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     nextAt:locked?data.nextAt:'',
     ...keepLiveLock(data),
    };
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'invite_task').run();
-   return reply({ok:true,task:next,already:true});
+   const saved=await commitTaskEdit(db,owner,id,'invite_task',data,next)??next;
+   return reply({ok:true,task:saved,already:true});
   }
   // Пересчитать total из базы аудитории
   const left:any=await db.prepare(`SELECT COUNT(*) AS n FROM records WHERE owner=? AND kind='audience_user'
@@ -3782,8 +3796,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    ...keepLiveLock(data),
    log:pushTaskLog(data.log,'info',`Задача запущена · к приглашению ~${total}`),
   };
-  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'invite_task').run();
-  return reply({ok:true,task:next});
+  const saved=await commitTaskEdit(db,owner,id,'invite_task',data,next)??next;
+  return reply({ok:true,task:saved});
  }
  if(b.action==='tick_invite'){
   const id=z.string().uuid().parse(b.id);
@@ -3795,7 +3809,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   // Автодозапуск после отлёжки аккаунтов / Play
   if(data.status==='scheduled')data={...data,status:'running',log:pushTaskLog(data.log,'info','Задача запущена автоматически')};
   data={...data,nextAt:''};
-  const post=async(path:string,body:unknown,timeoutMs:number)=>{await tickRun.renew();return workerPost(path,body,timeoutMs)};
+  const post=tickWorkerPost(tickRun);
 
   const day=moscowDayKey();
   let invitedToday=Number(data.invitedToday)||0;
@@ -3879,7 +3893,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     .map(aid=>{
      const a=accMap.get(aid);
      if(!a)return 0;
-     if(!(isDayLimitCooldown(a)||String(a.status||'')==='spamblock'))return 0;
+     if(!(isDayLimitedFor(a,'memberInvite')||String(a.status||'')==='spamblock'))return 0;
      const t=Date.parse(String(a.cooldownUntil||''));
      return Number.isFinite(t)&&t>Date.now()?t:0;
     })
@@ -3984,7 +3998,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     return reply({ok:true,needJoin:true,task:next});
    }
    data={...data,targetMissStreak:0};
-   if(sourceUrl){
+   // Источник опционален: не тратим на него стену тика, если вступление уже не влезает
+   if(sourceUrl&&tickRun.budget.fits(workerAppTimeoutMs('join'))){
     try{await post('/join-group',{...payload,url:sourceUrl},workerAppTimeoutMs('join'))}catch{/* источник опционален */}
    }
    const result=await post('/invite-users',{
@@ -4178,14 +4193,14 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const data=JSON.parse(row.data);
   if(b.action==='pause_mailing'){
    const next={...data,status:'paused',nextAt:'',...keepLiveLock(data),log:pushTaskLog(data.log,'info','Задача остановлена',500)};
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'mailing_task').run();
-   return reply({ok:true,task:next});
+   const saved=await commitTaskEdit(db,owner,id,'mailing_task',data,next)??next;
+   return reply({ok:true,task:saved});
   }
   if(data.status==='running'){
    const locked=tickLockIsLive(data);
    const next={...data,error:'',nextAt:locked?data.nextAt:'',...keepLiveLock(data)};
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'mailing_task').run();
-   return reply({ok:true,task:next,already:true});
+   const saved=await commitTaskEdit(db,owner,id,'mailing_task',data,next)??next;
+   return reply({ok:true,task:saved,already:true});
   }
   if(data.sourceKind==='audience'&&!data.audienceTaskId){
    return reply({error:'Выберите базу аудитории'},400);
@@ -4215,11 +4230,10 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     }catch{/* */}
    }
   }else{
-   const users=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='audience_user'").bind(owner).all();
+   const users=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='audience_user' AND json_extract(data,'$.taskId')=?").bind(owner,String(data.audienceTaskId||'')).all();
    for(const r of users.results){
     try{
      const u=JSON.parse(String(r.data));
-     if(u.taskId!==data.audienceTaskId)continue;
      if(!u.username&&!u.userId)continue;
      const key=recipientKey({sourceKind:'audience',userId:u.userId,username:u.username});
      if(key&&!delivered.has(key))pending++;
@@ -4283,13 +4297,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     ),
    };
   }
-  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'mailing_task').run();
+  const saved=await commitTaskEdit(db,owner,id,'mailing_task',data,next)??next;
   if(next.status==='running'){
    void notifyMailingEvent(db,owner,String(next.name||'Рассылка'),`Запущена · к отправке ~${pending}`);
   }else if(next.status==='paused'&&next.error){
    void notifyMailingEvent(db,owner,String(next.name||'Рассылка'),`Не стартовала: ${next.error}`);
   }
-  return reply({ok:true,task:next});
+  return reply({ok:true,task:saved});
  }
 
  if(b.action==='refill_mailing_ai_pool'){
@@ -4303,8 +4317,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    aiPool:refill.pool,
    log:pushTaskLog(data.log,refill.added?'ok':'warn',refill.added?`AI-пул пополнен: +${refill.added}`:(refill.error||'Пул не пополнен'),500),
   };
-  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'mailing_task').run();
-  return reply({ok:true,task:next,added:refill.added,error:refill.error||''});
+  const saved=await commitTaskEdit(db,owner,id,'mailing_task',data,next)??next;
+  return reply({ok:true,task:saved,added:refill.added,error:refill.error||''});
  }
 
  if(b.action==='tick_mailing'){
@@ -4315,7 +4329,16 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   let data:any=tickRun.base;
   if(data.status==='scheduled')data={...data,status:'running',log:pushTaskLog(data.log,'info','Задача запущена автоматически',500)};
   data={...data,nextAt:''};
-  const post=async(path:string,body:unknown,timeoutMs:number)=>{await tickRun.renew();return workerPost(path,body,timeoutMs)};
+  const post=tickWorkerPost(tickRun);
+  // «pending» тика, который не дошёл до финиша: не шлём повторно, а показываем как «могло уйти» (R1)
+  for(const stale of await expireStalePendingClaims(db,owner,id)){
+   const d=staleClaimDelivery(stale,(data.deliveryMode||'dm') as MailingDeliveryMode);
+   data={
+    ...data,
+    deliveries:pushMailingDelivery(Array.isArray(data.deliveries)?data.deliveries:[],d),
+    log:pushTaskLog(data.log,'warn',`${d.username?`@${d.username}`:`id${d.userId||d.leadId}`}: ${STALE_CLAIM_ERROR}`,500),
+   };
+  }
 
   const day=moscowDayKey();
   let sentToday=Number(data.sentToday)||0;
@@ -4368,7 +4391,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     const flood=Date.parse(String(a.floodUntil||''));
     if(isAccountUsable(a)&&Number.isFinite(flood)&&flood>now)ends.push(flood);
     if(isAccountUsable(a)&&!hasSendQuota(a))ends.push(Date.parse(moscowNextMidnightIso()));
-    if(isDayLimitCooldown(a)||String(a.status||'')==='spamblock'){
+    if(isDayLimitedFor(a,deliveryMode==='chat'?'chat':'message')||String(a.status||'')==='spamblock'){
      const t=Date.parse(String(a.cooldownUntil||''));
      if(Number.isFinite(t)&&t>now)ends.push(t);
     }
@@ -4463,10 +4486,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const t=Date.parse(until);
    return Number.isFinite(t)&&t>nowMs;
   };
-  // Реестр получателей владельца: не ограничен 5000 ключами и общий для всех рассылок (REQ-M2, REQ-M3)
-  const contacted=await loadContactedRecipients(db,owner,id);
-  const isQueued=(key:string,personKey:string)=>
-   !!key&&!deliveredKeys.has(key)&&!isDeferred(key)&&!(personKey&&contacted.personKeys.has(personKey));
+  const isQueued=(key:string)=>!!key&&!deliveredKeys.has(key)&&!isDeferred(key);
   const batchSize=Math.max(1,Math.min(10,Number(data.batchPerTick)||1));
   // Дневной лимит задачи режет батч, а не только стартовую проверку (REQ-M6)
   const dailyLeft=data.dailyLimitEnabled?Math.max(0,Number(data.dailyLimit||200)-sentToday):batchSize;
@@ -4502,12 +4522,11 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      if(filter==='hot_warm'&&temp!=='hot'&&temp!=='warm')continue;
      if(deliveryMode==='dm'&&!L.senderId&&!L.senderUsername)continue;
      if(deliveryMode==='chat'&&(!L.groupId||!L.tgMsgId))continue;
-     if(deliveryMode==='dm'&&contacted.leadIds.has(String(r.id)))continue;
      const userId=String(L.senderId||'');
      const username=String(L.senderUsername||'').replace(/^@/,'');
      const key=recipientKey({sourceKind:'leads',leadId:String(r.id),userId,username});
      const personKey=mailingPersonKey(deliveryMode,{userId,username,leadId:String(r.id)});
-     if(!isQueued(key,personKey))continue;
+     if(!isQueued(key))continue;
      const g=L.groupId?gMap.get(String(L.groupId)):null;
      candidates.push({
       key,
@@ -4532,17 +4551,17 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      if(trow)audienceUrl=String(JSON.parse(String(trow.data)).url||'');
     }catch{/* */}
    }
-   const allUsers=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='audience_user'").bind(owner).all();
-   for(const r of allUsers.results){
+   // SQL-фильтр по базе задачи, не скан всей аудитории владельца (как инвайт/сбор)
+   const taskUsers=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='audience_user' AND json_extract(data,'$.taskId')=?").bind(owner,audienceTaskId).all();
+   for(const r of taskUsers.results){
     try{
      const u=JSON.parse(String(r.data));
-     if(u.taskId!==data.audienceTaskId)continue;
      if(!u.username&&!u.userId)continue;
      const userId=String(u.userId||'');
      const username=String(u.username||'').replace(/^@/,'');
      const key=recipientKey({sourceKind:'audience',userId,username});
      const personKey=mailingPersonKey(deliveryMode,{userId,username,leadId:''});
-     if(!isQueued(key,personKey))continue;
+     if(!isQueued(key))continue;
      candidates.push({
       key,
       personKey,
@@ -4560,7 +4579,20 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    candidates.sort((a,b)=>(b.username?1:0)-(a.username?1:0));
   }
 
-  const batch=candidates.slice(0,Math.min(batchSize,dailyLeft));
+  // Реестр получателей владельца (не ограничен 5000 ключами, общий для всех рассылок — REQ-M2, REQ-M3):
+  // проверяем порциями кандидатов (IN …), пока не набран батч
+  const batchLimit=Math.min(batchSize,dailyLeft);
+  const batch:Cand[]=[];
+  for(let i=0;i<candidates.length&&batch.length<batchLimit;i+=CONTACTED_CHUNK){
+   const chunk=candidates.slice(i,i+CONTACTED_CHUNK);
+   const contacted=await findContactedRecipients(db,owner,id,chunk);
+   for(const c of chunk){
+    if(batch.length>=batchLimit)break;
+    if(c.personKey&&contacted.personKeys.has(c.personKey))continue;
+    if(deliveryMode==='dm'&&c.leadId&&contacted.leadIds.has(c.leadId))continue;
+    batch.push(c);
+   }
+  }
   if(!batch.length){
    const decision=mailingEmptyBatchDecision(deferredUntil);
    if(decision.action==='wait'){
@@ -4682,6 +4714,10 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const rotate=()=>{nextAccountIndex=(nextAccountIndex+1)%Math.max(1,liveIds.length)};
 
    for(const cand of batch){
+    if(!tickRun.budget.fits(workerAppTimeoutMs('send'))){
+     logEntries.push({level:'info',text:'Лимит времени тика — остальные получатели на следующем тике'});
+     break;
+    }
     const sendable=liveIds.filter(canSendFrom);
     if(!sendable.length){
      logEntries.push({level:'info',text:'На этом тике аккаунтов с квотой больше нет'});

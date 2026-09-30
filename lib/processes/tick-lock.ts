@@ -4,13 +4,13 @@
  *
  * Lock = `tickLockUntil` (ISO, UTC) + `tickLockId` (owner token) inside the record JSON.
  * It is taken by one conditional UPDATE (only when empty/expired), so two concurrent
- * ticks of one task never both run. The TTL covers the longest single worker call and
- * is renewed before every call (`renewTickLock`).
+ * ticks of one task never both run. The TTL covers the whole worst-case tick (wall budget,
+ * lib/processes/tick-budget.ts) and is renewed before every worker call (`renewTickLock`).
  */
 import type { D1LikeDatabase } from "@/lib/db";
 import type { TaskLogEntry } from "@/lib/audience-invite";
 import { TickLockLostError } from "@/lib/processes/tick-retry";
-import { WORKER_LONGEST_APP_TIMEOUT_MS } from "@/lib/worker-timeouts";
+import { TICK_WORST_CASE_MS, startTickBudget, type TickBudget } from "@/lib/processes/tick-budget";
 
 export type TickTaskKind = "audience_task" | "invite_task" | "mailing_task";
 export type TaskData = Record<string, unknown>;
@@ -23,8 +23,8 @@ export type TickLock = Readonly<{
   token: string;
 }>;
 
-/** Longest single worker call + a minute for DB work between calls. */
-export const TICK_LOCK_TTL_MS = WORKER_LONGEST_APP_TIMEOUT_MS + 60_000;
+/** A whole tick fits even without a renewal; renewals keep it live past a slow commit. */
+export const TICK_LOCK_TTL_MS = TICK_WORST_CASE_MS;
 
 const LOCK_KEYS = ["tickLockUntil", "tickLockId"] as const;
 const CAS_ATTEMPTS = 8;
@@ -231,6 +231,8 @@ export type TickSession = Readonly<{
   lock: TickLock;
   /** The row right after the lock was taken; the tick builds its `next` objects from it. */
   base: TaskData;
+  /** Wall budget from the lock; a worker call starts only when it fits (tick-budget.ts). */
+  budget: TickBudget;
   /** Throws TickLockLostError when the lock is no longer ours. Call before every worker call. */
   renew: () => Promise<void>;
   /** Commits what changed between `base` and `next` (+ extra log lines) and releases the lock. */
@@ -259,6 +261,7 @@ export async function startTickSession(
   const session: TickSession = {
     lock,
     base,
+    budget: startTickBudget(),
     renew: async () => {
       if (!(await renewTickLock(db, lock))) throw new TickLockLostError("Блокировка тика потеряна");
     },
@@ -297,4 +300,41 @@ export function tickCommitFromSnapshot(base: TaskData, next: TaskData): TickComm
     from = idx >= 0 ? idx + 1 : sameJson(baseLog, nextLog) ? nextLog.length : 0;
   }
   return { patch, entries: nextLog.slice(from) };
+}
+
+/**
+ * A user action (pause / start / refill) built as a whole `next` from its `base` read, replayed
+ * onto the row as it is now: only the keys it changed and the log lines it appended, so tick
+ * progress committed in between survives. A live tick lock is kept, an expired one cleared.
+ */
+export function rebaseTaskEdit(
+  fresh: TaskData,
+  base: TaskData,
+  next: TaskData,
+  kind: TickTaskKind,
+  now = Date.now(),
+): TaskData {
+  const commit = tickCommitFromSnapshot(base, next);
+  const out: TaskData = { ...fresh };
+  for (const [key, value] of Object.entries(commit.patch)) {
+    if (!(LOCK_KEYS as readonly string[]).includes(key)) out[key] = value;
+  }
+  if (commit.entries?.length) out.log = appendLog(fresh.log, commit.entries, TICK_LOG_CAP[kind]);
+  if (!tickLockIsLive(fresh, now)) {
+    out.tickLockUntil = "";
+    out.tickLockId = "";
+  }
+  return out;
+}
+
+/** CAS write of a user action; returns the stored row (null when the task is gone). */
+export function commitTaskEdit(
+  db: D1LikeDatabase,
+  owner: string,
+  id: string,
+  kind: TickTaskKind,
+  base: TaskData,
+  next: TaskData,
+): Promise<TaskData | null> {
+  return updateTaskData(db, owner, id, kind, (fresh) => rebaseTaskEdit(fresh, base, next, kind));
 }

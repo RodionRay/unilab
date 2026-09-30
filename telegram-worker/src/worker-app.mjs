@@ -11,6 +11,12 @@ import { join } from "node:path";
 
 export const WORK_DIR_PREFIX = "uniseller-acc-";
 export const MIN_TOKEN_LENGTH = 32;
+/**
+ * Fetch timeout of the /api/cron/tasks-tick loop: above the app's run budget
+ * (lib/processes/tasks-tick-runner.ts TASKS_TICK_RUN_BUDGET_MS, 420 s). An earlier abort
+ * makes workerd cancel the run and the ticks in it; tests/tick-budget.test.ts pins the order.
+ */
+export const TASKS_TICK_FETCH_MS = 480_000;
 const DEFAULT_MAX_BODY_BYTES = 6_000_000;
 const DEFAULT_MAX_CONCURRENCY = 4;
 // Requests beyond the running slots wait here; the UI fires ~8 proxy checks at once.

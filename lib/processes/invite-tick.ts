@@ -130,7 +130,7 @@ function summarize(results: InviteWorkerUserResult[]): InviteBatchSummary {
 function bumpMemberInvites(account: Record<string, unknown>, okN: number, now: Date): Record<string, unknown> {
   const day = moscowDayKey(now);
   const prev = account.memberInviteDay === day ? Number(account.memberInvitesToday) || 0 : 0;
-  return applyQuotaCooldownIfExhausted({ ...account, memberInviteDay: day, memberInvitesToday: prev + okN });
+  return applyQuotaCooldownIfExhausted({ ...account, memberInviteDay: day, memberInvitesToday: prev + okN }, "memberInvite");
 }
 
 function targetError(result: InviteWorkerResult): { code: string; message: string } | null {

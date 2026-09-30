@@ -2,9 +2,10 @@
 
 import { isCatalogPlaceholderUrl } from "@/lib/group-catalog";
 import {
+  dayLimitCooldownKind,
   hasInviteQuota,
   isAccountUsable,
-  isDayLimitCooldown,
+  isDayLimitedFor,
   joinWaitSec,
 } from "@/lib/telegram-accounts";
 
@@ -35,6 +36,7 @@ export function evaluateJoinGate(opts: {
   account?: {
     status?: string | null;
     cooldownUntil?: string | null;
+    cooldownReason?: unknown;
     limits?: { invite?: unknown };
     joinsToday?: number;
     joinsDay?: string;
@@ -62,7 +64,8 @@ export function evaluateJoinGate(opts: {
   if (st === "frozen") {
     return { ok: false, reason: "frozen", message: "Аккаунт заморожен" };
   }
-  if (isDayLimitCooldown(acc) || st === "cooldown") {
+  // Дневной лимит другого вида (ЛС, инвайты) вступлению не мешает; отлёжка без вида — мешает
+  if (isDayLimitedFor(acc, "invite") || (st === "cooldown" && dayLimitCooldownKind(acc) === null)) {
     const until = String(acc.cooldownUntil || "");
     const waitSec = until
       ? Math.max(60, Math.ceil((Date.parse(until) - Date.now()) / 1000) || 300)
