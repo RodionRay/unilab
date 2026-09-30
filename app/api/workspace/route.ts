@@ -1,8 +1,8 @@
 import {getSessionUser} from '@/lib/auth';
 import {GROUP_CATALOG,isCatalogPlaceholderUrl} from '@/lib/group-catalog';
-import {JOIN_SUCCESS_PATCH,JOIN_WORKER_ERROR_RETRY_MS,accountBlindPatch,classifyJoinFailure,isAccountBlindResult,isAccountResolveBlind,isUsernameMissingResult,joinFailurePatch,missingAccountsOf,planGroupHeal,recordUsernameMissing,sanitizeJoinStateError,seedMissingAccounts} from '@/lib/processes/join-flow';
+import {JOIN_SUCCESS_PATCH,JOIN_WORKER_ERROR_RETRY_MS,accountBlindPatch,classifyJoinFailure,deadLinkPatch,isAccountBlindResult,isAccountResolveBlind,isUsernameMissingResult,joinFailurePatch,missingAccountsOf,planGroupHeal,recordUsernameMissing,sanitizeJoinStateError,seedMissingAccounts} from '@/lib/processes/join-flow';
 import {buildRelevanceProfile,compareJoinPriority,joinGateFor,rescoreGroup,type JoinGateState} from '@/lib/join-relevance';
-import {JOIN_RESERVE_MS,accountAgeDays,channelsTooMuchPatch,farmThroughput,joinErrorPatch,joinFloodPatch,joinSuccessPatch,planJoinFarm,type FarmAccount} from '@/lib/join-pacing';
+import {JOIN_RESERVE_MS,accountJoinWaitSec,channelsTooMuchPatch,farmThroughput,joinErrorPatch,joinFloodPatch,joinSuccessPatch,planJoinFarm,type FarmAccount} from '@/lib/join-pacing';
 import {database,seal,unseal} from '@/lib/server-store';
 import {aiChatText,envAiApiKey,resolveAiConfig} from '@/lib/ai-client';
 import {buildProjectBrief,leadMessageFingerprint,normalizeLeadMessage,parseLeadTemperature,ratingFromTemperatures,strongPlusTerms,type LeadTemperature} from '@/lib/lead-filter';
@@ -17,7 +17,7 @@ import {
 } from '@/lib/lead-core';
 import {appendLearnExamples,extractTermsFromHotMessages,extractStopTermsFromMessage,mergeKeywords,mergeKeywordsPreferNew,parseKeywordCsv} from '@/lib/ai-keywords';
 import {sanitizeMinusTerms,scanStopTerms} from '@/lib/lead-stopwords';
-import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpChatCounters,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasInviteQuota,hasMemberInviteQuota,hasMessageQuota,isAccountUsable,isDayLimitCooldown,isOnCooldown,joinWaitSec,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
+import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpChatCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasMemberInviteQuota,hasMessageQuota,isAccountUsable,isDayLimitCooldown,isOnCooldown,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
 import {bracketLabel,formatRuWhen,inviteUserFailText,inviteUserOkText,normalizeStatusFilters,normalizeTgRef,pushTaskLog,pushTaskLogs,randomPauseSec} from '@/lib/audience-invite';
 import {canonicalizeTgUrl,duplicateReason,isDuplicateKind,telegramEntityKey} from '@/lib/record-identity';
 import {
@@ -1075,35 +1075,6 @@ async function listLiveAccountIds(owner:string){
  return live.map(x=>x.id);
 }
 
-type FarmJoinCandidate={id:string;data:any;wait:number;load:number};
-
-async function listJoinFarmCandidates(owner:string):Promise<FarmJoinCandidate[]>{
- const db=database();
- const accRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='account'").bind(owner).all();
- const load=new Map<string,number>();
- const groups=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='group'").bind(owner).all();
- for(const r of groups.results){
-  try{
-   const d=JSON.parse(String(r.data));
-   const aid=String(d.accountId||'');
-   if(aid)load.set(aid,(load.get(aid)||0)+1);
-  }catch{/* */}
- }
- const live:FarmJoinCandidate[]=[];
- for(const r of accRows.results){
-  try{
-   const a=JSON.parse(String(r.data));
-   if(!isAccountUsable(a))continue;
-   if(!hasInviteQuota(a))continue;
-   if(isAccountResolveBlind(a))continue;
-   const id=String(r.id);
-   live.push({id,data:a,wait:joinWaitSec(a),load:load.get(id)||0});
-  }catch{/* */}
- }
- live.sort((a,b)=>a.wait-b.wait||a.load-b.load);
- return live;
-}
-
 async function listMessageFarmCandidates(owner:string):Promise<{id:string;data:any}[]>{
  const db=database();
  const accRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='account'").bind(owner).all();
@@ -1161,8 +1132,10 @@ async function refreshGroupRelevance(owner:string,opts:{force?:boolean}={}){
   }
   if(opts.force)next=seedMissingAccounts(next);
   if(next!==d){
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,String(row.id),'group').run();
-   updated++;
+   // CAS по исходному JSON: параллельный join успел записать группу — не затираем, оценим в следующий раз.
+   const res:any=await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=? AND data=?').bind(JSON.stringify(next),owner,String(row.id),'group',String(row.data)).run();
+   if(Number(res?.meta?.changes))updated++;
+   else next=d;
   }
   const st=joinGateFor(next).state;
   counts[st]=(counts[st]||0)+1;
@@ -1311,7 +1284,7 @@ async function healDeadGroupAccounts(owner:string){
    }
    if(action==='restore_previous'){
     // Аккаунт уже вступал: join вернёт «already» без новой заявки
-    await save(gid,{...d,accountId:prev,joinState:'queued',joinStateAt:new Date().toISOString(),...JOIN_SUCCESS_PATCH});
+    await save(gid,{...d,accountId:prev,joinRejoin:true,joinState:'queued',joinStateAt:new Date().toISOString(),...JOIN_SUCCESS_PATCH});
     restored++;
     enqueue(gid,name,d);
     continue;
@@ -1324,6 +1297,8 @@ async function healDeadGroupAccounts(owner:string){
     cursor++;
     await save(gid,{
      ...d,
+     // Была вступившей — восстановление членства, а не новое решение фильтра.
+     ...(groupLooksJoined(d)?{joinRejoin:true}:{}),
      accountId:nextAcc,
      membership:'none',
      joinedAt:'',
@@ -1776,7 +1751,14 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    if(isDayLimitCooldown(own.data)||['spamblock','frozen'].includes(String(own.data.status||''))){
     return reply({error:'Аккаунт на отлёжке (спамблок/заморозка/лимит)',cooldown:true,waitSec:300},429);
    }
-   adata=own.data;
+   // Слот фиксирован членством: ждём его FloodWait/паузу, резервируем, чтобы параллельный join его не взял.
+   const wait=accountJoinWaitSec(own.data);
+   const reserved=wait>0?null:await reserveJoinAccount(owner,own,farm);
+   if(!reserved){
+    const w=Math.max(30,wait);
+    return reply({error:`Аккаунт группы на паузе ~${Math.ceil(w/60)} мин — обновим позже`,waitSec:w,pace:true,retryOther:true,group:gdata},429);
+   }
+   adata=reserved;
   }else{
    // Параллельно по аккаунтам, последовательно на аккаунт и прокси: свой слот, если готов, иначе ферма.
    const exclude=new Set(missingAccountsOf(gdata));
@@ -1798,6 +1780,21 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     break;
    }
    if(!adata){
+    if(!plan.length&&exclude.size&&planJoinFarm(farm).length){
+     // Пусто только из-за аккаунтов, которые уже не видели @ этой группы: это ссылка, а не лимит фермы.
+     const untried=farm.filter(a=>isAccountUsable(a.data)&&!exclude.has(a.id));
+     if(!untried.length){
+      const msg=`Ссылка не открывается: все ${exclude.size} рабочих аккаунта не видят группу — проверьте ссылку`;
+      const dead={...gdata,...deadLinkPatch(msg)};
+      await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(dead),owner,id,'group').run();
+      try{await appendGlobalRescanLog(owner,'error',`${gdata.name||'Группа'}: ${msg}`)}catch{/* */}
+      return reply({error:msg,parked:true,deadLink:true,gate:'dead',group:dead},409);
+     }
+     // Непробованные аккаунты есть, но сейчас на лимите/паузе — откладываем группу, не всю ферму.
+     const deferred={...gdata,joinState:'',joinStateAt:'',joinNextAt:new Date(Date.now()+JOIN_WORKER_ERROR_RETRY_MS*2).toISOString()};
+     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(deferred),owner,id,'group').run();
+     return reply({error:'Свободного аккаунта, который ещё не пробовал эту группу, сейчас нет — повторим позже',deferred:true,group:deferred},409);
+    }
     if(!plan.length){
      const own=farm.find(a=>a.id===String(gdata.accountId));
      if(own&&isAccountResolveBlind(own.data)&&farm.every(a=>!isAccountUsable(a.data)||isAccountResolveBlind(a.data))){
@@ -1853,7 +1850,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     joinState:'',
     joinStateAt:'',
     joinStateError:reallyJoined||result.join==='requested'?'':(result.error||'Не удалось вступить').slice(0,500),
-    ...(joinedOk?JOIN_SUCCESS_PATCH:accountFault?{}:joinFailurePatch(gdata)),
+    ...(joinedOk?{...JOIN_SUCCESS_PATCH,joinRejoin:false}:accountFault?{}:joinFailurePatch(gdata)),
     name:result.title&&(!gdata.name||gdata.name.startsWith('http')||gdata.name==='Группа')?result.title:gdata.name,
    };
    // «Слот не видит @»: считаем разные аккаунты; после K — ссылка мёртвая, ферму больше не жжём.
@@ -1882,7 +1879,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     const fp=joinFloodPatch(sec);
     await patchAccount(owner,accountId,fp);
     try{await appendGlobalRescanLog(owner,'warn',`Аккаунт ${accountId.slice(0,8)}: ${fp.error}`)}catch{/* */}
-    return reply({ok:false,result,error:result.error,waitSec:30,accountWaitSec:Math.ceil((Date.parse(String(fp.floodUntil))-Date.now())/1000),flood:true,pace:true,retryOther:true,rotatedAccount,group:next},429);
+    return reply({ok:false,result,error:result.error,waitSec:30,accountWaitSec:Math.ceil((Date.parse(String(fp.floodUntil))-Date.now())/1000),flood:true,pace:true,retryOther:true,accountBusy:alreadyIn,rotatedAccount,group:next},429);
    }
    if(failure==='peer_flood'){
     await patchAccount(owner,accountId,d=>({...withSpamblockStatus(d,String(result.error||'PEER_FLOOD')),...release}));
@@ -2055,6 +2052,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
       const rotated={
        ...gdata,
        ...step.patch,
+       ...(groupLooksJoined(gdata)?{joinRejoin:true}:{}),
        accountId:nextAcc,
        membership:'none',
        status:'setup',
@@ -2130,6 +2128,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
 
      const healed={
       ...gdata,
+      ...(groupLooksJoined(gdata)?{joinRejoin:true}:{}),
       status:'setup',
       membership:'none',
       joinedAt:'',

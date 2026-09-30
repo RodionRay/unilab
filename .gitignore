@@ -64,3 +64,4 @@ tdata/
 *.sqlite*
 .cursor/
 # .env.bak* is already covered by .env* above
+join-rescore-backup-*.json

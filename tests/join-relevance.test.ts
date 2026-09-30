@@ -67,9 +67,9 @@ describe("relevance score · bands", () => {
     expect(r.band).toBe("skip");
   });
 
-  it("uses a glued username (wbozsellers) and a short alias at its end (maxprowb)", () => {
+  it("uses a glued username (wbozsellers) and a short alias at its end (sellertestwb)", () => {
     expect(score({ name: "wbozsellers", url: "https://t.me/wbozsellers" }).score).toBeGreaterThanOrEqual(RELEVANCE_REVIEW_MIN);
-    expect(score({ name: "@maxprowb", url: "https://t.me/maxprowb" }).band).not.toBe("skip");
+    expect(score({ name: "@sellertestwb", url: "https://t.me/sellertestwb" }).band).not.toBe("skip");
   });
 
   it("unconfigured settings switch the filter off instead of parking everything", () => {

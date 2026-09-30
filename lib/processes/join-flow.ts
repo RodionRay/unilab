@@ -257,19 +257,20 @@ export function recordUsernameMissing(
   };
   if (!dead) return { dead, missingAccounts, patch: base };
   const msg = `Ссылка не открывается: ${missingAccounts.length} разных аккаунта не видят группу — проверьте ссылку`;
+  return { dead, missingAccounts, patch: { ...base, ...deadLinkPatch(msg) } };
+}
+
+/** Group leaves the auto-queue as a dead link (owner approval or a new URL brings it back). */
+export function deadLinkPatch(message: string): Record<string, unknown> {
+  const msg = String(message || "Ссылка не открывается").slice(0, 500);
   return {
-    dead,
-    missingAccounts,
-    patch: {
-      ...base,
-      joinDead: true,
-      joinGaveUp: true,
-      status: "error",
-      error: msg,
-      joinState: "",
-      joinStateAt: "",
-      joinStateError: msg,
-    },
+    joinDead: true,
+    joinGaveUp: true,
+    status: "error",
+    error: msg,
+    joinState: "",
+    joinStateAt: "",
+    joinStateError: msg,
   };
 }
 

@@ -114,7 +114,7 @@ async function tryJoin(
       !!data?.limitReached ||
       (!!data?.accountBlind && !!data?.cooldown) ||
       (!!data?.pace && !data?.retryOther);
-    return { joined: 0, rejoinId: "", error, stop, parked: !!data?.parked };
+    return { joined: 0, rejoinId: "", error, stop, parked: !!data?.parked || !!data?.deferred };
   }
 }
 

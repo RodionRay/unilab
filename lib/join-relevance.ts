@@ -387,6 +387,8 @@ export type JoinGateGroup = RelevanceGroup & {
   joinedAt?: string;
   joinDecision?: string;
   joinDead?: boolean;
+  /** Was a member; membership was reset by an account swap — restoring it is not a new join decision. */
+  joinRejoin?: boolean;
   joinRelevance?: unknown;
 };
 
@@ -430,6 +432,7 @@ export function joinGateFor(group: JoinGateGroup): JoinGate {
     score,
   });
   if (groupIsMember(group)) return gate(true, "joined", "");
+  if (group.joinRejoin) return gate(true, "joined", "восстановление членства после смены аккаунта");
   if (group.joinDead) return gate(false, "dead", "Несколько аккаунтов не видят @username — проверьте ссылку");
   if (group.joinDecision === "approved") return gate(true, "approved", "одобрено вручную");
   if (group.joinDecision === "skipped") return gate(false, "skipped", "пропущено вручную");
@@ -469,7 +472,7 @@ export function rescoreGroup(
   profile: RelevanceProfile,
   opts: { force?: boolean; now?: Date } = {},
 ): RescorePatch | null {
-  if (groupIsMember(group)) return null;
+  if (groupIsMember(group) || group.joinRejoin) return null;
   if (!opts.force && !isRelevanceStale(group.joinRelevance, profile)) return null;
   const joinRelevance = scoreGroupRelevance(group, profile, opts.now);
   const gate = joinGateFor({ ...group, joinRelevance });

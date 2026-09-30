@@ -265,4 +265,101 @@ describe('workspace API: join pacing',()=>{
     expect(new Set(g.joinMissingAccounts).size).toBe(3);
     expect(tried.size).toBe(3);
   });
+
+  it('a farm where every usable account already failed to see @ marks the link dead, not «farm exhausted»',async()=>{
+    const g={...group(G_WB),joinMissingAccounts:[ACCOUNT_ID],usernameMissing:true};
+    testDb().sqlite.prepare('UPDATE records SET data=? WHERE id=?').run(JSON.stringify(g),G_WB);
+    const calls=stubWorker({ok:true,join:'joined'});
+
+    const res=await POST(postRequest({action:'join_group',id:G_WB}));
+    const data=await body(res);
+
+    expect(res.status).toBe(409);
+    expect(data.farmExhausted).toBeUndefined();
+    expect(data.deadLink).toBe(true);
+    expect(group(G_WB).joinDead).toBe(true);
+    expect(calls.filter(u=>u.endsWith('/join-group'))).toHaveLength(0);
+  });
+
+  it('a joined group moved off a dead account is re-joined without the relevance gate',async()=>{
+    const G_BLOG='a0000000-0000-4000-8000-000000000009';
+    addRecord(G_BLOG,'group',{...unjoined('Главред','https://t.me/glvrd_test',{source:'tgstat-blogs'}),membership:'joined',joinedAt:'2026-09-01T00:00:00Z',status:'active',joinState:'',accountId:'dead-account'});
+    await POST(postRequest({action:'heal_dead_group_accounts'}));
+    const moved=group(G_BLOG);
+    expect(moved.membership).toBe('none');
+    expect(moved.joinRejoin).toBe(true);
+    const calls=stubWorker({ok:true,join:'joined'});
+
+    const res=await POST(postRequest({action:'join_group',id:G_BLOG}));
+
+    expect(res.status).toBe(200);
+    expect(calls.filter(u=>u.endsWith('/join-group'))).toHaveLength(1);
+    expect(group(G_BLOG)).toMatchObject({membership:'joined',joinRejoin:false});
+  });
+
+  it('peer refresh of a joined group waits out the account FloodWait without calling Telegram',async()=>{
+    const joined={...group(G_WB),membership:'joined',joinedAt:'2026-09-01T00:00:00Z',status:'active',joinState:'',channelId:'',accessHash:''};
+    testDb().sqlite.prepare('UPDATE records SET data=? WHERE id=?').run(JSON.stringify(joined),G_WB);
+    const acc={...account(ACCOUNT_ID),floodUntil:new Date(Date.now()+600_000).toISOString()};
+    testDb().sqlite.prepare('UPDATE records SET data=? WHERE id=?').run(JSON.stringify(acc),ACCOUNT_ID);
+    const calls=stubWorker({ok:true,join:'already'});
+
+    const res=await POST(postRequest({action:'join_group',id:G_WB}));
+
+    expect(res.status).toBe(429);
+    expect((await body(res)).waitSec).toBeGreaterThan(500);
+    expect(calls.filter(u=>u.endsWith('/join-group'))).toHaveLength(0);
+  });
+
+  it('two parallel joins never share one account (CAS reservation)',async()=>{
+    const G2='a0000000-0000-4000-8000-000000000010';
+    addRecord(G2,'group',unjoined('Ozon | Чат поставщиков','https://t.me/ozon_suppliers_test'));
+    await POST(postRequest({action:'heal_dead_group_accounts'}));
+    const joins:string[]=[];
+    vi.stubGlobal('fetch',vi.fn(async(url:string)=>{
+      if(!String(url).endsWith('/join-group'))throw new Error('offline');
+      joins.push(String(url));
+      await new Promise(r=>setTimeout(r,20));
+      return Response.json({ok:true,join:'joined'});
+    }));
+
+    const [a,b]=await Promise.all([POST(postRequest({action:'join_group',id:G_WB})),POST(postRequest({action:'join_group',id:G2}))]);
+
+    expect(joins).toHaveLength(1);
+    expect([a.status,b.status].sort()).toEqual([200,429]);
+  });
+
+  it('one join at a time per proxy even with two free accounts on it',async()=>{
+    const G2='a0000000-0000-4000-8000-000000000011';
+    addRecord(G2,'group',unjoined('Ozon | Чат поставщиков','https://t.me/ozon_suppliers_test'));
+    addRecord(ACC2,'account',{name:'Farm 2',phone:'+79990001123',status:'active',proxyId:'shared-proxy'},await seal(JSON.stringify({session:'s2'}),OWNER));
+    testDb().sqlite.prepare('UPDATE records SET created=? WHERE id=?').run('2026-01-01T00:00:00Z',ACC2);
+    testDb().sqlite.prepare('UPDATE records SET data=? WHERE id=?').run(JSON.stringify({...account(ACCOUNT_ID),proxyId:'shared-proxy'}),ACCOUNT_ID);
+    await POST(postRequest({action:'heal_dead_group_accounts'}));
+    const joins:string[]=[];
+    vi.stubGlobal('fetch',vi.fn(async(url:string)=>{
+      if(!String(url).endsWith('/join-group'))throw new Error('offline');
+      joins.push(String(url));
+      await new Promise(r=>setTimeout(r,20));
+      return Response.json({ok:true,join:'joined'});
+    }));
+
+    await Promise.all([POST(postRequest({action:'join_group',id:G_WB})),POST(postRequest({action:'join_group',id:G2}))]);
+
+    expect(joins).toHaveLength(1);
+  });
+
+  it('every failure branch releases the reservation; account-side errors build the streak',async()=>{
+    stubWorker({ok:false,join:'private',error:'Группа приватная — нужен инвайт-ссылка'});
+    await POST(postRequest({action:'join_group',id:G_WB}));
+    expect(account(ACCOUNT_ID).joinReservedUntil).toBe('');
+    expect(account(ACCOUNT_ID).joinErrStreak||0).toBe(0);
+
+    const g={...group(G_WB),joinNextAt:'',joinGaveUp:false};
+    testDb().sqlite.prepare('UPDATE records SET data=? WHERE id=?').run(JSON.stringify(g),G_WB);
+    stubWorker({ok:false,join:'failed',error:'Telegram не подтвердил вступление'});
+    await POST(postRequest({action:'join_group',id:G_WB}));
+    expect(account(ACCOUNT_ID).joinReservedUntil).toBe('');
+    expect(account(ACCOUNT_ID).joinErrStreak).toBe(1);
+  });
 });

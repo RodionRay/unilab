@@ -1207,7 +1207,7 @@ function WorkspaceHome(){
           }
         }catch(err){
           const data=(err as Error & {data?:any}).data;
-          if(data?.parked){
+          if(data?.parked||data?.deferred){
             // Фильтр релевантности: не ошибка — группа ждёт решения владельца.
             setJoinQueueSync(prev=>prev.map(q=>q.id===g.id?{...q,status:'done',error:String(data.error||'На подтверждение').slice(0,120)}:q));
             patchGroupLocal(g.id,{...(data.group||{}),joinState:'',joinStateAt:''});

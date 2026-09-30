@@ -30,7 +30,9 @@ deleted: every parked group stays in the list with its score and reason. Setting
 config switch the filter off (everything auto).
 
 `joinGateFor(group)` is the single decision used by the server and the UI: joined/pending groups are
-always allowed and never rescored; owner decisions (`joinDecision`: `approved` / `skipped`) beat the
+always allowed and never rescored — so is a group whose membership was reset by an account swap
+(`joinRejoin`, set by heal reassign / restore-previous and by scan rotations, cleared on the next
+successful join); owner decisions (`joinDecision`: `approved` / `skipped`) beat the
 score; a dead link (`joinDead`) is never auto-joined; a group without a score is parked, not joined blind.
 Queue order: `compareJoinPriority` — approved first, then score, then subscribers.
 
@@ -40,12 +42,14 @@ Where it applies (`app/api/workspace/route.ts`):
 - `join_group` answers `409 {parked:true}` for a parked group and never calls the worker;
 - `enqueue_joins` queues only allowed groups; `manual:true` (the owner pressed «Вступить», imported or
   picked from the catalog) is an approval;
-- `set_group_join_decision {groupIds, decision: approved|skipped|''}` — owner decision, reversible;
+- `set_group_join_decision {groupIds, decision: approved|skipped|''}` — owner decision, reversible.
+  Like manual joins before this change, any workspace member with `groups` access may approve
+  (`lib/security/workspace-authz.ts`); approving also clears a dead-link mark (explicit retry);
 - `rescore_join_queue` — one-off re-score of the whole queue (force), returns band counts.
 
 Offline equivalent for a local D1/SQLite file: `npx tsx scripts/rescore-join-queue.ts --db <file>`
-(dry-run; `--apply --backup <file.json>` writes a backup of every touched group row first, then updates
-only group rows).
+(dry-run; `--apply` writes a backup of every touched group row first — to `--backup <file>` or the OS
+temp dir, never the repo — then updates only group rows).
 
 ## 2. Pacing — `lib/join-pacing.ts`
 
@@ -65,8 +69,12 @@ Parallel across accounts, serial per account and per proxy.
 `join_group` picks the group's own account if ready, else the soonest ready farm account
 (`planJoinFarm`), and reserves it with a compare-and-swap on the account row (`reserveJoinAccount`) so
 parallel joins never share an account or a proxy. The cron (`app/api/cron/auto-rescan/route.ts`) runs
-up to 4 joins at once (`JOIN_CONCURRENCY`, ≤ 8 per tick) and stops only on farm-wide limits
-(`farmExhausted`, everyone paced). The tick summary logs throughput: joins today / farm cap, accounts
+up to 4 joins at once (`JOIN_CONCURRENCY`, ≤ 8 per tick) and stops launching joins only on farm-wide
+answers: `farmExhausted` / `limitReached` (caps everywhere), every account resolve-blind, or `pace`
+without `retryOther` (every account inside its gap). Per-account answers (`retryOther`: FloodWait,
+PEER_FLOOD, CHANNELS_TOO_MUCH) and per-group answers (`parked`, `deferred`) only skip that item.
+A joined group whose peer is refreshed uses its own account: it waits for that account's timers and
+reserves it like a new join. The tick summary logs throughput: joins today / farm cap, accounts
 ready now, parked queue (`farmThroughput`).
 
 The worker reports `join: "peer_flood"` / `"too_many"` explicitly
@@ -79,4 +87,7 @@ The worker reports `join: "peer_flood"` / `"too_many"` explicitly
 goes only to an untried account (join: farm `exclude`; scan: rotation). After
 `USERNAME_DEAD_AFTER_ACCOUNTS` = 3 the group is marked `joinDead` and leaves the auto-queue with the
 reason «Ссылка не открывается …». Approving it (or editing its link) clears the mark and retries.
-`seedMissingAccounts` migrates groups that failed before tracking existed.
+`seedMissingAccounts` migrates groups that failed before tracking existed. When every usable account is
+already in the tried list the group is marked dead at once (small farms); when untried accounts exist but
+are capped/paused the group is deferred (`409 {deferred:true}`, retried in 30 min) — never reported as a
+farm-wide limit.

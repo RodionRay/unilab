@@ -5,10 +5,13 @@
  *   npx tsx scripts/rescore-join-queue.ts --db <file.sqlite> [--owner <id>] [--apply] [--backup <file.json>] [--top 10]
  *
  * Dry-run by default: prints band counts and the top/bottom groups. `--apply` first writes every group
- * row it will touch to the backup JSON, then updates only those group rows (settings are never written).
+ * row it will touch to the backup JSON (default: OS temp dir, never the repo), then updates only those
+ * group rows (settings are never written).
  */
 import Database from "better-sqlite3";
 import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { buildRelevanceProfile, joinGateFor, rescoreGroup } from "@/lib/join-relevance";
 import { seedMissingAccounts } from "@/lib/processes/join-flow";
 
@@ -79,7 +82,8 @@ function main() {
   }
   console.log(JSON.stringify({ apply, changed: updates.length, report }, null, 2));
   if (!apply) return;
-  const backupFile = arg("backup") || `join-rescore-backup-${Date.now()}.json`;
+  // Backups hold real group data: never default into the (public) repo checkout.
+  const backupFile = arg("backup") || join(tmpdir(), `join-rescore-backup-${Date.now()}.json`);
   writeFileSync(backupFile, JSON.stringify(backup, null, 1));
   const stmt = db.prepare("UPDATE records SET data=? WHERE id=? AND owner=? AND kind='group'");
   const tx = db.transaction(() => {
