@@ -13,6 +13,7 @@ import {
   looksLikeServiceAd,
   normalizeLeadMessage,
   parseLeadTemperature,
+  plusTermHit,
   splitTerms,
   strongPlusTerms,
   type LeadTemperature,
@@ -203,19 +204,19 @@ export function scoreLead(text: string, settings: LeadCoreSettings): LeadScoreRe
   const softAsk = hasSoftAsk(text);
 
   const plus = strongPlusTerms(settings.keywords || "");
-  const plusHits = plus.filter((p) => body.includes(p));
+  const plusHits = plus.filter((p) => plusTermHit(body, p));
 
   const signalHits = splitTerms(settings.hotSignals || "").filter(
     (t) =>
       t.length >= 3 &&
-      body.includes(t) &&
+      plusTermHit(body, t) &&
       !WEAK_PLUS_TERMS.has(t) &&
       !plusHits.includes(t),
   );
 
   const criteriaTerms = fitTermsFromSettings(settings);
   const criteriaHits = criteriaTerms.filter(
-    (t) => body.includes(t) && !plusHits.includes(t) && !signalHits.includes(t),
+    (t) => plusTermHit(body, t) && !plusHits.includes(t) && !signalHits.includes(t),
   );
 
   // Fit только из настроек AI-ассистента. Builtin Uniseller-fit — запасной, если настроек мало.
