@@ -1672,6 +1672,31 @@ function WorkspaceHome(){
     }
   }
 
+  /** Вступить в обсуждение уже вступленного канала: тот же гейт темпа и дневного лимита на сервере. */
+  async function joinDiscussion(item:RecordItem){
+    if(!telegramConnected){toast.error('Запустите: npm run dev');return}
+    if(joinLock.current){toast.message('Дождитесь окончания текущего вступления');return}
+    joinLock.current=true;
+    setJoinInFlight(true);
+    const name=String(item.data.name||'Группа');
+    try{
+      const join=await api({action:'join_group',id:item.id,target:'discussion'});
+      const joinKind=String(join.result?.join||'');
+      if(!join.ok&&joinKind!=='already'){
+        throw new Error(join.result?.error||join.error||'Не удалось вступить в обсуждение');
+      }
+      if(joinKind==='requested')toast.message(`${name}: заявка в обсуждение отправлена`);
+      else toast.success(`${name}: ${joinKind==='already'?'уже в обсуждении':'вступили в обсуждение'} — следующий скан возьмёт комментарии`);
+    }catch(e){
+      toast.error(`${name}: ${(e as Error).message}`);
+    }finally{
+      try{await refresh()}finally{
+        joinLock.current=false;
+        setJoinInFlight(false);
+      }
+    }
+  }
+
   async function scanGroup(item:RecordItem){
     if(!item.data.accountId){toast.error('Назначьте аккаунт группе');return}
     if(isCatalogPlaceholderUrl(item.data.url||'')){
@@ -2241,6 +2266,11 @@ function WorkspaceHome(){
                 )}
                 {r.data.status==='pending'&&(
                   <Button size="sm" variant="outline" disabled={busy||!telegramConnected} onClick={()=>scanGroup(r)}>Проверить</Button>
+                )}
+                {r.data.needDiscussionJoin&&joined&&!canJoin&&(
+                  <Button size="sm" disabled={busy||joinInFlight||!telegramConnected||!r.data.accountId} onClick={()=>joinDiscussion(r)}>
+                    <Plug size={14}/>Вступить в обсуждение
+                  </Button>
                 )}
                 {joined&&!canJoin&&r.data.status!=='pending'&&(
                   <Button size="sm" variant="outline" disabled={busy||!telegramConnected} onClick={()=>scanGroup(r)}>
