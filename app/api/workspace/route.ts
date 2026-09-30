@@ -1451,9 +1451,18 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const frozen=workerLooksFrozen(null,msg);
    const next={...gdata,status:'error',error:msg.slice(0,500),joinState:'',joinStateAt:'',joinStateError:msg.slice(0,500),joinNextAt:new Date(Date.now()+JOIN_WORKER_ERROR_RETRY_MS).toISOString()};
    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'group').run();
-   await releaseJoinSlot(owner,gdata.accountId,adata);
+   // Таймаут/сеть: воркер мог успеть вступить — резерв остаётся. Возвращаем только при отказе до Telegram.
+   const neverReachedTelegram=e instanceof UserFacingError||e instanceof WorkerBusyError;
+   if(neverReachedTelegram)await releaseJoinSlot(owner,gdata.accountId,adata);
+   else if(!frozen){
+    const cooled=applyQuotaCooldownIfExhausted(reserved);
+    if(cooled!==reserved){
+     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(cooled),owner,gdata.accountId,'account').run();
+    }
+   }
    if(frozen){
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...adata,status:'frozen',error:msg.slice(0,500)}),owner,gdata.accountId,'account').run();
+    const base=neverReachedTelegram?adata:reserved;
+    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...base,status:'frozen',error:msg.slice(0,500)}),owner,gdata.accountId,'account').run();
    }
    return reply({error:next.error,accountFrozen:frozen},frozen?400:503);
   }

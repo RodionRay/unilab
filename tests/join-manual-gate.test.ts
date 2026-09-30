@@ -19,6 +19,8 @@ const GROUP_2='e0000000-0000-4000-8000-0000000000e2';
 
 let joinCalls=0;
 let workerReply:Record<string,unknown>={ok:true,join:'joined',status:'active'};
+/** Ответ воркера вместо workerReply: бросить (сеть/таймаут) или вернуть свой Response. */
+let workerFailure:(()=>Response)|null=null;
 
 function rec(id:string){
   const row=testDb().sqlite.prepare('SELECT data FROM records WHERE id=?').get(id) as {data:string};
@@ -44,11 +46,13 @@ describe('ручное вступление: хвосты очереди и го
     errSpy=vi.spyOn(console,'error').mockImplementation(()=>{});
     joinCalls=0;
     workerReply={ok:true,join:'joined',status:'active'};
+    workerFailure=null;
     vi.stubGlobal('fetch',vi.fn(async(url:string)=>{
       if(String(url).endsWith('/join-group')){
         joinCalls++;
         // Воркер отвечает не сразу: параллельный запрос успевает дойти до своей проверки темпа
         await new Promise(r=>setTimeout(r,20));
+        if(workerFailure)return workerFailure();
         return Response.json(workerReply);
       }
       return Response.json({ok:false,error:'not stubbed'},{status:500});
@@ -56,6 +60,7 @@ describe('ручное вступление: хвосты очереди и го
   });
   afterEach(()=>{
     errSpy.mockRestore();
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
   });
@@ -128,6 +133,41 @@ describe('ручное вступление: хвосты очереди и го
       await addAccount(ACC_A,{});
       addGroup(GROUP,{});
       workerReply={ok:false,status:'disconnected',error:'Таймаут воркера'};
+
+      await join(GROUP);
+
+      expect(joinCalls).toBe(1);
+      expect(rec(ACC_A).joinsToday||0).toBe(0);
+      expect(rec(ACC_A).lastJoinAt||'').toBe('');
+    });
+
+    it('таймаут воркера после резерва: вступление могло пройти — слот и счётчик остаются',async()=>{
+      await addAccount(ACC_A,{});
+      addGroup(GROUP,{});
+      workerFailure=()=>{throw new DOMException('The operation was aborted due to timeout','TimeoutError')};
+
+      const res=await join(GROUP);
+
+      expect(res.status).toBe(503);
+      expect(rec(ACC_A).joinsToday).toBe(1);
+      expect(rec(ACC_A).lastJoinAt).toBeTruthy();
+    });
+
+    it('сетевой сбой после резерва тоже не возвращает слот',async()=>{
+      await addAccount(ACC_A,{});
+      addGroup(GROUP,{});
+      workerFailure=()=>{throw new TypeError('fetch failed')};
+
+      await join(GROUP);
+
+      expect(rec(ACC_A).joinsToday).toBe(1);
+      expect(rec(ACC_A).lastJoinAt).toBeTruthy();
+    });
+
+    it('воркер отказал до Telegram (429 занят) — слот и счётчик возвращаются',async()=>{
+      await addAccount(ACC_A,{});
+      addGroup(GROUP,{});
+      workerFailure=()=>Response.json({error:'Воркер занят'},{status:429});
 
       await join(GROUP);
 
