@@ -230,14 +230,20 @@ export type GroupHealAction =
   /** Backoff после неудачи — ждём joinNextAt. */
   | "wait"
   /** Лимит попыток исчерпан — только ручное вступление. */
-  | "gave_up";
+  | "gave_up"
+  /** Владелец не ставил группу в очередь (каталог, импорт) — автообход не вступает. */
+  | "not_wanted";
 
 /**
- * Решение автопочинки по одной группе. Инвариант: членство вступившей группы
- * сбрасывается только если её аккаунт умер насовсем.
+ * Решение автопочинки по одной группе. Инварианты: членство вступившей группы
+ * сбрасывается только если её аккаунт умер насовсем; новое вступление автообход
+ * делает только в группу, которую владелец сам поставил в очередь (joinWanted) —
+ * иначе каждый тик жжёт дневные лимиты на нецелевые чаты из каталога.
  */
 export function planGroupHeal(opts: {
   group: JoinRetryFields & {
+    /** Владелец сам поставил группу в очередь вступления (enqueue_joins). */
+    joinWanted?: boolean;
     membership?: string;
     status?: string;
     joinedAt?: string;
@@ -269,6 +275,7 @@ export function planGroupHeal(opts: {
   ) {
     return "restore_previous";
   }
+  if (!g.joinWanted) return "not_wanted";
   if (g.joinGaveUp) return "gave_up";
   const next = g.joinNextAt ? Date.parse(g.joinNextAt) : 0;
   if (Number.isFinite(next) && next > now) return "wait";

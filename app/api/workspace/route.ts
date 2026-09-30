@@ -1174,13 +1174,13 @@ async function healDeadGroupAccounts(owner:string){
     }
     continue;
    }
-   if(action==='gave_up'||action==='wait'){
+   if(action==='gave_up'||action==='wait'||action==='not_wanted'){
     if(d.joinState==='queued')await save(gid,{...d,joinState:'',joinStateAt:''});
     continue;
    }
    if(action==='restore_previous'){
     // Аккаунт уже вступал: join вернёт «already» без новой заявки
-    await save(gid,{...d,accountId:prev,joinState:'queued',joinStateAt:new Date().toISOString(),...JOIN_SUCCESS_PATCH});
+    await save(gid,{...d,accountId:prev,joinWanted:true,joinState:'queued',joinStateAt:new Date().toISOString(),...JOIN_SUCCESS_PATCH});
     restored++;
     enqueue(gid,name);
     continue;
@@ -1192,6 +1192,7 @@ async function healDeadGroupAccounts(owner:string){
     await save(gid,{
      ...d,
      accountId:nextAcc,
+     joinWanted:true,
      membership:'none',
      joinedAt:'',
      status:'setup',
@@ -1609,6 +1610,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'group').run();
    }
    return reply({ok:true,result:{ok:true,join:next.membership==='pending'?'requested':'already'},group:next,skipped:true});
+  }
+  // Новое вступление — только в группу, которую владелец сам поставил в очередь:
+  // иначе автообход и старая очередь браузера жгут лимиты на нецелевые чаты.
+  if(!alreadyIn&&!gdata.joinWanted){
+   const next={...gdata,joinState:'',joinStateAt:'',joinStateError:''};
+   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'group').run();
+   return reply({error:'Группа не в очереди вступления — поставьте её вручную',notWanted:true,group:next},409);
   }
   let arow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,gdata.accountId,'account').first();
   if(!arow)return reply({error:'Аккаунт не найден'},404);
@@ -2754,6 +2762,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    if(gdata.membership==='joined'||gdata.membership==='pending'||gdata.joinedAt||groupLooksJoined(gdata))continue;
    const next={
     ...gdata,
+    joinWanted:true,
     joinState:'queued',
     joinStateAt:new Date().toISOString(),
     joinStateError:'',

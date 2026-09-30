@@ -13,7 +13,7 @@ import {
 
 const NOW = Date.parse("2026-09-30T12:00:00Z");
 const joined = { membership: "joined", joinedAt: "2026-09-17T10:00:00Z", accountId: "a1" };
-const fresh = { membership: "none", accountId: "a1" };
+const fresh = { membership: "none", accountId: "a1", joinWanted: true };
 
 describe("автопочинка групп · planGroupHeal", () => {
   it("не сбрасывает вступившую группу при временных сбоях аккаунта", () => {
@@ -33,18 +33,38 @@ describe("автопочинка групп · planGroupHeal", () => {
     expect(
       planGroupHeal({ group: wiped, accountStatus: "active", previousAccountStatus: "active", now: NOW }),
     ).toBe("restore_previous");
+    const wanted = { ...wiped, joinWanted: true };
+    expect(
+      planGroupHeal({ group: wanted, accountStatus: "active", previousAccountStatus: "frozen", now: NOW }),
+    ).toBe("enqueue");
+    expect(
+      planGroupHeal({ group: wanted, accountStatus: "active", previousAccountStatus: null, now: NOW }),
+    ).toBe("enqueue");
     expect(
       planGroupHeal({ group: wiped, accountStatus: "active", previousAccountStatus: "frozen", now: NOW }),
-    ).toBe("enqueue");
-    expect(
-      planGroupHeal({ group: wiped, accountStatus: "active", previousAccountStatus: null, now: NOW }),
-    ).toBe("enqueue");
+    ).toBe("not_wanted");
   });
 
   it("ставит в очередь невступившую группу, даже если слот на отлёжке", () => {
     expect(planGroupHeal({ group: fresh, accountStatus: "active", now: NOW })).toBe("enqueue");
     expect(planGroupHeal({ group: fresh, accountStatus: "cooldown", now: NOW })).toBe("enqueue");
     expect(planGroupHeal({ group: fresh, accountStatus: "frozen", now: NOW })).toBe("reassign");
+  });
+
+  it("не вступает в группу, которую владелец не ставил в очередь", () => {
+    const catalog = { membership: "none", accountId: "a1" };
+    expect(planGroupHeal({ group: catalog, accountStatus: "active", now: NOW })).toBe("not_wanted");
+    expect(planGroupHeal({ group: { ...catalog, accountId: "" }, accountStatus: null, now: NOW })).toBe("not_wanted");
+    expect(planGroupHeal({ group: catalog, accountStatus: "frozen", now: NOW })).toBe("not_wanted");
+    expect(planGroupHeal({ group: { ...catalog, joinWanted: false }, accountStatus: "active", now: NOW })).toBe("not_wanted");
+  });
+
+  it("вступившую и ранее вступавшую группу чинит без флага очереди", () => {
+    expect(planGroupHeal({ group: { membership: "joined", accountId: "a1" }, accountStatus: "frozen", now: NOW })).toBe("reassign");
+    const wiped = { membership: "none", accountId: "a2", joinedAccountId: "a1" };
+    expect(
+      planGroupHeal({ group: wiped, accountStatus: "active", previousAccountStatus: "active", now: NOW }),
+    ).toBe("restore_previous");
   });
 
   it("держит backoff и отказ после лимита попыток", () => {
