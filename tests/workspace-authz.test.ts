@@ -1,6 +1,6 @@
 import {afterEach,beforeAll,beforeEach,describe,expect,it,vi} from 'vitest';
 import {
-  ACCOUNT_ID,BOT_TOKEN,LEAD_ID,MAILING_ID,OWNER,PROXY_ID,SETTINGS_ID,
+  ACCOUNT_ID,BOT_TOKEN,LEAD_ID,OWNER,PROXY_ID,SETTINGS_ID,
   login,postRequest,resetWorkspace,testDb,
 } from './helpers/workspace-harness';
 
@@ -39,7 +39,7 @@ describe('workspace API: роль «Наблюдатель» только чит
 
   it.each([
     ['удаление аккаунта',{action:'delete',kind:'account',id:ACCOUNT_ID}],
-    ['запуск рассылки',{action:'start_mailing',id:MAILING_ID}],
+    ['вступление в группу',{action:'join_group',id:'e0000000-0000-4000-8000-00000000000e'}],
     ['отправка сообщения лиду',{action:'send_lead_message',id:LEAD_ID,mode:'dm',text:'Привет'}],
     ['сохранение настроек',{action:'save',kind:'settings',data:{name:'X'}}],
     ['отметка лида просмотренным',{action:'mark_lead_viewed',id:LEAD_ID}],
@@ -89,7 +89,7 @@ describe('workspace API: доступ по разделам',()=>{
     expect(res.status).toBe(403);
   });
 
-  it('менеджер с рассылками видит аккаунты только как список для выбора, без телефона',async()=>{
+  it('менеджер с группами видит аккаунты только как список для выбора, без телефона',async()=>{
     addMember('mgr-1','manager');
     login('mgr-1');
 
@@ -132,10 +132,10 @@ describe('workspace API: доступ по разделам',()=>{
 describe('workspace API: владелец без изменений',()=>{
   beforeEach(()=>login(OWNER));
 
-  it('видит все записи и токен бота',async()=>{
+  it('видит все записи живых видов и токен бота; задачи удалённых функций не отдаются',async()=>{
     const records=await visibleRecords();
 
-    expect(new Set(records.map(r=>r.kind))).toEqual(new Set(['account','proxy','lead','mailing_task','settings']));
+    expect(new Set(records.map(r=>r.kind))).toEqual(new Set(['account','proxy','lead','settings']));
     expect(JSON.stringify(records)).toContain(BOT_TOKEN);
   });
 

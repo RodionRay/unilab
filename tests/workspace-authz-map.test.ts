@@ -13,7 +13,8 @@ describe('карта прав workspace API',()=>{
   it('каждое действие маршрута явно описано в ACTION_RULES',()=>{
     const unmapped=routeActions.filter(a=>a!=='save'&&a!=='delete'&&!(a in ACTION_RULES));
 
-    expect(routeActions.length).toBeGreaterThan(30);
+    // Санити-проверка разбора маршрута: действий заведомо больше двух десятков.
+    expect(routeActions.length).toBeGreaterThan(20);
     expect(unmapped).toEqual([]);
   });
 
@@ -32,10 +33,10 @@ describe('карта прав workspace API',()=>{
     expect(authorizeWorkspaceAction(member('admin'),'delete',undefined).ok).toBe(false);
   });
 
-  it('наблюдатель может только читать: экспорт аудитории разрешён, мутации — нет',()=>{
-    const viewer=member('viewer',{...ROLE_PRESETS.viewer,audience:true});
+  it('наблюдатель может только читать: предпросмотр ядра разрешён, мутации — нет',()=>{
+    const viewer=member('viewer',{...ROLE_PRESETS.viewer,ai:true});
 
-    expect(authorizeWorkspaceAction(viewer,'export_audience',undefined).ok).toBe(true);
+    expect(authorizeWorkspaceAction(viewer,'preview_lead_core',undefined).ok).toBe(true);
     for(const kind of RECORD_KINDS)expect(authorizeWorkspaceAction(viewer,'save',kind).ok).toBe(false);
   });
 
