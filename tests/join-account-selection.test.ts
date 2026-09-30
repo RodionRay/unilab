@@ -13,7 +13,6 @@ import {accountBlindPatch} from '@/lib/processes/join-flow';
 
 const ACC_A='a0000000-0000-4000-8000-00000000000a';
 const ACC_B='b0000000-0000-4000-8000-00000000000b';
-const ACC_C='c0000000-0000-4000-8000-00000000000c';
 const DEAD_PROXY='d0000000-0000-4000-8000-00000000000d';
 const GROUP='e0000000-0000-4000-8000-00000000000e';
 
@@ -37,7 +36,7 @@ function addGroup(data:Record<string,unknown>){
 }
 const join=()=>POST(postRequest({action:'join_group',id:GROUP}));
 
-describe('выбор аккаунта для вступления',()=>{
+describe('вступление назначенным аккаунтом',()=>{
   let errSpy:ReturnType<typeof vi.spyOn>;
   beforeEach(()=>{
     resetWorkspace();
@@ -112,18 +111,6 @@ describe('выбор аккаунта для вступления',()=>{
     expect(Date.parse(rec(GROUP).joinNextAt)).toBeGreaterThan(Date.now());
   });
 
-  it('пересадка берёт готовый аккаунт раньше менее загруженного на паузе',async()=>{
-    await addAccount(ACC_A,{status:'frozen'});
-    await addAccount(ACC_B,{lastJoinAt:new Date().toISOString()});
-    await addAccount(ACC_C,{});
-    addRecord('f0000000-0000-4000-8000-00000000000f','group',{name:'Другая',url:'https://t.me/other_chat',membership:'joined',joinedAt:'2026-09-01T00:00:00Z',status:'active',accountId:ACC_C});
-    addGroup({membership:'joined',joinedAt:'2026-09-01T00:00:00Z',status:'active'});
-
-    await POST(postRequest({action:'heal_dead_group_accounts'}));
-
-    expect(rec(GROUP).accountId).toBe(ACC_C);
-  });
-
   it('«already» не расходует дневной лимит и паузу вступлений',async()=>{
     await addAccount(ACC_A,{});
     addGroup({});
@@ -145,49 +132,15 @@ describe('выбор аккаунта для вступления',()=>{
     expect(joinCalls).toHaveLength(0);
   });
 
-  it('аккаунт с мёртвым прокси уступает вступление живому из фермы',async()=>{
-    await addAccount(ACC_A,{proxyId:DEAD_PROXY});
-    await addAccount(ACC_B,{});
-    addGroup({});
-
-    await join();
-
-    expect(joinCalls.map(c=>c.session)).toEqual([ACC_B]);
-    expect(rec(GROUP).accountId).toBe(ACC_B);
-  });
-
-  it('без готовых аккаунтов вступление не зовёт воркер с мёртвым прокси',async()=>{
+  it('аккаунт группы с мёртвым прокси не зовёт воркер',async()=>{
     await addAccount(ACC_A,{proxyId:DEAD_PROXY});
     addGroup({});
 
     const res=await join();
 
-    expect(res.status).toBe(429);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({accountUnavailable:true,reason:'proxy'});
     expect(joinCalls).toHaveLength(0);
-  });
-
-  it('автопочинка пересаживает группу только на аккаунт, готовый вступать',async()=>{
-    await addAccount(ACC_A,{status:'frozen'});
-    await addAccount(ACC_B,{...accountBlindPatch()});
-    await addAccount(ACC_C,{});
-    addGroup({membership:'joined',joinedAt:'2026-09-01T00:00:00Z',status:'active'});
-
-    await POST(postRequest({action:'heal_dead_group_accounts'}));
-
-    expect(rec(GROUP).accountId).toBe(ACC_C);
-  });
-
-  it('заморозка при вступлении пересаживает группу на готовый аккаунт',async()=>{
-    await addAccount(ACC_A,{});
-    await addAccount(ACC_B,{proxyId:DEAD_PROXY});
-    await addAccount(ACC_C,{});
-    addGroup({});
-    workerReply={ok:false,status:'frozen',join:'frozen',error:'FROZEN_METHOD_INVALID'};
-
-    await join();
-
-    expect(rec(ACC_A).status).toBe('frozen');
-    expect(rec(GROUP).accountId).toBe(ACC_C);
   });
 
   it('assign_group_accounts не назначает слепой аккаунт',async()=>{

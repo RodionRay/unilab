@@ -48,14 +48,13 @@ export const DEFAULT_ACCOUNT_LIMITS: AccountLimits = {
 };
 
 /**
- * Мягкие суточные лимиты под Telegram API / антиспам (как в TGLab и практике ферм).
+ * Мягкие суточные лимиты под Telegram API / антиспам для user-сессий.
  * Не официальная квота Bot API — ориентир для user-сессий.
  */
 export const TELEGRAM_RECOMMENDED_LIMITS = {
   invite: 40,
   message: 40,
   chat: 20,
-  memberInvite: 40,
 } as const;
 
 export type AccountFormat = "tdata" | "session" | "session_json" | "manual";
@@ -95,7 +94,7 @@ export function isDayLimitCooldown(data: {
   return String(data.status || "") === "cooldown" && isOnCooldown(data.cooldownUntil);
 }
 
-/** Можно ли ставить в работу (рассылка / инвайт / сбор / группы). */
+/** Можно ли ставить в работу (вступление, скан, ответ лиду). */
 export function isAccountUsable(data: {
   status?: string | null;
   cooldownUntil?: string | null;
@@ -169,13 +168,12 @@ export function cooldownHoursFromNow(hours: number): string {
   return new Date(Date.now() + hours * 3600_000).toISOString();
 }
 
-export type DayLimitKind = "invite" | "message" | "chat" | "memberInvite";
+export type DayLimitKind = "invite" | "message" | "chat";
 
 const DAY_LIMIT_LABELS: Record<DayLimitKind, string> = {
   invite: "вступлений",
-  message: "сообщений (рассылка/ЛС)",
+  message: "сообщений в ЛС",
   chat: "комментариев",
-  memberInvite: "инвайтов участников",
 };
 
 /**
@@ -283,9 +281,6 @@ export function applyQuotaCooldownIfExhausted<T extends Record<string, unknown>>
   if (!hasMessageQuota(data as Parameters<typeof hasMessageQuota>[0])) {
     return withDayLimitCooldown(data, "message");
   }
-  if (!hasMemberInviteQuota(data as Parameters<typeof hasMemberInviteQuota>[0])) {
-    return withDayLimitCooldown(data, "memberInvite");
-  }
   if (!hasChatQuota(data as Parameters<typeof hasChatQuota>[0])) {
     return withDayLimitCooldown(data, "chat");
   }
@@ -375,18 +370,6 @@ export function hasMessageQuota(data: {
   );
 }
 
-export function hasMemberInviteQuota(data: {
-  limits?: { memberInvite?: unknown };
-  memberInvitesToday?: number;
-  memberInviteDay?: string;
-} | null | undefined): boolean {
-  if (!data) return false;
-  return hasDayQuota(
-    dayCounter(data.memberInviteDay, data.memberInvitesToday),
-    data.limits?.memberInvite ?? 40,
-  );
-}
-
 export function bumpMessageCounters(
   state: { messagesToday?: number; messagesDay?: string },
   add: number,
@@ -442,22 +425,12 @@ export function normalizeMessagesToday(data: {
   return dayCounter(data.messagesDay, data.messagesToday);
 }
 
-export function normalizeMemberInvitesToday(data: {
-  memberInvitesToday?: number;
-  memberInviteDay?: string;
-} | null | undefined): number {
-  if (!data) return 0;
-  return dayCounter(data.memberInviteDay, data.memberInvitesToday);
-}
-
 export type AccountLimitsUsage = {
   joins: number;
   messages: number;
-  memberInvites: number;
   inviteLimit: number;
   messageLimit: number;
   chatLimit: number;
-  memberInviteLimit: number;
 };
 
 /** Суточные счётчики и лимиты для UI менеджера аккаунтов. */
@@ -466,30 +439,24 @@ export function accountLimitsUsage(data: {
     invite?: unknown;
     message?: unknown;
     chat?: unknown;
-    memberInvite?: unknown;
   };
   joinsToday?: number;
   joinsDay?: string;
   messagesToday?: number;
   messagesDay?: string;
-  memberInvitesToday?: number;
-  memberInviteDay?: string;
 } | null | undefined): AccountLimitsUsage {
   const limits = data?.limits || {};
   const inviteLimit = Number(limits.invite);
   const messageLimit = Number(limits.message);
   const chatLimit = Number(limits.chat);
-  const memberInviteLimit = Number(limits.memberInvite);
   return {
     joins: normalizeJoinsToday(data || {}),
     messages: normalizeMessagesToday(data),
-    memberInvites: normalizeMemberInvitesToday(data),
     inviteLimit: Number.isFinite(inviteLimit) ? inviteLimit : DEFAULT_ACCOUNT_LIMITS.invite,
     messageLimit: Number.isFinite(messageLimit)
       ? messageLimit
       : DEFAULT_ACCOUNT_LIMITS.message,
     chatLimit: Number.isFinite(chatLimit) ? chatLimit : DEFAULT_ACCOUNT_LIMITS.chat,
-    memberInviteLimit: Number.isFinite(memberInviteLimit) ? memberInviteLimit : 40,
   };
 }
 
