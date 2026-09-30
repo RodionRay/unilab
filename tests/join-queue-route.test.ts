@@ -362,4 +362,16 @@ describe('workspace API: join pacing',()=>{
     expect(account(ACCOUNT_ID).joinReservedUntil).toBe('');
     expect(account(ACCOUNT_ID).joinErrStreak).toBe(1);
   });
+
+  it('join_group scores a group added after the last heal instead of parking it unscored',async()=>{
+    const G_NEW='a0000000-0000-4000-8000-000000000012';
+    addRecord(G_NEW,'group',unjoined('Ozon Чат поставщиков','https://t.me/ozon_new_chat_test',{joinState:''}));
+    const calls=stubWorker({ok:true,join:'joined'});
+
+    const res=await POST(postRequest({action:'join_group',id:G_NEW}));
+
+    expect(res.status).toBe(200);
+    expect(calls.filter(u=>u.endsWith('/join-group'))).toHaveLength(1);
+    expect(group(G_NEW).joinRelevance.band).toBe('auto');
+  });
 });

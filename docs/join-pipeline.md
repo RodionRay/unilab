@@ -39,7 +39,8 @@ Queue order: `compareJoinPriority` — approved first, then score, then subscrib
 Where it applies (`app/api/workspace/route.ts`):
 - `healDeadGroupAccounts` (auto-heal / `rescan_groups` / cron) refreshes stale scores
   (`refreshGroupRelevance`), queues only allowed groups, best first, clears the queue state of parked ones;
-- `join_group` answers `409 {parked:true}` for a parked group and never calls the worker;
+- `join_group` scores a group that has no fresh score yet (added after the last heal, settings changed),
+  answers `409 {parked:true}` for a parked group and never calls the worker for it;
 - `enqueue_joins` queues only allowed groups; `manual:true` (the owner pressed «Вступить», imported or
   picked from the catalog) is an approval;
 - `set_group_join_decision {groupIds, decision: approved|skipped|''}` — owner decision, reversible.

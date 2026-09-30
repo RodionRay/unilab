@@ -1730,15 +1730,19 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    return reply({ok:true,result:{ok:true,join:next.membership==='pending'?'requested':'already'},group:next,skipped:true});
   }
   if(!alreadyIn){
+   // Группа ещё не оценена (добавлена после автопочинки) или настройки менялись — оцениваем сейчас.
+   const scored=rescoreGroup(gdata,await loadRelevanceProfile(owner));
+   if(scored)gdata={...gdata,joinRelevance:scored.joinRelevance};
    // Фильтр релевантности: вступаем только в «авто» и одобренные владельцем (lib/join-relevance).
    const gate=joinGateFor(gdata);
    if(!gate.allow){
-    if(gdata.joinState){
+    if(gdata.joinState||scored){
      gdata={...gdata,joinState:'',joinStateAt:''};
      await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(gdata),owner,id,'group').run();
     }
     return reply({error:`${gate.label}: ${gate.reason||'группа вне автоочереди'}`,parked:true,gate:gate.state,group:gdata},409);
    }
+   if(scored)await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(gdata),owner,id,'group').run();
   }
   const farm=await loadFarmAccounts(owner);
   let adata:any=null;
