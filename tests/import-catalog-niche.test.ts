@@ -59,12 +59,18 @@ describe('catalogForProject',()=>{
     ['оптовые поставки','b2b',true],
     ['внедрение амоCRM','crm',true],
     ['ценообразование товаров','pricing',true],
+    ['ценовой мониторинг','pricing',true],
+    ['чатбот для магазина','bots',true],
   ])('«%s» → ниша %s: %s',(text,niche,expected)=>{
     expect(nichesFromProjectText(text).includes(niche as never)).toBe(expected);
   });
 
-  it('общие слова «продажи», «лиды» сами по себе чаты не заливают',()=>{
-    expect(catalogForProject({product:'B2B продажи и лиды для бизнеса'})).toEqual({niches:[],groups:[]});
+  it.each([
+    'B2B продажи и лиды для бизнеса',
+    'Помогаем экспертам строить личный бренд',
+    'Оптовые поставки и доставка',
+  ])('общие слова («%s») сами по себе чаты не заливают',(product)=>{
+    expect(catalogForProject({product})).toEqual({niches:[],groups:[]});
   });
 
   it('без ниш в настройках — пустой список',()=>{

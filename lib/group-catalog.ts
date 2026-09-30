@@ -601,6 +601,7 @@ const NICHE_ALIASES: Record<string, GroupNiche[]> = {
   отзыв: ["reviews"],
   цен: ["pricing"],
   ценообраз: ["pricing"],
+  ценов: ["pricing"],
   репрайс: ["pricing", "analytics", "saas"],
   аналитик: ["analytics"],
   mpstats: ["analytics", "marketplaces", "saas"],
@@ -635,6 +636,7 @@ const NICHE_ALIASES: Record<string, GroupNiche[]> = {
   бот: ["bots", "saas", "marketing"],
   telegram: ["bots", "saas"],
   "чат-бот": ["bots", "saas"],
+  чатбот: ["bots", "saas"],
   финтех: ["fintech", "saas"],
   эквайринг: ["fintech", "ecommerce"],
   рассрочк: ["fintech", "ecommerce"],
@@ -772,6 +774,10 @@ export const GENERIC_NICHE_ALIASES: ReadonlySet<string> = new Set([
   "продаж",
   "лид",
   "b2b",
+  "бренд",
+  "опт",
+  "оптов",
+  "доставк",
 ]);
 
 function aliasNiches(parts: (string | undefined)[], skipAliases: ReadonlySet<string> = new Set()): Set<GroupNiche> {
