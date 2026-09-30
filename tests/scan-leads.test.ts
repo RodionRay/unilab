@@ -13,6 +13,7 @@ import {
 } from "@/lib/processes/scan-flow";
 import type { LeadCoreSettings } from "@/lib/lead-core";
 import { withDayLimitCooldown, withSpamblockStatus } from "@/lib/telegram-accounts";
+import { blockReason } from "./helpers/gate-result";
 
 const settings: LeadCoreSettings = {
   keywords:
@@ -36,14 +37,14 @@ describe("скан · gate", () => {
   it("блокирует отлёжку / spam / freeze / hard-dead", () => {
     // Отлёжка без вида лимита блокирует; дневной лимит вступлений скан не останавливает
     const cool = { status: "cooldown", cooldownUntil: new Date(Date.now() + 3600_000).toISOString() };
-    expect(evaluateScanGate(cool).reason).toBe("cooldown");
+    expect(blockReason(evaluateScanGate(cool))).toBe("cooldown");
     expect(evaluateScanGate(withDayLimitCooldown({ status: "active" }, "invite"))).toEqual({ ok: true });
-    expect(evaluateScanGate(withSpamblockStatus({ status: "active" })).reason).toBe(
+    expect(blockReason(evaluateScanGate(withSpamblockStatus({ status: "active" })))).toBe(
       "cooldown",
     );
-    expect(evaluateScanGate({ status: "frozen" }).reason).toBe("cooldown");
-    expect(evaluateScanGate({ status: "disconnected" }).reason).toBe("hard_dead");
-    expect(evaluateScanGate(null).reason).toBe("missing");
+    expect(blockReason(evaluateScanGate({ status: "frozen" }))).toBe("cooldown");
+    expect(blockReason(evaluateScanGate({ status: "disconnected" }))).toBe("hard_dead");
+    expect(blockReason(evaluateScanGate(null))).toBe("missing");
   });
 });
 

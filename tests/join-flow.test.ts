@@ -5,10 +5,11 @@ import {
   sanitizeJoinStateError,
 } from "@/lib/processes/join-flow";
 import { withDayLimitCooldown, withSpamblockStatus } from "@/lib/telegram-accounts";
+import { blockReason } from "./helpers/gate-result";
 
 describe("вступление в группы · gate", () => {
   it("требует аккаунт и реальную ссылку", () => {
-    expect(evaluateJoinGate({ groupUrl: "https://t.me/sellers" }).reason).toBe(
+    expect(blockReason(evaluateJoinGate({ groupUrl: "https://t.me/sellers" }))).toBe(
       "missing_account",
     );
     // Известная заглушка каталога (см. catalogPlaceholderUsernames)
@@ -20,29 +21,29 @@ describe("вступление в группы · gate", () => {
       }).ok,
     ).toBe(false);
     expect(
-      evaluateJoinGate({
+      blockReason(evaluateJoinGate({
         accountId: "a1",
         account: { status: "active", limits: { invite: 40 } },
         groupUrl: "https://t.me/mp_automation",
-      }).reason,
+      })),
     ).toBe("placeholder_url");
   });
 
   it("блокирует spamblock / freeze / дневную отлёжку / квоту / pace", () => {
     expect(
-      evaluateJoinGate({
+      blockReason(evaluateJoinGate({
         accountId: "a1",
         groupUrl: "https://t.me/wildberries_sllr",
         account: withSpamblockStatus({ status: "active" }),
-      }).reason,
+      })),
     ).toBe("spamblock");
 
     expect(
-      evaluateJoinGate({
+      blockReason(evaluateJoinGate({
         accountId: "a1",
         groupUrl: "https://t.me/wildberries_sllr",
         account: { status: "frozen" },
-      }).reason,
+      })),
     ).toBe("frozen");
 
     const cool = withDayLimitCooldown(
@@ -50,11 +51,11 @@ describe("вступление в группы · gate", () => {
       "invite",
     );
     expect(
-      evaluateJoinGate({
+      blockReason(evaluateJoinGate({
         accountId: "a1",
         groupUrl: "https://t.me/wildberries_sllr",
         account: cool,
-      }).reason,
+      })),
     ).toBe("cooldown");
 
     const day = new Intl.DateTimeFormat("en-CA", {
@@ -64,7 +65,7 @@ describe("вступление в группы · gate", () => {
       day: "2-digit",
     }).format(new Date());
     expect(
-      evaluateJoinGate({
+      blockReason(evaluateJoinGate({
         accountId: "a1",
         groupUrl: "https://t.me/wildberries_sllr",
         account: {
@@ -73,11 +74,11 @@ describe("вступление в группы · gate", () => {
           joinsToday: 2,
           joinsDay: day,
         },
-      }).reason,
+      })),
     ).toBe("quota");
 
     expect(
-      evaluateJoinGate({
+      blockReason(evaluateJoinGate({
         accountId: "a1",
         groupUrl: "https://t.me/wildberries_sllr",
         account: {
@@ -85,7 +86,7 @@ describe("вступление в группы · gate", () => {
           limits: { invite: 40 },
           lastJoinAt: new Date().toISOString(),
         },
-      }).reason,
+      })),
     ).toBe("pace");
   });
 
