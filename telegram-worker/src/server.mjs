@@ -2,13 +2,16 @@
 /**
  * Локальный HTTP-воркер Telegram (check / join / scan).
  * Слушает 127.0.0.1 — только localhost; требует TG_WORKER_TOKEN (≥32 символов).
- * Плюс круглосуточный автообход лидов → POST APP_URL/api/cron/auto-rescan (Bearer CRON_SECRET).
+ * Плюс круглосуточный автообход лидов → POST APP_URL/api/cron/auto-rescan (Bearer CRON_SECRET)
+ * и тики задач инвайта/рассылки/сбора → POST APP_URL/api/cron/tasks-tick (без открытого кабинета).
  * Guard/runner: worker-app.mjs.
  */
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { readFileSync, existsSync, readdirSync, chmodSync } from "node:fs";
 import {
+  createCronLoop,
+  TASKS_TICK_FETCH_MS,
   createPythonRunner,
   createWorkerServer,
   cronSecretProblem,
@@ -80,6 +83,20 @@ const AUTO_RESCAN_EVERY_MS = Math.max(
 /** Согласовано с cron TICK_BUDGET 210с + запас. */
 const AUTO_RESCAN_FETCH_MS = 270_000;
 const BUSY_STALE_MS = 6 * 60_000;
+
+/** Тики задач (инвайт / рассылка / сбор): как часто спрашивать приложение о due-задачах. */
+const TASKS_TICK_EVERY_MS = Math.max(
+  5_000,
+  Number(process.env.TASKS_TICK_EVERY_MS || 20_000),
+);
+const tasksTickLoop = createCronLoop({
+  name: "tasks-tick",
+  url: `${APP_URL}/api/cron/tasks-tick`,
+  secret: CRON_SECRET,
+  // Бюджет прогона на стороне приложения + запас (иначе workerd отменит тики посреди работы).
+  fetchMs: TASKS_TICK_FETCH_MS,
+  catchUpMs: 3_000,
+});
 
 let autoRescanBusy = false;
 let autoRescanBusyAt = 0;
@@ -172,7 +189,7 @@ const server = createWorkerServer(config, {
 
 if (CRON_SECRET_PROBLEM) {
   console.error(
-    `[tg-worker] WARNING: ${CRON_SECRET_PROBLEM} (need >= 32 chars, same value as the web app) — auto-rescan is DISABLED until it is set and the worker restarts.`,
+    `[tg-worker] WARNING: ${CRON_SECRET_PROBLEM} (need >= 32 chars, same value as the web app) — auto-rescan and background task ticks are DISABLED until it is set and the worker restarts.`,
   );
 }
 
@@ -194,4 +211,13 @@ server.listen(config.port, HOST, () => {
   setInterval(() => {
     void tickAutoRescan(false);
   }, AUTO_RESCAN_EVERY_MS);
+  if (!CRON_SECRET_PROBLEM) {
+    console.log(`tasks-tick → ${APP_URL}/api/cron/tasks-tick every ${Math.round(TASKS_TICK_EVERY_MS / 1000)}s`);
+  }
+  setTimeout(() => {
+    void tasksTickLoop.tick();
+  }, 30_000);
+  setInterval(() => {
+    void tasksTickLoop.tick();
+  }, TASKS_TICK_EVERY_MS);
 });

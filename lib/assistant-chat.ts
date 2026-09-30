@@ -31,14 +31,51 @@ export function canAskAssistant(
   return now.getTime() - t >= windowMs;
 }
 
-export function resolveAssistantApiKey(): string | null {
-  const key =
-    process.env.ASSISTANT_OPENAI_KEY ||
-    process.env.OPENAI_API_KEY ||
-    process.env.AI_API_KEY ||
-    process.env.DEEPSEEK_API_KEY ||
-    "";
-  return key.trim() || null;
+const OPENAI_BASE = "https://api.openai.com/v1";
+const OPENAI_MODEL = "gpt-4o-mini";
+
+/** A key together with the only endpoint it may be sent to. */
+export type AssistantEndpoint = {
+  provider: "openai" | "deepseek";
+  apiKey: string;
+  url: string;
+  model: string;
+};
+
+function envValue(name: string): string {
+  return (process.env[name] || "").trim();
+}
+
+function openAiEndpoint(apiKey: string): AssistantEndpoint {
+  const base = (envValue("OPENAI_API_BASE") || OPENAI_BASE).replace(/\/$/, "");
+  return {
+    provider: "openai",
+    apiKey,
+    url: `${base}/chat/completions`,
+    model: envValue("ASSISTANT_MODEL") || OPENAI_MODEL,
+  };
+}
+
+function deepSeekEndpoint(apiKey: string): AssistantEndpoint {
+  const { url, model } = resolveAiConfig();
+  return { provider: "deepseek", apiKey, url, model };
+}
+
+/**
+ * Pairs the assistant key with its provider: OpenAI keys go to OpenAI only, DeepSeek/AI keys to the
+ * DeepSeek base (AI_API_BASE). An explicit key (the owner's project key) is a DeepSeek key.
+ */
+export function resolveAssistantEndpoint(
+  explicitKey?: string | null,
+): AssistantEndpoint | null {
+  if (explicitKey !== undefined) {
+    const key = (explicitKey || "").trim();
+    return key ? deepSeekEndpoint(key) : null;
+  }
+  const openAiKey = envValue("ASSISTANT_OPENAI_KEY") || envValue("OPENAI_API_KEY");
+  if (openAiKey) return openAiEndpoint(openAiKey);
+  const deepSeekKey = envValue("AI_API_KEY") || envValue("DEEPSEEK_API_KEY");
+  return deepSeekKey ? deepSeekEndpoint(deepSeekKey) : null;
 }
 
 function extractChatReply(result: unknown): string {
@@ -58,9 +95,8 @@ export async function generateAssistantReply(
     fetchImpl?: typeof fetch;
   } = {},
 ): Promise<{ reply: string; source: "openai" | "knowledge" }> {
-  const apiKey =
-    options.apiKey === undefined ? resolveAssistantApiKey() : options.apiKey;
-  if (!apiKey) {
+  const endpoint = resolveAssistantEndpoint(options.apiKey);
+  if (!endpoint) {
     return { reply: fallbackAssistantReply(input.message), source: "knowledge" };
   }
 
@@ -68,18 +104,17 @@ export async function generateAssistantReply(
     .slice(-8)
     .map((m) => ({ role: m.role, content: m.content }));
 
-  const { url, model } = resolveAiConfig();
   const fetchImpl = options.fetchImpl ?? fetch;
 
   try {
-    const response = await fetchImpl(url, {
+    const response = await fetchImpl(endpoint.url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${endpoint.apiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: process.env.ASSISTANT_MODEL || model,
+        model: endpoint.model,
         temperature: 0.3,
         max_tokens: 700,
         messages: [
@@ -95,6 +130,13 @@ export async function generateAssistantReply(
     });
 
     if (!response.ok) {
+      console.warn(
+        `[assistant] ${endpoint.provider} HTTP ${response.status}:`,
+        (await response.text().catch(() => ""))
+          .split(endpoint.apiKey)
+          .join("***")
+          .slice(0, 200),
+      );
       return {
         reply: fallbackAssistantReply(input.message),
         source: "knowledge",
@@ -109,7 +151,11 @@ export async function generateAssistantReply(
       };
     }
     return { reply, source: "openai" };
-  } catch {
+  } catch (e) {
+    console.warn(
+      `[assistant] ${endpoint.provider} request failed:`,
+      String((e as Error)?.message || e).slice(0, 200),
+    );
     return {
       reply: fallbackAssistantReply(input.message),
       source: "knowledge",

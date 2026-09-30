@@ -3,33 +3,39 @@ import {GROUP_CATALOG,isCatalogPlaceholderUrl} from '@/lib/group-catalog';
 import {JOIN_SUCCESS_PATCH,JOIN_WORKER_ERROR_RETRY_MS,accountBlindPatch,type JoinAccountState,type JoinProxyState,evaluateAccountJoinReadiness,isAccountBlindResult,isAccountResolveBlind,isJoinFarmCandidate,joinFailurePatch,planGroupHeal,sanitizeJoinStateError} from '@/lib/processes/join-flow';
 import {database,seal,unseal} from '@/lib/server-store';
 import {aiChatText,envAiApiKey,resolveAiConfig} from '@/lib/ai-client';
-import {buildProjectBrief,leadMessageFingerprint,normalizeLeadMessage,parseLeadTemperature,ratingFromTemperatures,strongPlusTerms,type LeadTemperature} from '@/lib/lead-filter';
+import {buildProjectBrief,leadMessageFingerprint,normalizeLeadMessage,parseLeadTemperature,ratingFromTemperatures,strongPlusTerms} from '@/lib/lead-filter';
 import {
- classifyWithLeadCore,
  explainLeadDecision,
- LEAD_SCORE_WARM,
- reasonFromCore,
- scoreLead,
  workerKeywordsFromSettings,
  type LeadCoreSettings,
+ type LeadScoreResult,
 } from '@/lib/lead-core';
-import {appendLearnExamples,extractTermsFromHotMessages,extractStopTermsFromMessage,mergeKeywords,mergeKeywordsPreferNew} from '@/lib/ai-keywords';
-import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpChatCounters,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasMemberInviteQuota,hasMessageQuota,isAccountUsable,isDayLimitCooldown,isOnCooldown,joinWaitSec,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
+import {
+ activeAiRejects,
+ addLeadTombstone,
+ aiSettingsSignature,
+ applyAiVerdicts,
+ decideScanLead,
+ evaluateScanGate,
+ keepServerOwnedFields,
+ rememberAiRejects,
+ type AiBatchOutcome,
+ type AiPick,
+} from '@/lib/processes/scan-flow';
+import {appendLearnExamples,extractTermsFromHotMessages,extractStopTermsFromMessage,mergeKeywords,mergeKeywordsPreferNew,parseKeywordCsv} from '@/lib/ai-keywords';
+import {sanitizeMinusTerms,scanStopTerms} from '@/lib/lead-stopwords';
+import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpChatCounters,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasMemberInviteQuota,hasMessageQuota,isAccountFlooded,isAccountUsable,isDayLimitCooldown,isDayLimitedFor,dayLimitCooldownKind,isOnCooldown,joinWaitSec,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
+import {INVITE_SOFT_FAIL_LIMIT,interpretInviteWorkerResult,inviteAccountStillLive,inviteBatchLimit,inviteUserPatch} from '@/lib/processes/invite-tick';
 import {bracketLabel,formatRuWhen,inviteUserFailText,inviteUserOkText,normalizeStatusFilters,normalizeTgRef,pushTaskLog,pushTaskLogs,randomPauseSec} from '@/lib/audience-invite';
 import {canonicalizeTgUrl,duplicateReason,isDuplicateKind,telegramEntityKey} from '@/lib/record-identity';
 import {
  DEFAULT_DM_SOFT_CLOSE,
  isDeadAccountMailingError,
- isPeerFloodMailingError,
- isPermanentMailingRecipientError,
- isRateLimitMailingError,
- isTransientPeerResolveError,
  mailingEmptyBatchDecision,
  mailingFailText,
  mailingOkText,
  mailingTextPreview,
  normalizeMailText,
- parseMailingFloodWaitSec,
  pickMailingSendAccountId,
  pushMailingDelivery,
  recipientKey,
@@ -39,10 +45,18 @@ import {
  type MailingLeadFilter,
  type MailingSourceKind,
 } from '@/lib/mailing';
+import {interpretMailingSendResult,isAmbiguousSendError,mailingPersonKey,notePeerMiss,untriedAccountIds,type PeerMissState} from '@/lib/processes/mailing-tick';
+import {CONTACTED_CHUNK,STALE_CLAIM_ERROR,claimMailingRecipient,expireStalePendingClaims,findContactedRecipients,releaseMailingRecipient,settleMailingRecipient,staleClaimDelivery,type MailingRecipientEntry} from '@/lib/processes/mailing-recipients';
 import {checkProxyTarget} from '@/lib/security/net-guard';
-import {proxyCheckTimeoutMs,workerSlots} from '@/lib/worker-timeouts';
+import {proxyCheckTimeoutMs,workerAppTimeoutMs,workerSlots} from '@/lib/worker-timeouts';
+import {WorkerBusyError,isRetryableTickError,tickRetryPatch} from '@/lib/processes/tick-retry';
+import {commitTaskEdit,startTickSession,tickLockIsLive,tickLockWaitSec,updateTaskData,type TaskData,type TickSession,type TickTaskKind} from '@/lib/processes/tick-lock';
+import {mergeTaskSave} from '@/lib/processes/task-save-merge';
+import {JOIN_GATE_ROTATE_WAIT_SEC,JOIN_PENDING_ERROR,audienceJoinGate,classifyCollectFailure,insertAudienceUsers,interpretAudienceJoin,isDeadSessionError,isSlotBlindError,listAudienceUsers,loadAudienceSeenIds,type AudienceUserData} from '@/lib/processes/audience-tick';
 import {authorizeWorkspaceAction,keepOwnerSecretsOnSave,visibleRecordsFor,type WorkspaceActor} from '@/lib/security/workspace-authz';
 import {ALL_CRM_ACCESS} from '@/lib/staff-types';
+import {INBOX_CURSOR_MARGIN_SEC,applySendOutcome,findSendBlock,leadReplies,markLeadOpened,mergeIncomingDm,nextInboxCursor,withPendingSend,type LeadData,type ReplyEntry,type SendOutcome} from '@/lib/lead-conversation';
+import type {D1LikeDatabase} from '@/lib/db';
 import {env} from 'cloudflare:workers';
 import {z} from 'zod';
 export const dynamic='force-dynamic';
@@ -312,6 +326,10 @@ const schemas={
   total:z.coerce.number().int().min(0).default(0),
   invitedToday:z.coerce.number().int().min(0).default(0),
   inviteDay:z.string().max(20).default(''),
+  /** Уже были в целевой группе — не инвайт, квоту не тратят */
+  alreadyMembers:z.coerce.number().int().min(0).default(0),
+  /** Постоянно пропущены (privacy и т.п.) */
+  skipped:z.coerce.number().int().min(0).default(0),
   nextAt:z.string().max(40).default(''),
   accountIndex:z.coerce.number().int().min(0).default(0),
   cursorUserId:z.string().max(40).default(''),
@@ -537,8 +555,47 @@ async function loadAccountSessionPayload(owner:string,accountId:string){
  };
 }
 
-/** Worker answered 429: every slot and queue place is taken; nothing is wrong with the target. */
-class WorkerBusyError extends Error{}
+type TickOpen={session:TickSession}|{response:Response};
+
+/** Shared tick entry: waiting for nextAt / not runnable / lock held by another tick. */
+async function openTaskTick(owner:string,id:string,kind:TickTaskKind,notFound:string):Promise<TickOpen>{
+ const db=database();
+ const row:any=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,kind).first();
+ if(!row)return {response:reply({error:notFound},404)};
+ const data=JSON.parse(row.data);
+ if(data.status!=='running'&&data.status!=='scheduled')return {response:reply({ok:true,skipped:true,status:data.status,task:data})};
+ const waitMs=Date.parse(String(data.nextAt||''))-Date.now();
+ if(Number.isFinite(waitMs)&&waitMs>0)return {response:reply({ok:true,waiting:true,waitSec:Math.ceil(waitMs/1000),task:data})};
+ const started=await startTickSession(db,owner,id,kind);
+ if(started.state==='gone')return {response:reply({error:notFound},404)};
+ if(started.state==='busy')return {response:reply({ok:true,busy:true,waitSec:tickLockWaitSec(started.data),task:started.data})};
+ const {session}=started;
+ // Paused between our read and the lock: release it untouched.
+ if(session.base.status!=='running'&&session.base.status!=='scheduled'){
+  const task=await session.finish(session.base);
+  return {response:reply({ok:true,skipped:true,status:task.status,task})};
+ }
+ return {session};
+}
+
+/**
+ * Worker call inside a tick: started only when its timeout still fits the tick's wall budget
+ * (else TickBudgetExhaustedError → commit and continue next tick), lock renewed first.
+ */
+function tickWorkerPost(tickRun:TickSession){
+ return async(path:string,body:unknown,timeoutMs:number)=>{
+  tickRun.budget.assertFits(timeoutMs);
+  await tickRun.renew();
+  return workerPost(path,body,timeoutMs);
+ };
+}
+
+/** Pause/start/save never clear a lock a tick still holds (REQ-I1). */
+function keepLiveLock(data:TaskData):Pick<TaskData,'tickLockUntil'|'tickLockId'>{
+ return tickLockIsLive(data)
+  ?{tickLockUntil:data.tickLockUntil,tickLockId:data.tickLockId}
+  :{tickLockUntil:'',tickLockId:''};
+}
 
 async function workerPost(path:string,body:unknown,timeoutMs=120_000){
  const headers:Record<string,string>={'Content-Type':'application/json'};
@@ -776,7 +833,8 @@ async function runAccountCheck(owner:string,id:string,opts?:{
    }
 
    if(status==='frozen'||status==='spamblock'){
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'account').run();
+    // Подтверждённый проверкой спамблок без таймера: старый истёкший cooldownUntil не должен «снять» его (REQ-M8)
+    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...next,cooldownUntil:'',cooldownReason:status}),owner,id,'account').run();
     return {id,ok:false,status:next.status,error:next.error,profile,proxyRotated:proxyRotated||undefined};
    }
 
@@ -889,20 +947,23 @@ async function resolveApiKey(owner:string,config:any){
  return '';
 }
 
-/** Строгий AI-шлюз: подтверждает кандидатов ядра. Лучше 0, чем шум. */
+/**
+ * Строгий AI-шлюз: подтверждает кандидатов ядра. Лучше 0, чем шум.
+ * Итог по батчам (lib/processes/scan-flow.ts::applyAiVerdicts): ответ модели — вердикт, сбой — fallback на ядро.
+ */
 async function qualifyLeadsWithAi(
  apiKey:string,
  settings:any,
  messages:{tgMsgId:string;message:string;name:string;coreScore?:number;coreReasons?:string[]}[],
-){
- type Picked={tgMsgId:string;reason:string;temperature:LeadTemperature};
- if(!messages.length)return [] as Picked[];
+):Promise<AiBatchOutcome[]>{
+ if(!messages.length)return [];
  const brief=buildProjectBrief(settings);
- const stop=mergeKeywords(settings.minusKeywords||'',settings.avoidTopics||'');
+ const stop=scanStopTerms(settings).join(', ');
  const batchSize=20;
- const out:Picked[]=[];
+ const out:AiBatchOutcome[]=[];
  for(let offset=0;offset<messages.length;offset+=batchSize){
   const batch=messages.slice(offset,offset+batchSize);
+  const ids=batch.map(m=>String(m.tgMsgId));
   const listed=batch.map((m,i)=>{
    const core=m.coreScore!=null?`Ядро: score ${m.coreScore}/100 · ${(m.coreReasons||[]).slice(0,3).join('; ')}`:'';
    return `#${i+1} id=${m.tgMsgId}\nАвтор: ${m.name}\n${core}\n${m.message.slice(0,900)}`;
@@ -928,26 +989,34 @@ async function qualifyLeadsWithAi(
     user:'Отметь ТОЛЬКО тех, кто ищет сервис/внедрение под продукт из настроек. Остальных пропусти:\n\n'+listed,
    });
    const match=text.match(/\[[\s\S]*\]/);
-   if(!match)continue;
+   if(!match)throw new Error('AI: ответ без JSON-массива');
    const arr=JSON.parse(match[0]) as {id?:string;tgMsgId?:string;reason?:string;temperature?:string}[];
-   const allowIds=new Set(batch.map(m=>String(m.tgMsgId)));
+   if(!Array.isArray(arr))throw new Error('AI: ответ не массив');
+   const allowIds=new Set(ids);
+   const picked:AiPick[]=[];
    for(const x of arr){
-    const tgMsgId=String(x.id||x.tgMsgId||'');
+    const tgMsgId=String(x?.id||x?.tgMsgId||'');
     if(!tgMsgId||!allowIds.has(tgMsgId))continue;
     const temperature=parseLeadTemperature(x.temperature);
     if(temperature!=='hot'&&temperature!=='warm')continue;
-    out.push({tgMsgId,reason:String(x.reason||'').slice(0,500),temperature});
+    picked.push({tgMsgId,reason:String(x.reason||'').slice(0,500),temperature});
    }
-  }catch{/* батч пропускаем */}
+   out.push({ids,ok:true,picked});
+  }catch(e){
+   // Сбой батча (429/таймаут/мусор) — не вердикт: его кандидаты пойдут по ядру
+   console.warn('[workspace] qualify_leads_ai batch failed:',String((e as Error)?.message||e).slice(0,200));
+   out.push({ids,ok:false,picked:[]});
+  }
  }
  return out;
 }
 
-function leadCoreSettingsFrom(settings:any,keywords:string,minusKeywords:string):LeadCoreSettings{
+/** stopTerms = the exact ordered list the worker gets (avoidTopics already merged in by scanStopTerms). */
+function leadCoreSettingsFrom(settings:any,keywords:string,stopTerms:readonly string[]):LeadCoreSettings{
  return {
   keywords,
-  minusKeywords,
-  avoidTopics:String(settings.avoidTopics||''),
+  minusKeywords:stopTerms.join(', '),
+  avoidTopics:'',
   leadCriteria:String(settings.leadCriteria||''),
   hotSignals:String(settings.hotSignals||''),
   product:String(settings.product||''),
@@ -965,8 +1034,9 @@ function ensureJunkMinus(minus:string){
  return mergeKeywords(minus||'',DEFAULT_JUNK_MINUS);
 }
 
-function stopWordsFromSettings(settings:any){
- return mergeKeywords(settings.minusKeywords||'',settings.avoidTopics||'');
+/** Sanitized at read time: polluted stop-lists (product words learned as minus) recover without a manual cleanup. */
+function stopWordsFromSettings(settings:any):string[]{
+ return scanStopTerms(settings);
 }
 
 function scanLimitFromDays(days:number){
@@ -1336,6 +1406,89 @@ async function notifyTelegramText(token:string,chatId:string,text:string){
  }
 }
 
+/** REQ-L6: a scanned lead the user deletes is remembered on its group, so the next scan does not re-create it. */
+async function rememberDeletedLead(owner:string,leadId:string){
+ const db=database();
+ const row=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,leadId,'lead').first<{data:string}>();
+ if(!row)return;
+ let lead:{groupId?:unknown;tgMsgId?:unknown};
+ try{lead=JSON.parse(String(row.data))}catch{return}
+ const groupId=String(lead.groupId||'');
+ const tgMsgId=String(lead.tgMsgId||'');
+ if(!groupId||!tgMsgId)return;
+ const grow=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,groupId,'group').first<{data:string}>();
+ if(!grow)return;
+ let gdata:Record<string,unknown>;
+ try{gdata=JSON.parse(String(grow.data))}catch{return}
+ const next={...gdata,leadTombstones:addLeadTombstone(gdata.leadTombstones,tgMsgId)};
+ await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,groupId,'group').run();
+}
+
+/** Message of the worker /scan-group answer; `_core` is attached by scan_group after the core decision. */
+type ScanWorkerMessage={tgMsgId?:unknown;message?:string;name?:string;_core?:{score?:number;reasons?:string[]}};
+
+/** Scan of one group runs at most once at a time (cron + manual force); TTL covers worker + AI batches. */
+const SCAN_LOCK_TTL_MS=10*60_000;
+
+async function acquireGroupScanLock(owner:string,groupId:string){
+ const token=crypto.randomUUID();
+ const until=new Date(Date.now()+SCAN_LOCK_TTL_MS).toISOString();
+ const res=await database().prepare("UPDATE records SET data=json_set(data,'$.scanLockUntil',?,'$.scanLockToken',?) WHERE owner=? AND id=? AND kind='group' AND COALESCE(json_extract(data,'$.scanLockUntil'),'')<?")
+  .bind(until,token,owner,groupId,new Date().toISOString()).run();
+ return res.meta.changes===1?{token,until}:null;
+}
+
+async function releaseGroupScanLock(owner:string,groupId:string,token:string){
+ try{
+  await database().prepare("UPDATE records SET data=json_set(data,'$.scanLockUntil','','$.scanLockToken','') WHERE owner=? AND id=? AND kind='group' AND json_extract(data,'$.scanLockToken')=?")
+   .bind(owner,groupId,token).run();
+ }catch(e){
+  console.error('[workspace] release_scan_lock:',String((e as Error)?.message||e).slice(0,300));
+ }
+}
+
+const NOTIFY_MAX_ATTEMPTS=5;
+const NOTIFY_CLAIM_MS=60_000;
+const NOTIFY_BATCH=20;
+
+/**
+ * REQ-L9: leads with notifyPending are claimed (so parallel scans never send one lead twice), sent in one
+ * Telegram message, then marked notifiedAt; a failed send is logged and retried on the next scan.
+ */
+async function flushLeadNotifications(owner:string,settings:{notifyEnabled?:unknown}){
+ if(!settings?.notifyEnabled)return;
+ const db=database();
+ const rows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='lead' AND json_extract(data,'$.notifyPending')=1 ORDER BY created LIMIT ?").bind(owner,NOTIFY_BATCH).all();
+ const nowIso=new Date().toISOString();
+ const claimUntil=new Date(Date.now()+NOTIFY_CLAIM_MS).toISOString();
+ const claimed:{id:string;data:Record<string,unknown>}[]=[];
+ for(const r of rows.results){
+  const res=await db.prepare("UPDATE records SET data=json_set(data,'$.notifyClaimUntil',?) WHERE owner=? AND id=? AND kind='lead' AND json_extract(data,'$.notifyPending')=1 AND COALESCE(json_extract(data,'$.notifyClaimUntil'),'')<?")
+   .bind(claimUntil,owner,String(r.id),nowIso).run();
+  if(res.meta.changes!==1)continue;
+  try{claimed.push({id:String(r.id),data:JSON.parse(String(r.data))})}catch{/* битая запись: claim истечёт */}
+ }
+ if(!claimed.length)return;
+ const sent=await notifyNewLeadsTelegram(settings,claimed.map(c=>({
+  name:String(c.data.name||''),
+  message:String(c.data.message||''),
+  temperature:String(c.data.temperature||''),
+  source:String(c.data.source||''),
+ })));
+ if(sent.ok){
+  for(const c of claimed){
+   await db.prepare("UPDATE records SET data=json_set(data,'$.notifyPending',json('false'),'$.notifiedAt',?,'$.notifyClaimUntil','') WHERE owner=? AND id=? AND kind='lead'").bind(new Date().toISOString(),owner,c.id).run();
+  }
+  return;
+ }
+ const error='error' in sent?String(sent.error||''):'уведомления выключены';
+ for(const c of claimed){
+  await db.prepare("UPDATE records SET data=json_set(data,'$.notifyAttempts',COALESCE(json_extract(data,'$.notifyAttempts'),0)+1,'$.notifyClaimUntil','','$.notifyPending',CASE WHEN COALESCE(json_extract(data,'$.notifyAttempts'),0)+1>=? THEN json('false') ELSE json('true') END) WHERE owner=? AND id=? AND kind='lead'")
+   .bind(NOTIFY_MAX_ATTEMPTS,owner,c.id).run();
+ }
+ await appendGlobalRescanLog(owner,'warn',`Уведомление о новых лидах (${claimed.length}) не отправлено: ${error.slice(0,160)} — повтор при следующем скане`);
+}
+
 async function loadNotifySettings(db:any,owner:string){
  const row:any=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='settings' LIMIT 1").bind(owner).first();
  if(!row)return null;
@@ -1350,6 +1503,82 @@ async function notifyMailingEvent(db:any,owner:string,title:string,detail:string
  if(!token||!chatId)return;
  const text=`UniLab · рассылка\n${title}\n${detail}`.slice(0,3500);
  try{await notifyTelegramText(token,chatId,text)}catch{/* */}
+}
+
+type MailingOutreachTarget={userId:string;username:string;leadId:string;accessHash:string;recordId:string};
+
+/** Успешное ЛС рассылки: исходящее в историю лида (или новая карточка «Рассылка»), чтобы ответ попал в «Переписки». */
+async function recordMailingOutreach(owner:string,taskId:string,cand:MailingOutreachTarget,accountId:string,text:string,result:any,messageId:string,link:string){
+ const db=database();
+ const freshHash=String(result.senderAccessHash||'').slice(0,40);
+ const outbound={
+  text:text.slice(0,4000),
+  mode:'dm' as const,
+  at:new Date().toISOString(),
+  ok:true,
+  error:'',
+  messageId,
+  link,
+  chatId:String(result.chatId||cand.userId||'').slice(0,40),
+  from:'us' as const,
+ };
+ try{
+  if(cand.leadId){
+   const leadRow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,cand.leadId,'lead').first();
+   if(!leadRow)return;
+   const L=JSON.parse(leadRow.data);
+   const replies=[...(Array.isArray(L.replies)?L.replies:[]),outbound].slice(-40);
+   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({
+    ...L,
+    replies,
+    mailingTaskId:L.mailingTaskId||taskId,
+    accountId,
+    senderId:L.senderId||cand.userId,
+    senderUsername:L.senderUsername||cand.username||String(result.senderUsername||''),
+    senderAccessHash:freshHash||L.senderAccessHash||cand.accessHash||'',
+   }),owner,cand.leadId,'lead').run();
+   return;
+  }
+  // Рассылка по аудитории — создаём карточку, чтобы ответ попал в «Переписки»
+  const leadData={
+   name:(cand.username?`@${cand.username}`:(cand.userId?`id${cand.userId}`:'Клиент')).slice(0,80),
+   message:text.slice(0,8000)||'Исходящая рассылка',
+   source:'Рассылка',
+   status:'working',
+   temperature:'warm',
+   draft:'',
+   tgMsgId:'',
+   groupId:'',
+   reason:'Исходящее из рассылки — ждём ответ',
+   viewed:false,
+   viewedAt:'',
+   excludeFromTraining:false,
+   senderId:String(cand.userId||'').slice(0,40),
+   senderUsername:String(cand.username||result.senderUsername||'').slice(0,64),
+   senderAccessHash:String(freshHash||cand.accessHash||'').slice(0,40),
+   messageKind:'',
+   peerId:String(cand.userId||'').slice(0,40),
+   replyToMsgId:'',
+   replies:[outbound],
+   conversationOpen:false,
+   conversationAt:'',
+   incomingLastText:'',
+   needsManager:false,
+   mailingTaskId:taskId,
+   accountId,
+  };
+  await db.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)').bind(crypto.randomUUID(),owner,'lead',JSON.stringify(leadData),null,new Date().toISOString()).run();
+  // Обновим hash у audience_user — пригодится на повторной рассылке
+  if(!cand.recordId||!freshHash)return;
+  const urow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,cand.recordId,'audience_user').first();
+  if(!urow)return;
+  const ud=JSON.parse(urow.data);
+  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({
+   ...ud,
+   accessHash:freshHash,
+   collectedByAccountId:ud.collectedByAccountId||accountId,
+  }),owner,cand.recordId,'audience_user').run();
+ }catch{/* история лида — best effort, доставка уже учтена */}
 }
 
 async function notifyConversationEvent(db:any,owner:string,name:string,username:string,text:string){
@@ -1380,6 +1609,231 @@ function sameMailingPeer(lead:any,msg:any){
  return !!(a&&b&&a===b);
 }
 
+/** Lead rows change under us (manager reply, DM poll, save): writes are compare-and-swap on the row text. */
+class LeadUpdateConflictError extends Error{}
+
+/**
+ * Worker send job may take 120 s (worker-app.mjs timeoutForAction) after waiting for a slot; aborting kills the job,
+ * so a shorter app timeout turns a slow-but-delivered reply into an «unknown» result.
+ */
+const SEND_MESSAGE_TIMEOUT_MS=185_000;
+/** /inbox-dms: 120 s worker job + queue margin. */
+const INBOX_DMS_TIMEOUT_MS=150_000;
+/** One poll_dm_replies per owner; covers the worst case of up to 4 accounts × INBOX_DMS_TIMEOUT_MS. */
+const DM_POLL_LEASE_MS=11*60_000;
+
+type LiveAccount={id:string;data:Record<string,unknown>};
+type InboxMessage=Record<string,unknown>;
+type DmOutreach={taskId:string;leadId:string;userId:string;username:string;preview:string;groupId:string;accountId:string};
+
+const dmPollLeaseId=(owner:string)=>`dm-poll-lease:${owner}`;
+
+/** Lease row lives with the AI guard rows (kind ai_guard is hidden from GET); returns the stamp to release with. */
+async function acquireDmPollLease(db:D1LikeDatabase,owner:string):Promise<string|null>{
+ const now=Date.now();
+ const stamp=new Date(now).toISOString();
+ const r=await db.prepare('INSERT INTO records(id,owner,kind,data,created) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET created=excluded.created WHERE records.created < ?')
+  .bind(dmPollLeaseId(owner),owner,'ai_guard','{}',stamp,new Date(now-DM_POLL_LEASE_MS).toISOString()).run();
+ return r.meta.changes?stamp:null;
+}
+
+/** Releases only our own lease (an expired one may already belong to another poll). */
+async function releaseDmPollLease(db:D1LikeDatabase,owner:string,stamp:string){
+ await db.prepare('UPDATE records SET created=? WHERE id=? AND owner=? AND created=?').bind(new Date(0).toISOString(),dmPollLeaseId(owner),owner,stamp).run();
+}
+
+/** Outreach targets: DM deliveries of mailings plus leads we already wrote to. */
+async function loadDmOutreach(db:D1LikeDatabase,owner:string){
+ const mailingRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='mailing_task'").bind(owner).all();
+ const hits:DmOutreach[]=[];
+ const mailingAccountIds=new Set<string>();
+ for(const r of mailingRows.results){
+  try{
+   const d=JSON.parse(String(r.data));
+   for(const del of (Array.isArray(d.deliveries)?d.deliveries:[])){
+    if(!del||del.ok===false)continue;
+    if(String(del.mode||'dm')!=='dm')continue;
+    const aid=String(del.accountId||'');
+    if(aid)mailingAccountIds.add(aid);
+    hits.push({taskId:String(r.id),leadId:String(del.leadId||''),userId:String(del.userId||del.chatId||''),username:String(del.username||''),preview:String(del.textPreview||'').slice(0,800),groupId:'',accountId:aid});
+   }
+  }catch{/* */}
+ }
+ const leadRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='lead'").bind(owner).all();
+ const leads=leadRows.results.map(r=>{
+  try{return {id:String(r.id),data:JSON.parse(String(r.data)) as LeadData}}catch{return null}
+ }).filter(Boolean) as {id:string;data:LeadData}[];
+ const match=(msg:InboxMessage):DmOutreach|null=>{
+  const byDelivery=hits.find(h=>sameMailingPeer(h,msg));
+  if(byDelivery)return byDelivery;
+  const byLead=leads.find(L=>{
+   if(!sameMailingPeer(L.data,msg))return false;
+   const d=L.data||{};
+   if(d.conversationOpen||d.mailingTaskId)return true;
+   return leadReplies(d).some(x=>x.from==='us'||x.mode==='dm');
+  });
+  if(!byLead)return null;
+  return {taskId:String(byLead.data.mailingTaskId||''),leadId:byLead.id,userId:String(byLead.data.senderId||''),username:String(byLead.data.senderUsername||''),preview:String(byLead.data.message||''),groupId:String(byLead.data.groupId||''),accountId:String(byLead.data.accountId||'')};
+ };
+ return {leads,match,mailingAccountIds};
+}
+
+/**
+ * Records one incoming DM: merged into the freshly re-read lead (CAS) or a new «Рассылка · ответ» lead.
+ * Returns the client name when something new was recorded (and notified), null for an already known message.
+ */
+async function recordIncomingDm(db:D1LikeDatabase,owner:string,accountId:string,msg:InboxMessage,outreach:DmOutreach,leads:{id:string;data:LeadData}[]):Promise<string|null>{
+ const text=String(msg.text||'').trim()||(msg.hasMedia?'[медиа]':'');
+ if(!text)return null;
+ const nowIso=new Date().toISOString();
+ const incoming:ReplyEntry={
+  text:text.slice(0,4000),
+  mode:'dm',
+  at:String(msg.at||nowIso).slice(0,40),
+  ok:true,
+  error:'',
+  messageId:String(msg.messageId||'').slice(0,40),
+  link:msg.username?`https://t.me/${String(msg.username).replace(/^@/,'')}`:'',
+  chatId:String(msg.userId||'').slice(0,40),
+  from:'client',
+  accountId,
+ };
+ const leadRow=(outreach.leadId?leads.find(L=>L.id===outreach.leadId):undefined)||leads.find(L=>sameMailingPeer(L.data,msg));
+ if(leadRow){
+  const ctx={accountId,taskId:outreach.taskId,userId:String(msg.userId||''),username:String(msg.username||''),nowIso};
+  const done=await mutateLead(db,owner,leadRow.id,cur=>{
+   const next=mergeIncomingDm(cur,incoming,ctx);
+   return {next:next??undefined,result:!!next};
+  });
+  if(!done)return null;
+  leadRow.data=done.lead;
+  if(!done.result)return null;
+  const name=String(done.lead.name||msg.name||msg.username||'Клиент');
+  void notifyConversationEvent(db,owner,String(done.lead.name||''),String(done.lead.senderUsername||msg.username||''),incoming.text);
+  return name;
+ }
+ const newId=crypto.randomUUID();
+ const data={
+  name:String(msg.name||msg.username||'Клиент').slice(0,80),
+  message:outreach.preview||incoming.text,
+  source:'Рассылка · ответ',
+  status:'working',
+  temperature:'hot',
+  draft:'',
+  tgMsgId:'',
+  groupId:outreach.groupId||'',
+  reason:'Клиент ответил на рассылку',
+  viewed:false,
+  viewedAt:'',
+  excludeFromTraining:false,
+  senderId:String(msg.userId||'').slice(0,40),
+  senderUsername:String(msg.username||'').slice(0,64),
+  messageKind:'',
+  peerId:String(msg.userId||'').slice(0,40),
+  replyToMsgId:'',
+  replies:[incoming],
+  conversationOpen:true,
+  conversationAt:nowIso,
+  incomingLastText:incoming.text,
+  needsManager:true,
+  mailingTaskId:outreach.taskId,
+  accountId,
+ };
+ await db.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)').bind(newId,owner,'lead',JSON.stringify(data),null,nowIso).run();
+ leads.push({id:newId,data});
+ void notifyConversationEvent(db,owner,data.name,data.senderUsername,incoming.text);
+ return data.name;
+}
+
+/** One inbox pass over a rotating slice of live accounts (caller holds the per-owner lease). */
+async function pollDmReplies(db:D1LikeDatabase,owner:string,live:LiveAccount[]){
+ const {leads,match,mailingAccountIds}=await loadDmOutreach(db,owner);
+ const settingsRow=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='settings' LIMIT 1").bind(owner).first<{id:string;data:string}>();
+ let cursor=0;
+ if(settingsRow){
+  try{cursor=Math.max(0,Number(JSON.parse(String(settingsRow.data)).inboxPollCursor)||0)}catch{/* */}
+ }
+ const preferred=live.filter(a=>mailingAccountIds.has(a.id));
+ const rest=live.filter(a=>!mailingAccountIds.has(a.id));
+ const pool=(preferred.length?preferred.concat(rest):live);
+ const take=Math.min(4,Math.max(2,pool.length));
+ const slice=pool.slice(cursor%pool.length).concat(pool.slice(0,cursor%pool.length)).slice(0,take);
+ const nextCursor=(cursor+slice.length)%Math.max(1,pool.length);
+
+ let opened=0;
+ const names:string[]=[];
+ for(const acc of slice){
+  let result:{ok?:unknown;messages?:unknown;complete?:unknown;nextOffsetDate?:unknown;scanStartedTs?:unknown};
+  try{
+   const {payload}=await loadAccountSessionPayload(owner,acc.id);
+   result=await workerPost('/inbox-dms',{
+    ...payload,
+    sinceTs:Number(acc.data.inboxSinceTs)||0,
+    offsetDate:Number(acc.data.inboxPageOffset)||0,
+    maxUserDialogs:30,
+   },INBOX_DMS_TIMEOUT_MS);
+  }catch{
+   continue;
+  }
+  if(!result?.ok)continue;
+  const msgs:InboxMessage[]=Array.isArray(result.messages)?result.messages:[];
+  let persisted=true;
+  let maxTs=0;
+  for(const msg of msgs){
+   maxTs=Math.max(maxTs,Number(msg.ts)||0);
+   const outreach=match(msg);
+   if(!outreach)continue;
+   try{
+    const name=await recordIncomingDm(db,owner,acc.id,msg,outreach,leads);
+    if(name){opened++;names.push(name)}
+   }catch(e){
+    persisted=false;
+    console.error('[workspace] poll_dm_replies:',String((e as Error)?.message||e).slice(0,300));
+   }
+  }
+  // Курсор двигаем только по тому, что воркер реально просмотрел и мы сохранили
+  if(persisted){
+   const next=nextInboxCursor(acc.data,result,maxTs?maxTs-INBOX_CURSOR_MARGIN_SEC:0);
+   await db.prepare("UPDATE records SET data=json_set(data,'$.inboxSinceTs',?,'$.inboxPageOffset',?,'$.inboxPageStartTs',?) WHERE owner=? AND id=? AND kind='account'")
+    .bind(next.inboxSinceTs,next.inboxPageOffset,next.inboxPageStartTs,owner,acc.id).run();
+  }
+ }
+ if(settingsRow){
+  await db.prepare("UPDATE records SET data=json_set(data,'$.inboxPollCursor',?) WHERE owner=? AND id=? AND kind='settings'").bind(nextCursor,owner,String(settingsRow.id)).run();
+ }
+ return {ok:true,opened,names:names.slice(0,12),nextCursor};
+}
+
+/** A thrown send: busy worker = not sent (retry allowed); our timeout/abort = maybe sent (retry blocked). */
+function sendFailureOutcome(e:unknown):{outcome:SendOutcome;httpStatus:number}{
+ if(e instanceof WorkerBusyError){
+  return {outcome:{status:'failed',error:'Telegram-воркер занят — повторите через минуту'},httpStatus:429};
+ }
+ const name=String((e as Error)?.name||'');
+ if(name==='TimeoutError'||name==='AbortError'){
+  console.error('[workspace] send_lead_message: worker timeout, delivery unknown');
+  return {outcome:{status:'unknown',error:'Нет ответа Telegram-воркера — сообщение могло уйти. Проверьте переписку в Telegram перед повтором.'},httpStatus:504};
+ }
+ return {outcome:{status:'failed',error:internalError('send_lead_message',e,'Не удалось отправить сообщение. Повторите попытку.')},httpStatus:503};
+}
+
+/**
+ * Re-reads the lead, applies `fn` and writes only if the row is unchanged since the read (retries on a race).
+ * `fn` returns `next` to write (or none to skip the write) and a result; null when the lead is gone.
+ */
+async function mutateLead<T>(db:D1LikeDatabase,owner:string,id:string,fn:(lead:LeadData)=>{next?:LeadData;result:T}):Promise<{result:T;lead:LeadData}|null>{
+ for(let attempt=0;attempt<5;attempt++){
+  const row=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'lead').first<{data:string}>();
+  if(!row)return null;
+  const lead=JSON.parse(String(row.data)) as LeadData;
+  const {next,result}=fn(lead);
+  if(!next)return {result,lead};
+  const upd=await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=? AND data=?').bind(JSON.stringify(next),owner,id,'lead',String(row.data)).run();
+  if(upd.meta.changes)return {result,lead:next};
+ }
+ throw new LeadUpdateConflictError('Лид одновременно изменён — повторите');
+}
+
 export async function GET(){const session=await getSessionUser();if(!session?.userId)return reply({error:'Войдите в рабочее пространство'},401);
  const actor=await readActor();
  if(!actor)return reply({error:'Войдите в рабочее пространство'},401);
@@ -1391,7 +1845,7 @@ export async function GET(){const session=await getSessionUser();if(!session?.us
  try{await healStuckProxyChecks(owner,45_000)}catch{/* */}
  try{await healCorruptGroupJoinFields(owner)}catch{/* */}
  // audience_user не отдаём в список кабинета (тысячи строк) — только задачи и остальное
- const result=await database().prepare("SELECT id,kind,data,created,secret IS NOT NULL AS hasSecret FROM records WHERE owner=? AND kind!='ai_guard' AND kind!='audience_user' ORDER BY created DESC").bind(owner).all();
+ const result=await database().prepare("SELECT id,kind,data,created,secret IS NOT NULL AS hasSecret FROM records WHERE owner=? AND kind!='ai_guard' AND kind!='audience_user' AND kind!='mailing_recipient' ORDER BY created DESC").bind(owner).all();
  let telegramConnected=false;
  try{const h=await fetch(workerUrl()+'/health',{signal:AbortSignal.timeout(1500)});telegramConnected=h.ok}catch{telegramConnected=false}
  const envKey=!!envAiApiKey();
@@ -1699,7 +2153,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    }
    if(gate.reason==='quota'){
     const inviteLimit=Number(adata.limits?.invite??DEFAULT_ACCOUNT_LIMITS.invite);
-    const cooled=applyQuotaCooldownIfExhausted(adata);
+    const cooled=applyQuotaCooldownIfExhausted(adata,'invite');
     if(cooled!==adata){
      await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(cooled),owner,gdata.accountId,'account').run();
     }
@@ -1756,7 +2210,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    }
    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'group').run();
    if(spentJoin){
-    const bumped=applyQuotaCooldownIfExhausted({...adata,...bumpJoinCounters(adata)});
+    const bumped=applyQuotaCooldownIfExhausted({...adata,...bumpJoinCounters(adata)},'invite');
     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(bumped),owner,gdata.accountId,'account').run();
    }
    if(flood){
@@ -1826,12 +2280,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     return reply({error:'Аккаунт группы не найден',accountDead:true},400);
    }
    const st=String(adata.status||'');
-   if(isDayLimitCooldown(adata)||st==='spamblock'||st==='frozen'){
+   const gate=evaluateScanGate(adata);
+   if(!gate.ok&&gate.reason==='cooldown'){
     return reply({
      ok:false,
      skipped:true,
      accountCooldown:true,
-     waitSec:Math.max(60,Math.ceil((Date.parse(String(adata.cooldownUntil||''))-Date.now())/1000)||300),
+     waitSec:gate.waitSec,
      error:'Аккаунт на отлёжке — скан позже, назначение смеси сохранено',
      group:gdata,
     },429);
@@ -1901,9 +2356,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const keywords=workerKeywordsFromSettings(coreSettings).join(', ')||String(settings.keywords||'');
   const scanDepthDays=Math.max(1,Math.min(90,Number(settings.scanDepthDays)||7));
   const scanLimit=scanLimitFromDays(scanDepthDays);
+  const lock=await acquireGroupScanLock(owner,id);
+  if(!lock)return reply({ok:true,skipped:true,locked:true,scanned:0,matched:0,added:0,message:'Скан этой группы уже идёт'});
+  gdata={...gdata,scanLockUntil:lock.until,scanLockToken:lock.token};
+  try{
   try{
    const {payload}=await loadAccountSessionPayload(owner,gdata.accountId);
-   const result=await workerPost('/scan-group',{...payload,url:gdata.url,keywords,minusKeywords,limit:scanLimit,days:scanDepthDays});
+   const result=await workerPost('/scan-group',{...payload,url:gdata.url,keywords,minusKeywords,limit:scanLimit,days:scanDepthDays,minId:String(gdata.scanCursor||'')});
     if(!result.ok){
     if(workerLooksDeadAccount(result)){
      const frozen=workerLooksFrozen(result);
@@ -2028,14 +2487,15 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    }
    const cutoff=Date.now()-scanDepthDays*24*60*60*1000;
    const workerRaw=Array.isArray(result.messages)?result.messages.length:0;
-   let candidates=(result.messages||[]).filter((msg:any)=>{
+   let candidates=(result.messages||[]).filter((msg:{tgMsgId?:unknown;date?:string;message?:string;_core?:unknown})=>{
+    if(!String(msg.tgMsgId||''))return false;
     if(msg.date){
      const t=Date.parse(msg.date);
      if(Number.isFinite(t)&&t<cutoff)return false;
     }
-    const scored=scoreLead(msg.message||'',coreSettings);
-    if(!scored||scored.score<LEAD_SCORE_WARM)return false;
-    (msg as any)._core=scored;
+    const decision=decideScanLead(msg.message||'',coreSettings);
+    if(!decision.pass)return false;
+    msg._core=decision.core;
     return true;
    });
    const existing=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='lead'").bind(owner).all();
@@ -2051,89 +2511,57 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      }
     }catch{/* */}
    }
-   if(excludedTexts.size){
-    candidates=candidates.filter((msg:any)=>{
-     const fp=normalizeLeadMessage(msg.message||'');
-     return !fp||!excludedTexts.has(fp);
-    });
-   }
+   // Удалённые пользователем лиды — как существующие (REQ-L6)
+   for(const t of Array.isArray(gdata.leadTombstones)?gdata.leadTombstones:[])seen.add(leadMessageFingerprint('',id,String(t)));
+   const isNewMessage=(msg:{tgMsgId?:unknown;message?:string})=>{
+    if(seen.has(leadMessageFingerprint(msg.message||'',id,String(msg.tgMsgId||''))))return false;
+    const fp=normalizeLeadMessage(msg.message||'');
+    return !fp||!excludedTexts.has(fp);
+   };
+   candidates=candidates.filter((msg:{message?:string})=>{
+    const fp=normalizeLeadMessage(msg.message||'');
+    return !fp||!excludedTexts.has(fp);
+   });
    const prefilterCount=candidates.length;
-   const reasons=new Map<string,string>();
-   const temps=new Map<string,LeadTemperature>();
-   let aiUsed=false;
-   let aiRequired=false;
-   const wantAi=settings.aiQualify!==false;
-   if(wantAi&&candidates.length){
-    const apiKey=await resolveApiKey(owner,config);
-    if(apiKey){
-     aiRequired=true;
-     try{
-      const forAi=candidates.map((m:any)=>({
-       tgMsgId:String(m.tgMsgId||''),
-       message:String(m.message||''),
-       name:String(m.name||''),
-       coreScore:Number(m._core?.score)||0,
-       coreReasons:Array.isArray(m._core?.reasons)?m._core.reasons:[],
-      }));
-      const picked=await qualifyLeadsWithAi(apiKey,settings,forAi);
-      aiUsed=true;
-      if(picked.length){
-       const allow=new Set(picked.map(p=>p.tgMsgId));
-       for(const p of picked){
-        const core=candidates.find((m:any)=>String(m.tgMsgId)===p.tgMsgId)?._core;
-        const decision=core?{...core,pass:true,temperature:p.temperature,summary:'',fingerprint:'',text:''}:null;
-        reasons.set(p.tgMsgId,decision?reasonFromCore(decision as any,p.reason):p.reason);
-        // AI не повышает выше ядра: если ядро warm — остаётся warm; hot только если ядро тоже hot-capable
-        const coreTemp=core?classifyWithLeadCore(String(candidates.find((m:any)=>String(m.tgMsgId)===p.tgMsgId)?.message||''),coreSettings):null;
-        let t=p.temperature;
-        if(coreTemp==='warm'&&t==='hot')t='warm';
-        if(!coreTemp)continue;
-        temps.set(p.tgMsgId,t);
-       }
-       candidates=candidates.filter((m:any)=>allow.has(String(m.tgMsgId))&&temps.has(String(m.tgMsgId)));
-      }else{
-       // Пустой ответ AI не должен обнулять ядро — иначе 0 лидов при живом скане
-       aiRequired=false;
-       aiUsed=false;
-      }
-     }catch{
-      aiRequired=false;
-      aiUsed=false;
-     }
+   // Дедуп до AI: уже известные сообщения не отправляем в модель повторно
+   candidates=candidates.filter(isNewMessage);
+   const now=Date.now();
+   const aiSig=aiSettingsSignature(settings);
+   const apiKey=settings.aiQualify!==false&&candidates.length?await resolveApiKey(owner,config):'';
+   const aiRejectsActive=activeAiRejects(gdata.aiRejected,aiSig,now);
+   let aiRemembered=0;
+   let batches:AiBatchOutcome[]|null=null;
+   if(apiKey){
+    // REQ-L11: отказ AI помним (TTL) — не шлём то же сообщение в модель на каждом переобходе
+    const fresh=candidates.filter((m:{tgMsgId?:unknown})=>!aiRejectsActive[String(m.tgMsgId)]);
+    aiRemembered=candidates.length-fresh.length;
+    candidates=fresh;
+    if(candidates.length){
+     batches=await qualifyLeadsWithAi(apiKey,settings,candidates.map((m:ScanWorkerMessage)=>({
+      tgMsgId:String(m.tgMsgId||''),
+      message:String(m.message||''),
+      name:String(m.name||''),
+      coreScore:Number(m._core?.score)||0,
+      coreReasons:Array.isArray(m._core?.reasons)?m._core.reasons:[],
+     })));
     }
    }
-   // Без AI — только температура ядра (не мягче AI)
-   if(!aiRequired){
-    const kept:any[]=[];
-    for(const m of candidates){
-     const t=classifyWithLeadCore(m.message||'',coreSettings);
-     if(!t)continue;
-     const scored=m._core||scoreLead(m.message||'',coreSettings);
-     temps.set(String(m.tgMsgId),t);
-     reasons.set(String(m.tgMsgId),reasonFromCore({
-      ...scored,
-      pass:true,
-      temperature:t,
-      summary:'',
-      fingerprint:'',
-      text:String(m.message||''),
-     }));
-     kept.push(m);
-    }
-    candidates=kept;
-   }
+   const aiUsed=!!batches?.some(b=>b.ok);
+   // REQ-L1: ответ AI по батчу — вердикт; упавший батч — по ядру
+   const verdict=applyAiVerdicts(candidates.map((m:ScanWorkerMessage)=>({tgMsgId:String(m.tgMsgId),core:m._core as LeadScoreResult})),batches);
+   const keptById=new Map(verdict.kept.map(k=>[k.tgMsgId,k]));
+   candidates=candidates.filter((m:{tgMsgId?:unknown})=>keptById.has(String(m.tgMsgId)));
+   const aiRejectedNext=apiKey?rememberAiRejects(aiRejectsActive,verdict.rejectedIds,aiSig,now):gdata.aiRejected;
    let added=0;
    const addedByTemp={hot:0,warm:0,cold:0};
-   const notifyBatch:{name:string;message:string;temperature:string;source:string}[]=[];
    for(const msg of candidates){
     const key=leadMessageFingerprint(msg.message||'',id,String(msg.tgMsgId||''));
     if(seen.has(key))continue;
-    const textFp=normalizeLeadMessage(msg.message||'');
-    if(textFp&&excludedTexts.has(textFp))continue;
     seen.add(key);
     const tgMsgId=String(msg.tgMsgId||'');
-    const temperature:LeadTemperature|null=temps.get(tgMsgId)??classifyWithLeadCore(msg.message||'',coreSettings);
-    if(!temperature||(temperature!=='hot'&&temperature!=='warm'))continue;
+    const kept=keptById.get(tgMsgId);
+    if(!kept)continue;
+    const temperature=kept.temperature;
     addedByTemp[temperature]++;
     const lead={
      name:msg.name||'Участник',
@@ -2144,7 +2572,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      draft:'',
      tgMsgId,
      groupId:id,
-     reason:reasons.get(tgMsgId)||'',
+     reason:kept.reason,
      viewed:false,
      viewedAt:'',
      excludeFromTraining:false,
@@ -2157,14 +2585,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      replies:[],
      coreScore:Number(msg._core?.score)||0,
      accountId:String(gdata.joinedAccountId||gdata.accountId||''),
+     notifyPending:!!settings.notifyEnabled,
+     notifiedAt:'',
     };
     await db.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)').bind(crypto.randomUUID(),owner,'lead',JSON.stringify(lead),null,new Date().toISOString()).run();
     added++;
-    notifyBatch.push({name:lead.name,message:lead.message,temperature,source:lead.source});
    }
-   if(notifyBatch.length){
-    try{await notifyNewLeadsTelegram(settings,notifyBatch)}catch{/* не блокируем скан */}
-   }
+   try{await flushLeadNotifications(owner,settings)}catch(e){console.error('[workspace] notify_leads:',String((e as Error)?.message||e).slice(0,300))}
    // Пересчёт метрик группы по всем лидам этой groupId
    const allLeads=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='lead'").bind(owner).all();
    const counts={hot:0,warm:0,cold:0};
@@ -2179,9 +2606,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const leadsTotal=counts.hot+counts.warm+counts.cold;
    const rating=ratingFromTemperatures(counts);
    // Успешный скан только если аккаунт в группе → чиним membership/status
+   // База — свежая запись: удаления лидов (tombstones) и правки группы во время скана не теряем
+   const freshGroup=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'group').first<{data:string}>();
+   let base=gdata;
+   try{if(freshGroup)base={...JSON.parse(String(freshGroup.data)),scanLockUntil:gdata.scanLockUntil,scanLockToken:gdata.scanLockToken}}catch{/* битая запись — берём снимок */}
    const isPending=gdata.status==='pending'||gdata.membership==='pending';
    const groupNext={
-    ...gdata,
+    ...base,
     status:isPending?'pending':'active',
     membership:isPending?'pending':'joined',
     joinedAt:isPending?(gdata.joinedAt||''):(gdata.joinedAt||new Date().toISOString()),
@@ -2198,12 +2629,14 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     scanMatched:candidates.length,
     rating,
     lastScanned:new Date().toISOString(),
+    scanCursor:String(result.cursor||base.scanCursor||''),
+    aiRejected:aiRejectedNext,
     scanLog:pushTaskLog(
-     gdata.scanLog,
+     base.scanLog,
      added?'ok':'info',
      added
-      ?`Переобход · +${added} · ${String(result.scanMode||'chat')} · worker ${workerRaw} → ядро ${prefilterCount} → AI/match ${candidates.length}${aiUsed?' · AI':''}`
-      :`Переобход · 0 · ${String(result.scanMode||'chat')} · worker ${workerRaw} → ядро ${prefilterCount} → AI/match ${candidates.length}${aiUsed?' · AI':''}`,
+      ?`Переобход · +${added} · ${String(result.scanMode||'chat')} · worker ${workerRaw} → ядро ${prefilterCount} → AI/match ${candidates.length}${aiUsed?' · AI':''}${aiRemembered?` · отказ AI помним ${aiRemembered}`:''}`
+      :`Переобход · 0 · ${String(result.scanMode||'chat')} · worker ${workerRaw} → ядро ${prefilterCount} → AI/match ${candidates.length}${aiUsed?' · AI':''}${aiRemembered?` · отказ AI помним ${aiRemembered}`:''}`,
      50,
     ),
    };
@@ -2247,23 +2680,19 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    }catch{/* */}
    return reply({error:errMsg},503);
   }
+  }finally{
+   await releaseGroupScanLock(owner,id,lock.token);
+  }
  }
  if(b.action==='mark_lead_viewed'){
   const id=z.string().uuid().parse(b.id);
-  const row:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'lead').first();
-  if(!row)return reply({error:'Лид не найден'},404);
-  const data=JSON.parse(row.data);
-  const alreadyViewed=!!data.viewed;
-  const needsManager=!!data.needsManager;
-  if(alreadyViewed&&!needsManager)return reply({ok:true,already:true});
-  const next={
-   ...data,
-   viewed:true,
-   viewedAt:data.viewedAt||new Date().toISOString(),
-   needsManager:false,
-  };
-  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'lead').run();
-  return reply({ok:true,lead:next});
+  const nowIso=new Date().toISOString();
+  const done=await mutateLead(db,owner,id,lead=>{
+   const patch=markLeadOpened(lead,nowIso);
+   return {next:patch?{...lead,...patch}:undefined,result:!patch};
+  });
+  if(!done)return reply({error:'Лид не найден'},404);
+  return done.result?reply({ok:true,already:true}):reply({ok:true,lead:done.lead});
  }
  if(b.action==='set_lead_training_exclude'){
   const id=z.string().uuid().parse(b.id);
@@ -2349,6 +2778,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    notifyBotToken:current.notifyBotToken||'',
    notifyChatId:current.notifyChatId||'',
   };
+  // LLM-минус проходит тот же фильтр, что и обучение: без слов продукта/плюса/контекста маркетплейсов
+  next.minusKeywords=sanitizeMinusTerms(parseKeywordCsv(next.minusKeywords),next).join(', ');
   const data=settingsSchema.parse(next);
   const id=config?.id||crypto.randomUUID();
   if(config)await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(data),owner,id,'settings').run();
@@ -2394,12 +2825,16 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     }
    }catch{/* heuristic only */}
   }
+  const learnedKeywords=mergeKeywordsPreferNew(settings.keywords||'',plusAdd,8000);
+  const learnedExamples=appendLearnExamples(settings.learnExamples||'',learnBits).slice(0,4000);
+  const learnedSignals=mergeKeywordsPreferNew(settings.hotSignals||'',plusAdd.slice(0,8),4000);
+  minusAdd=sanitizeMinusTerms(minusAdd,{...settings,keywords:learnedKeywords,learnExamples:learnedExamples,hotSignals:learnedSignals});
   const next={
    ...settings,
-   keywords:mergeKeywordsPreferNew(settings.keywords||'',plusAdd,8000),
+   keywords:learnedKeywords,
    minusKeywords:mergeKeywordsPreferNew(settings.minusKeywords||'',minusAdd,8000),
-   learnExamples:appendLearnExamples(settings.learnExamples||'',learnBits).slice(0,4000),
-   hotSignals:mergeKeywordsPreferNew(settings.hotSignals||'',plusAdd.slice(0,8),4000),
+   learnExamples:learnedExamples,
+   hotSignals:learnedSignals,
   };
   const data=settingsSchema.parse(next);
   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(data),owner,config.id,'settings').run();
@@ -2438,9 +2873,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     }
    }catch{/* heuristic only */}
   }
-  // Убрать из минуса то, что уже в плюсе
-  const plusSet=new Set(String(settings.keywords||'').toLowerCase().split(/[,;\n]+/).map((s:string)=>s.trim()).filter(Boolean));
-  minusAdd=minusAdd.filter(t=>t&&!plusSet.has(t.toLowerCase().trim()));
+  // Не пускать в стоп-лист слова продукта/плюса/контекста маркетплейсов — иначе скан режет целевые лиды
+  minusAdd=sanitizeMinusTerms(minusAdd,settings);
   const next={
    ...settings,
    minusKeywords:mergeKeywordsPreferNew(settings.minusKeywords||'',minusAdd,8000),
@@ -2494,25 +2928,15 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     }
    }catch{/* heuristic only */}
   }
-  const plusSet=new Set(String(settings.keywords||'').toLowerCase().split(/[,;\n]+/).map((s:string)=>s.trim()).filter(Boolean));
-  const generic=new Set(['помогите','помоги','подскажите','нужен','нужна','нужно','ищу','ищем','скажите','пожалуйста']);
-  minusAdd=minusAdd
-   .map(t=>String(t||'').trim().slice(0,60))
-   .filter(t=>t.length>=3&&!plusSet.has(t.toLowerCase())&&!generic.has(t.toLowerCase()));
-  // уникальные, порядок сохранён
-  const uniq:string[]=[];
-  const seen=new Set<string>();
-  for(const t of minusAdd){
-   const k=t.toLowerCase();
-   if(seen.has(k))continue;
-   seen.add(k);
-   uniq.push(t);
-  }
-  minusAdd=uniq.slice(0,10);
+  // Без коротких/общих слов, контекста маркетплейсов и терминов продукта (уникальные, порядок сохранён)
+  const minusCandidates=minusAdd.map(t=>String(t||'').trim().slice(0,60)).filter(Boolean);
+  minusAdd=sanitizeMinusTerms(minusCandidates,settings).slice(0,10);
+  // UI: «ничего не добавлено — слова пересекаются с продуктом» vs «уже были в минусе»
+  const minusSkippedAsProduct=minusAdd.length?0:minusCandidates.length;
   // Если всё уже было в минусе — всё равно добавим короткую цитату-фразу из сообщения
   if(!minusAdd.length){
    const clip=msg.replace(/\s+/g,' ').trim().slice(0,48).toLowerCase();
-   if(clip.length>=8)minusAdd=[clip];
+   if(clip.length>=8)minusAdd=sanitizeMinusTerms([clip],settings);
   }
 
   const next={
@@ -2536,14 +2960,15 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    };
   }
   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(data),owner,config.id,'settings').run();
-  return reply({ok:true,lead:leadNext,data,minusAdded:minusAdd,minusKeywords:data.minusKeywords});
+  return reply({ok:true,lead:leadNext,data,minusAdded:minusAdd,minusSkippedAsProduct,minusKeywords:data.minusKeywords});
  }
-  if(b.action==='send_lead_message'){
+ if(b.action==='send_lead_message'){
   const id=z.string().uuid().parse(b.id);
   const mode=z.enum(['dm','chat']).parse(b.mode||'dm');
   const text=z.string().trim().min(1).max(4000).parse(b.text);
+  const clientMsgId=z.string().trim().max(80).optional().parse(b.clientMsgId)||'';
+  const force=b.force===true;
   const silent=b.silent===true;
-  const deleteDialog=b.deleteDialog===true;
   const row:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'lead').first();
   if(!row)return reply({error:'Лид не найден'},404);
   const lead=JSON.parse(row.data);
@@ -2565,123 +2990,140 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    sendAccountId=farm[0]?.id||'';
   }
   if(!sendAccountId)return reply({error:'Назначьте аккаунт для ответа'},400);
-  let arow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,sendAccountId,'account').first();
+  const arow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,sendAccountId,'account').first();
   let adata=arow?JSON.parse(arow.data):null;
   let rotatedAccount=false;
-  // Для уже открытой переписки держим тот же аккаунт (чужой peer → invalid Peer)
+  // Открытая переписка держит свой аккаунт (чужой peer → invalid Peer): не ротируем, но и не обходим отлёжку/лимит
   const keepConversationAccount=!!lead.conversationOpen||(Array.isArray(lead.replies)&&lead.replies.some((x:any)=>x&&x.from==='us'&&x.ok));
+  const keepAccount=keepConversationAccount&&!!adata&&canPollDmInbox(adata);
   const currentOk=adata&&isAccountUsable(adata)&&hasMessageQuota(adata);
-  const currentAlive=adata&&canPollDmInbox(adata);
-  if(!currentOk&&mode==='dm'&&!(keepConversationAccount&&currentAlive)){
+  if(!currentOk&&mode==='dm'&&!keepAccount){
    const farm=await listMessageFarmCandidates(owner);
    const pick=farm.find(x=>x.id!==sendAccountId)||farm[0];
    if(pick){
     sendAccountId=pick.id;
     adata=pick.data;
-    arow={id:pick.id};
     rotatedAccount=true;
    }
   }
   if(!adata)return reply({error:'Аккаунт не найден'},404);
-  if(!isAccountUsable(adata)&&!(keepConversationAccount&&currentAlive)){
-   return reply({error:'Аккаунт на отлежке — отправка недоступна',cooldown:true},429);
-  }
-  if(!hasMessageQuota(adata)&&!(keepConversationAccount&&currentAlive)){
+  if(!isAccountUsable(adata)){
    return reply({
-    error:mode==='dm'
+    error:keepAccount
+     ?'Аккаунт этой переписки на отлежке или в спамблоке — с другого аккаунта ответить нельзя. Повторите позже.'
+     :'Аккаунт на отлежке — отправка недоступна',
+    cooldown:true,
+    cooldownUntil:String(adata.cooldownUntil||''),
+   },429);
+  }
+  if(!hasMessageQuota(adata)){
+   return reply({
+    error:keepAccount
+     ?'Дневной лимит сообщений аккаунта этой переписки исчерпан — ответ после полуночи (МСК)'
+     :mode==='dm'
      ?'Дневной лимит сообщений на всех рабочих аккаунтах фермы'
      :'Дневной лимит сообщений этого аккаунта — для чата нужен тот же слот',
     limitReached:true,
-    farmExhausted:mode==='dm',
+    farmExhausted:mode==='dm'&&!keepAccount,
    },429);
   }
+  let payload:Record<string,unknown>;
   try{
-   const {payload}=await loadAccountSessionPayload(owner,sendAccountId);
-   // Берём лучший peer из истории переписки (chatId после успешной отправки)
-   const replyPeers=(Array.isArray(lead.replies)?lead.replies:[])
-    .filter((x:any)=>x&&x.ok!==false&&(x.chatId||x.from==='client'))
-    .map((x:any)=>String(x.chatId||'').replace(/^-/,'').trim())
-    .filter(Boolean);
-   let senderId=String(lead.senderId||'').replace(/^-/,'').trim();
-   if((!senderId||senderId.startsWith('100'))&&replyPeers[0])senderId=replyPeers[0];
-   // access_hash чужого аккаунта ломает SendMessage → invalid Peer
-   const sameAccount=String(lead.accountId||'')===String(sendAccountId);
-   let accessHash=sameAccount?String(lead.senderAccessHash||''):'';
-   const result=await workerPost('/send-message',{
-    ...payload,
-    mode,
-    text,
-    url:gdata.url,
-    replyTo:mode==='chat'?(lead.tgMsgId||''):'',
-    tgMsgId:lead.tgMsgId||'',
-    senderId:senderId||lead.senderId||'',
-    senderUsername:lead.senderUsername||'',
-    senderAccessHash:accessHash,
-    silent,
-    deleteDialog:false,
-   });
-   // Повтор без access_hash, если peer битый
-   let finalResult=result;
-   if(!result.ok&&/invalid peer/i.test(String(result.error||''))&&accessHash){
-    finalResult=await workerPost('/send-message',{
-     ...payload,
-     mode,
-     text,
-     url:gdata.url,
-     replyTo:mode==='chat'?(lead.tgMsgId||''):'',
-     tgMsgId:lead.tgMsgId||'',
-     senderId:senderId||lead.senderId||'',
-     senderUsername:lead.senderUsername||'',
-     senderAccessHash:'',
-     silent,
-     deleteDialog:false,
-    });
-   }
-   const link=String(finalResult.link||'').slice(0,300);
-   const messageId=String(finalResult.messageId||'').slice(0,40);
-   const entry={
-    text,
-    mode,
-    at:new Date().toISOString(),
-    ok:!!finalResult.ok,
-    error:(finalResult.error||'').slice(0,400),
-    messageId,
-    link,
-    chatId:String(finalResult.chatId||senderId||'').slice(0,40),
-    from:'us' as const,
-   };
-   const replies=[...(Array.isArray(lead.replies)?lead.replies:[]),entry].slice(-40);
-   const next={
-    ...lead,
-    replies,
-    draft:text,
-    status:lead.status==='new'?'working':lead.status,
-    viewed:true,
-    viewedAt:lead.viewedAt||new Date().toISOString(),
-    conversationOpen:true,
-    accountId:sendAccountId||lead.accountId||'',
-    needsManager:false,
-    senderId:String(finalResult.chatId||senderId||lead.senderId||'').replace(/^-/,'').slice(0,40),
-    senderUsername:String(finalResult.chatUsername||lead.senderUsername||'').slice(0,64),
-    senderAccessHash:String(finalResult.senderAccessHash||(finalResult.ok?accessHash:lead.senderAccessHash)||'').slice(0,40),
-   };
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'lead').run();
-   if(finalResult.flood||finalResult.status==='flood'){
-    const sec=Number(finalResult.waitSec)||900;
-    // FloodWait на ЛС — пауза ответа, аккаунт не уводим в «Отлежка».
-    return reply({ok:false,error:finalResult.error||'FloodWait',waitSec:sec,lead:next,rotatedAccount,pace:true},429);
-   }
-   if(!finalResult.ok)return reply({ok:false,error:finalResult.error||'Не удалось отправить',lead:next,rotatedAccount},502);
-   const accRow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,sendAccountId,'account').first();
-   if(accRow){
-    const acc=JSON.parse(accRow.data);
-    const bumped=applyQuotaCooldownIfExhausted({...acc,...bumpMessageCounters(acc,1)});
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(bumped),owner,sendAccountId,'account').run();
-   }
-   return reply({ok:true,lead:next,mode,link,messageId,rotatedAccount,accountId:sendAccountId});
+   ({payload}=await loadAccountSessionPayload(owner,sendAccountId));
   }catch(e){
    return reply({error:internalError('send_lead_message',e,'Не удалось отправить сообщение. Повторите попытку.')},503);
   }
+  // Берём лучший peer из истории лички (chatId ответа в чат — это группа, не клиент)
+  const replyPeers=(Array.isArray(lead.replies)?lead.replies:[])
+   .filter((x:any)=>x&&x.mode!=='chat'&&x.ok!==false&&(x.chatId||x.from==='client'))
+   .map((x:any)=>String(x.chatId||'').replace(/^-/,'').trim())
+   .filter(Boolean);
+  let senderId=String(lead.senderId||'').replace(/^-/,'').trim();
+  if((!senderId||senderId.startsWith('100'))&&replyPeers[0])senderId=replyPeers[0];
+  // access_hash чужого аккаунта ломает SendMessage → invalid Peer
+  const sameAccount=String(lead.accountId||'')===String(sendAccountId);
+  const accessHash=sameAccount?String(lead.senderAccessHash||''):'';
+
+  // Запись «отправляется» до вызова воркера: повтор после таймаута не шлёт дубль
+  const sendKey=clientMsgId||`srv:${crypto.randomUUID()}`;
+  const pendingEntry:ReplyEntry={text,mode,at:new Date().toISOString(),ok:false,status:'pending',error:'',messageId:'',link:'',chatId:'',from:'us',sendKey,accountId:sendAccountId};
+  const claim=await mutateLead(db,owner,id,cur=>{
+   const block=findSendBlock(cur,{clientMsgId,text,mode},Date.now());
+   if(block&&!(force&&block.kind==='unknown'))return {result:block};
+   return {next:{...withPendingSend(cur,pendingEntry,block?.entry.sendKey||''),draft:text},result:null};
+  });
+  if(!claim)return reply({error:'Лид не найден'},404);
+  const block=claim.result;
+  if(block?.kind==='delivered'){
+   return reply({ok:true,duplicate:true,lead:claim.lead,mode,link:block.entry.link,messageId:block.entry.messageId,rotatedAccount:false,accountId:String(claim.lead.accountId||'')});
+  }
+  if(block){
+   return reply({
+    error:block.kind==='inflight'
+     ?'Это сообщение уже отправляется — дождитесь результата'
+     :'Результат прошлой отправки этого сообщения неизвестен. Проверьте переписку в Telegram — если сообщения нет, отправьте ещё раз.',
+    inflight:block.kind==='inflight',
+    unknown:block.kind==='unknown',
+    lead:claim.lead,
+   },409);
+  }
+
+  const sendBody={
+   ...payload,
+   mode,
+   text,
+   url:gdata.url,
+   replyTo:mode==='chat'?(lead.tgMsgId||''):'',
+   tgMsgId:lead.tgMsgId||'',
+   senderId:senderId||lead.senderId||'',
+   senderUsername:lead.senderUsername||'',
+   silent,
+   deleteDialog:false,
+  };
+  let finalResult:Record<string,unknown>={};
+  let usedHash=accessHash;
+  let outcome:SendOutcome;
+  let failStatus=502;
+  try{
+   finalResult=await workerPost('/send-message',{...sendBody,senderAccessHash:accessHash},SEND_MESSAGE_TIMEOUT_MS);
+   // Повтор без access_hash, если peer битый
+   if(!finalResult.ok&&/invalid peer/i.test(String(finalResult.error||''))&&accessHash){
+    usedHash='';
+    finalResult=await workerPost('/send-message',{...sendBody,senderAccessHash:''},SEND_MESSAGE_TIMEOUT_MS);
+   }
+   outcome={
+    status:finalResult.ok?'sent':'failed',
+    error:String(finalResult.error||(finalResult.ok?'':'Не удалось отправить')),
+    messageId:String(finalResult.messageId||''),
+    link:String(finalResult.link||''),
+    chatId:String(finalResult.chatId||''),
+    chatUsername:String(finalResult.chatUsername||''),
+    senderAccessHash:String(finalResult.senderAccessHash||''),
+   };
+  }catch(e){
+   ({outcome,httpStatus:failStatus}=sendFailureOutcome(e));
+  }
+  const saved=await mutateLead(db,owner,id,cur=>({
+   next:applySendOutcome(cur,{sendKey,mode,accountId:sendAccountId,peerId:senderId,accessHash:usedHash,nowIso:new Date().toISOString()},outcome),
+   result:null,
+  }));
+  const next=saved?.lead||lead;
+  if(outcome.status==='unknown')return reply({ok:false,unknown:true,error:outcome.error,lead:next,rotatedAccount},504);
+  if(finalResult.flood||finalResult.status==='flood'){
+   const sec=Number(finalResult.waitSec)||900;
+   // FloodWait на ЛС — пауза ответа, аккаунт не уводим в «Отлежка».
+   return reply({ok:false,error:finalResult.error||'FloodWait',waitSec:sec,lead:next,rotatedAccount,pace:true},429);
+  }
+  if(outcome.status!=='sent')return reply({ok:false,error:outcome.error,busy:failStatus===429,lead:next,rotatedAccount},failStatus);
+  const accRow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,sendAccountId,'account').first();
+  if(accRow){
+   const acc=JSON.parse(accRow.data);
+   const bumped=applyQuotaCooldownIfExhausted({...acc,...bumpMessageCounters(acc,1)},'message');
+   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(bumped),owner,sendAccountId,'account').run();
+  }
+  const link=String(finalResult.link||'').slice(0,300);
+  const messageId=String(finalResult.messageId||'').slice(0,40);
+  return reply({ok:true,lead:next,mode,link,messageId,rotatedAccount,accountId:sendAccountId});
  }
  if(b.action==='rescan_groups'){
   const force=b.force===true;
@@ -2902,18 +3344,16 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const config:any=await db.prepare('SELECT * FROM records WHERE owner=? AND kind=? LIMIT 1').bind(owner,'settings').first();
   const settings=config?.data?JSON.parse(config.data):{};
   const keywords=sanitizeLeadKeywords(String(b.keywords??settings.keywords??''));
-  const minusKeywords=ensureJunkMinus(stopWordsFromSettings({
+  const previewSettings={
    ...settings,
-   minusKeywords:b.minusKeywords??settings.minusKeywords,
-   avoidTopics:b.avoidTopics??settings.avoidTopics,
-  }));
-  const core=leadCoreSettingsFrom({
-   ...settings,
+   keywords,
+   minusKeywords:ensureJunkMinus(z.string().max(8000).optional().parse(b.minusKeywords)??String(settings.minusKeywords||'')),
+   avoidTopics:z.string().max(8000).optional().parse(b.avoidTopics)??settings.avoidTopics,
    leadCriteria:b.leadCriteria??settings.leadCriteria,
    hotSignals:b.hotSignals??settings.hotSignals,
    product:b.product??settings.product,
-   avoidTopics:b.avoidTopics??settings.avoidTopics,
-  },keywords,minusKeywords);
+  };
+  const core=leadCoreSettingsFrom(previewSettings,keywords,stopWordsFromSettings(previewSettings));
   const decision=explainLeadDecision(message,core);
   return reply({
    ok:true,
@@ -2962,8 +3402,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const data=JSON.parse(row.data);
   if(b.action==='pause_audience'){
    const next={...data,status:'paused',error:'',nextAt:'',log:pushTaskLog(data.log,'info','Пауза')};
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'audience_task').run();
-   return reply({ok:true,task:next});
+   const saved=await commitTaskEdit(db,owner,id,'audience_task',data,next)??next;
+   return reply({ok:true,task:saved});
   }
   if(!data.accountIds?.length)return reply({error:'Выберите хотя бы один аккаунт'},400);
   const next={
@@ -2972,28 +3412,20 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    error:'',
    hasMore:true,
    nextAt:'',
-   tickLockUntil:'',
+   ...keepLiveLock(data),
    log:pushTaskLog(data.log,'info','Запуск сбора'),
   };
-  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'audience_task').run();
-  return reply({ok:true,task:next});
+  const saved=await commitTaskEdit(db,owner,id,'audience_task',data,next)??next;
+  return reply({ok:true,task:saved});
  }
  if(b.action==='tick_audience'){
   const id=z.string().uuid().parse(b.id);
-  const row:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'audience_task').first();
-  if(!row)return reply({error:'Задача сбора не найдена'},404);
-  let data=JSON.parse(row.data);
+  const opened=await openTaskTick(owner,id,'audience_task','Задача сбора не найдена');
+  if('response' in opened)return opened.response;
+  const tickRun=opened.session;
   // Play / start всегда → running (как mailing); scheduled тоже подхватываем
-  if(data.status==='scheduled')data={...data,status:'running'};
-  if(data.status!=='running')return reply({ok:true,skipped:true,status:data.status,task:data});
-  if(data.tickLockUntil){
-   const lockT=Date.parse(data.tickLockUntil);
-   if(Number.isFinite(lockT)&&lockT>Date.now()){
-    return reply({ok:true,busy:true,waitSec:Math.ceil((lockT-Date.now())/1000),task:data});
-   }
-  }
-  data={...data,tickLockUntil:new Date(Date.now()+180_000).toISOString()};
-  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(data),owner,id,'audience_task').run();
+  let data:any={...tickRun.base,status:'running',nextAt:''};
+  const post=tickWorkerPost(tickRun);
   // Уже нечего собирать — сразу завершаем (без лишнего вызова воркера)
   if(data.hasMore===false&&(Number(data.collected)||0)>0){
    const next={
@@ -3004,14 +3436,14 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     tickLockUntil:'',
     log:pushTaskLog(data.log,'ok',`Сбор завершён · ${data.collected||0}`),
    };
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'audience_task').run();
-   return reply({ok:true,completed:true,task:next});
+   const saved=await tickRun.finish(next);
+   return reply({ok:true,completed:true,task:saved});
   }
   const accountIds:string[]=Array.isArray(data.accountIds)?data.accountIds:[];
   if(!accountIds.length){
    const next={...data,status:'error',error:'Нет аккаунтов',tickLockUntil:'',log:pushTaskLog(data.log,'error','Нет аккаунтов')};
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'audience_task').run();
-   return reply({ok:false,error:next.error,task:next});
+   const saved=await tickRun.finish(next);
+   return reply({ok:false,error:next.error,task:saved});
   }
   const accRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='account'").bind(owner).all();
   const accMap=new Map<string,any>();
@@ -3021,8 +3453,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const liveIdsRaw=accountIds.filter(aid=>{
    const a=accMap.get(aid);
    if(!a)return false;
-   // status=cooldown без живого таймера раньше проходил isAccountUsable — для сбора не берём
-   if(String(a.status||'')==='cooldown')return false;
+   // status=cooldown без вида лимита (даже с истёкшим таймером) — для сбора не берём; дневной лимит ЛС/вступлений чтению не мешает
+   if(String(a.status||'')==='cooldown'&&dayLimitCooldownKind(a)===null)return false;
    return isAccountUsable(a);
   });
   // Аккаунт, уже вступивший в этот источник (из «Группы») — первым
@@ -3073,34 +3505,46 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     tickLockUntil:'',
     log:pushTaskLog(data.log,'warn','Нет рабочих аккаунтов — отлёжка или блок'),
    };
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'audience_task').run();
-   return reply({ok:false,error:next.error,task:next});
+   const saved=await tickRun.finish(next);
+   return reply({ok:false,error:next.error,task:saved});
   }
-  // Недавние userId задачи — один раз на тик
-  const existingUsers=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='audience_user'").bind(owner).all();
-  const seenIds:string[]=[];
-  for(const r of existingUsers.results){
-   try{
-    const u=JSON.parse(String(r.data));
-    if(u.taskId===id&&u.userId)seenIds.push(String(u.userId));
-   }catch{/* */}
-  }
-
-  const isSlotBlindErr=(msg:string)=>
-   /не видит @|usernameMissing|no user has|nobody is using|username_not_occupied|join.?missing/i.test(msg);
-  const isDeadSessionErr=(msg:string)=>
-   isDeadAccountMailingError(msg)||/tdesktopunauthorized|fromtdesktop/i.test(msg);
-  const isProxyOrNetErr=(msg:string)=>
-   /прокси|proxy|socks|ECONN|connection to telegram|не удалось подключ|aborted due to timeout|operation was aborted|TimeoutError|network/i.test(msg);
-
+  // Последние userId этой задачи — SQL-фильтр по задаче, не скан всей аудитории владельца (REQ-A6)
+  const seenIds=await loadAudienceSeenIds(db,owner,id);
+  const slotName=(aid:string)=>bracketLabel(String(accMap.get(aid)?.name||aid));
+  const saveAccount=async(aid:string,next:Record<string,unknown>)=>{
+   accMap.set(aid,next);
+   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,aid,'account').run();
+  };
+  const waitTick=async(waitSec:number,text:string,extra:Record<string,unknown>={})=>{
+   const next={
+    ...data,
+    ...extra,
+    status:'running',
+    error:'',
+    nextAt:new Date(Date.now()+waitSec*1000).toISOString(),
+    tickLockUntil:'',
+    log:pushTaskLog(data.log,'warn',text),
+   };
+   const saved=await tickRun.finish(next);
+   return reply({ok:true,retry:true,waitSec,task:saved});
+  };
+  const retryAudienceTick=async(e:unknown)=>{
+   const retry=tickRetryPatch(e);
+   const saved=await tickRun.finish({...data,...retry.patch},[{level:'warn',text:retry.text}]);
+   return reply({ok:true,retry:true,waitSec:retry.waitSec,task:saved});
+  };
   let accountId='';
   let payload:any=null;
   let result:any=null;
   const sessionErrors:string[]=[];
+  let floodWaitSec=0;
+  let transientOnly=true;
   let tried=0;
-  // За тик максимум несколько слотов — иначе AbortSignal/прокси убивают весь тик
+  // За тик максимум несколько слотов и только пока вызов влезает в стену тика (tick-budget.ts)
   const perTick=Math.min(6,liveIds.length);
+  let budgetCut=false;
   for(const aid of liveIds.slice(0,perTick)){
+   if(tried>0&&!tickRun.budget.fits(workerAppTimeoutMs('collect'))){budgetCut=true;break}
    accountId=aid;
    tried++;
    try{
@@ -3111,87 +3555,83 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      :(data.sourceAccountId===aid&&data.sourceChannelId&&data.sourceAccessHash)
        ?{channelId:String(data.sourceChannelId),accessHash:String(data.sourceAccessHash)}
        :undefined;
-    result=await workerPost('/collect-audience',{
+    const statusFilters=normalizeStatusFilters(data.statusFilters,data.statusFilter);
+    result=await post('/collect-audience',{
      ...payload,
      url:data.url,
      collectMode:data.collectMode,
      rangeMode:data.rangeMode,
      messageLimit:data.messageLimit,
+     scannedMessages:Number(data.scannedMessages)||0,
      periodDays:data.periodDays,
      audienceScope:data.audienceScope,
      premiumFilter:data.premiumFilter,
-     statusFilters:normalizeStatusFilters(data.statusFilters,data.statusFilter),
-     statusFilter:normalizeStatusFilters(data.statusFilters,data.statusFilter).length
-       ?normalizeStatusFilters(data.statusFilters,data.statusFilter)[0]
-       :'all',
+     statusFilters,
+     statusFilter:statusFilters.length?statusFilters[0]:'all',
      batchSize:80,
      cursor:data.cursor||'',
-     seenIds:seenIds.slice(-5000),
+     seenIds,
      ...(peerHint?{peerHint}:{}),
-    },90_000);
+    },workerAppTimeoutMs('collect'));
    }catch(e){
+    // Worker full / our own timeout: nothing is wrong with the slot or its proxy (REQ-I2)
+    if(isRetryableTickError(e))return retryAudienceTick(e);
     const errMsg=String((e as Error).message||e).slice(0,500);
-    sessionErrors.push(errMsg);
-    if(isDeadSessionErr(errMsg)){
-     try{
-      await putAccountUnauthorized(owner,accountId,accMap.get(accountId)||{},{lastError:errMsg});
-      accMap.set(accountId,{...(accMap.get(accountId)||{}),status:'unauthorized'});
-     }catch{/* */}
-     data={...data,log:pushTaskLog(data.log,'warn',`Слот ${bracketLabel(String(accMap.get(accountId)?.name||accountId))}: сессия мертва — следующий`)};
+    if(isDeadSessionError(errMsg)){
+     sessionErrors.push(errMsg);
+     transientOnly=false;
+     try{await putAccountUnauthorized(owner,accountId,accMap.get(accountId)||{},{lastError:errMsg})}catch{/* */}
+     accMap.set(accountId,{...(accMap.get(accountId)||{}),status:'unauthorized'});
+     data={...data,log:pushTaskLog(data.log,'warn',`Слот ${slotName(accountId)}: сессия мертва — следующий`)};
      continue;
     }
-    if(isSlotBlindErr(errMsg)||isProxyOrNetErr(errMsg)){
-     if(isProxyOrNetErr(errMsg)&&!isSlotBlindErr(errMsg)){
-      try{
-       const cur=accMap.get(accountId)||{};
-       if(cur.proxyId)await markProxyTelegramBad(owner,String(cur.proxyId),errMsg).catch(()=>{});
-       await putAccountDisconnected(owner,accountId,cur,{lastError:errMsg,status:'proxy_error'}).catch(()=>{});
-       accMap.set(accountId,{...cur,status:'proxy_error'});
-      }catch{/* */}
-      data={...data,log:pushTaskLog(data.log,'warn',`Слот ${bracketLabel(String(accMap.get(accountId)?.name||accountId))}: прокси/сеть — следующий`)};
-     }else{
-      data={...data,log:pushTaskLog(data.log,'warn',`Слот ${bracketLabel(String(accMap.get(accountId)?.name||accountId))}: не видит источник — следующий`)};
-     }
-     continue;
-    }
-    const next={...data,status:'error',error:errMsg,tickLockUntil:'',accountRotateAt:(Number(data.accountRotateAt)||0)+tried,log:pushTaskLog(data.log,'error',errMsg)};
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'audience_task').run();
-    return reply({ok:false,error:errMsg,task:next},503);
+    // Транспорт до нашего воркера (ECONNREFUSED, 5xx) — не прокси аккаунта (REQ-A2): повтор тика
+    return retryAudienceTick(e);
    }
    if(result?.ok||result?.join==='need_join')break;
    const errMsg=String(result?.error||'Сбор не удался').slice(0,500);
-   if(isDeadSessionErr(errMsg)||result?.status==='disconnected'||result?.status==='unauthorized'){
-    sessionErrors.push(errMsg);
-    try{
-     await putAccountUnauthorized(owner,accountId,accMap.get(accountId)||{},{lastError:errMsg});
-     accMap.set(accountId,{...(accMap.get(accountId)||{}),status:'unauthorized'});
-    }catch{/* */}
-    data={...data,log:pushTaskLog(data.log,'warn',`Слот ${bracketLabel(String(accMap.get(accountId)?.name||accountId))}: tdata/session недействителен — следующий`)};
-    result=null;
+   const failure=classifyCollectFailure(result||{});
+   if(failure.kind==='source')break;
+   if(failure.kind==='timeout')return retryAudienceTick(new Error(errMsg));
+   sessionErrors.push(errMsg);
+   result=null;
+   if(failure.kind==='dead_session'){
+    transientOnly=false;
+    try{await putAccountUnauthorized(owner,accountId,accMap.get(accountId)||{},{lastError:errMsg})}catch{/* */}
+    accMap.set(accountId,{...(accMap.get(accountId)||{}),status:'unauthorized'});
+    data={...data,log:pushTaskLog(data.log,'warn',`Слот ${slotName(accountId)}: tdata/session недействителен — следующий`)};
     continue;
    }
-   if(result?.status==='proxy_error'||isProxyOrNetErr(errMsg)){
-    sessionErrors.push(errMsg);
+   if(failure.kind==='frozen'){
+    transientOnly=false;
+    await saveAccount(accountId,withFrozenStatus(accMap.get(accountId)||{},errMsg)).catch(()=>{});
+    data={...data,log:pushTaskLog(data.log,'warn',`Слот ${slotName(accountId)}: аккаунт заморожен — следующий`)};
+    continue;
+   }
+   if(failure.kind==='flood'){
+    // FloodWait на чтение участников — лимит метода, не статус аккаунта (REQ-A1)
+    floodWaitSec=floodWaitSec?Math.min(floodWaitSec,failure.waitSec):failure.waitSec;
+    data={...data,log:pushTaskLog(data.log,'warn',`Слот ${slotName(accountId)}: FloodWait ${failure.waitSec} с — следующий`)};
+    continue;
+   }
+   if(failure.kind==='proxy'){
+    const cur=accMap.get(accountId)||{};
     try{
-     const cur=accMap.get(accountId)||{};
      if(cur.proxyId)await markProxyTelegramBad(owner,String(cur.proxyId),errMsg).catch(()=>{});
-     await putAccountDisconnected(owner,accountId,cur,{lastError:errMsg,status:'proxy_error'}).catch(()=>{});
-     accMap.set(accountId,{...cur,status:'proxy_error'});
+     await putAccountConnectFailed(owner,accountId,cur,{attempts:1,lastError:errMsg,status:'proxy_error'}).catch(()=>{});
     }catch{/* */}
-    data={...data,log:pushTaskLog(data.log,'warn',`Слот ${bracketLabel(String(accMap.get(accountId)?.name||accountId))}: прокси/сеть — следующий`)};
-    result=null;
+    accMap.set(accountId,{...cur,status:'proxy_error'});
+    data={...data,log:pushTaskLog(data.log,'warn',`Слот ${slotName(accountId)}: прокси/сеть — следующий`)};
     continue;
    }
-   if(result?.usernameMissing||result?.join==='missing'||isSlotBlindErr(errMsg)){
-    sessionErrors.push(errMsg);
-    data={...data,log:pushTaskLog(data.log,'warn',`Слот ${bracketLabel(String(accMap.get(accountId)?.name||accountId))}: не видит источник — следующий`)};
-    result=null;
-    continue;
-   }
-   break;
+   if(failure.kind==='slot_blind')transientOnly=false;
+   data={...data,log:pushTaskLog(data.log,'warn',
+    failure.kind==='slot_blind'
+     ?`Слот ${slotName(accountId)}: не видит источник — следующий`
+     :`Слот ${slotName(accountId)}: ${errMsg.slice(0,120)} — следующий`)};
   }
   // Если за тик не нашли рабочий слот, но слоты ещё есть — не паузим, крутим дальше
-  if(!result&&liveIds.length>perTick){
+  if(!result&&(budgetCut||liveIds.length>perTick)){
    const next={
     ...data,
     status:'running',
@@ -3199,9 +3639,76 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     tickLockUntil:'',
     log:pushTaskLog(data.log,'warn',`Тик: ${tried} слот(ов) без доступа — продолжим со следующего`),
    };
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'audience_task').run();
-   return reply({ok:false,rotated:true,error:sessionErrors[0]||'rotate',task:next});
+   const saved=await tickRun.finish(next);
+   return reply({ok:false,rotated:true,error:sessionErrors[0]||'rotate',task:saved});
   }
+  if(!result&&floodWaitSec)return waitTick(floodWaitSec,`FloodWait у всех слотов — пауза ${floodWaitSec} с`);
+  if(!result&&transientOnly&&sessionErrors.length){
+   return waitTick(JOIN_GATE_ROTATE_WAIT_SEC,`Сбой Telegram у слотов — повтор через ${JOIN_GATE_ROTATE_WAIT_SEC} с`,{accountRotateAt:(Number(data.accountRotateAt)||0)+tried});
+  }
+  /** Слот не в источнике: вступаем через общий гейт квоты/темпа (REQ-A4), заявка → пауза (REQ-A3). */
+  const joinAudienceSource=async()=>{
+   const account=accMap.get(accountId)||{};
+   const gate=audienceJoinGate(String(data.url||''),accountId,account,liveIds.length>1,proxyStateFor(account,await loadProxyStates(owner)));
+   const rotate={accountRotateAt:(Number(data.accountRotateAt)||0)+1};
+   if(!gate.ok)return waitTick(gate.waitSec,`Слот ${slotName(accountId)}: ${gate.message} — вступим позже`,rotate);
+   const joinRes=await post('/join-group',{...payload,url:data.url},workerAppTimeoutMs('join'));
+   const step=interpretAudienceJoin(joinRes,account,accountId);
+   if(step.kind==='flood'){
+    await saveAccount(accountId,step.account);
+    return waitTick(step.waitSec,`Слот ${slotName(accountId)}: FloodWait на вступление ${step.waitSec} с`,rotate);
+   }
+   if(step.kind==='frozen'){
+    await saveAccount(accountId,step.account);
+    return waitTick(JOIN_GATE_ROTATE_WAIT_SEC,`Слот ${slotName(accountId)}: аккаунт заморожен — следующий`,rotate);
+   }
+   if(step.kind==='pending'){
+    await saveAccount(accountId,step.account);
+    const next={
+     ...data,
+     ...(step.peer||{}),
+     status:'paused',
+     error:JOIN_PENDING_ERROR,
+     nextAt:'',
+     tickLockUntil:'',
+     log:pushTaskLog(data.log,'warn',JOIN_PENDING_ERROR),
+    };
+    const saved=await tickRun.finish(next);
+    return reply({ok:false,pending:true,error:next.error,task:saved});
+   }
+   if(step.kind==='member'){
+    if(step.account)await saveAccount(accountId,step.account);
+    const next={...data,...(step.peer||{}),tickLockUntil:'',log:pushTaskLog(data.log,'ok','Вступили в источник')};
+    const saved=await tickRun.finish(next);
+    return reply({ok:true,joined:true,task:saved});
+   }
+   const joinErr=step.error;
+   const joinBlind=!!joinRes.usernameMissing||joinRes.join==='missing'||isSlotBlindError(joinErr);
+   if(joinBlind||isDeadSessionError(joinErr)){
+    if(isDeadSessionError(joinErr)){
+     try{await putAccountUnauthorized(owner,accountId,account,{lastError:joinErr})}catch{/* */}
+    }
+    // Ротация: пробуем следующий слот на следующем тике
+    const next={
+     ...data,
+     status:'running',
+     ...rotate,
+     tickLockUntil:'',
+     log:pushTaskLog(data.log,'warn',`Слот ${slotName(accountId)}: join не удался — следующий`),
+    };
+    const saved=await tickRun.finish(next);
+    return reply({ok:false,needJoin:true,rotated:true,error:joinErr.slice(0,300),task:saved});
+   }
+   const next={
+    ...data,
+    status:'error',
+    error:joinErr.slice(0,500)||'Не удалось вступить',
+    tickLockUntil:'',
+    log:pushTaskLog(data.log,'error',joinErr.slice(0,200)||'join failed'),
+   };
+   const saved=await tickRun.finish(next);
+   return reply({ok:false,error:next.error,task:saved,needJoin:true});
+  };
   try{
    if(!result){
     const errMsg=(sessionErrors[0]||'Нет рабочих сессий для сбора').slice(0,500);
@@ -3213,58 +3720,23 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      tickLockUntil:'',
      log:pushTaskLog(data.log,'error',`Все слоты без доступа к источнику · ${errMsg.slice(0,120)}`),
     };
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'audience_task').run();
-    return reply({ok:false,error:errMsg,task:next});
+    const saved=await tickRun.finish(next);
+    return reply({ok:false,error:errMsg,task:saved});
    }
-   if(result.join==='need_join'){
-    const joinRes=await workerPost('/join-group',{...payload,url:data.url});
-    const joinErr=String(joinRes.error||'');
-    const joinBlind=!!joinRes.usernameMissing||joinRes.join==='missing'||isSlotBlindErr(joinErr);
-    if(!joinRes.ok&&joinRes.join!=='already'){
-     if(joinBlind||isDeadSessionErr(joinErr)){
-      if(isDeadSessionErr(joinErr)){
-       try{
-        await putAccountUnauthorized(owner,accountId,accMap.get(accountId)||{},{lastError:joinErr});
-       }catch{/* */}
-      }
-      // Ротация: пробуем следующий слот на следующем тике
-      const next={
-       ...data,
-       status:'running',
-       accountRotateAt:(Number(data.accountRotateAt)||0)+1,
-       tickLockUntil:'',
-       log:pushTaskLog(data.log,'warn',`Слот ${bracketLabel(String(accMap.get(accountId)?.name||accountId))}: join не удался — следующий`),
-      };
-      await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'audience_task').run();
-      return reply({ok:false,needJoin:true,rotated:true,error:joinErr.slice(0,300),task:next});
-     }
-     const next={
-      ...data,
-      status:'error',
-      error:joinErr.slice(0,500)||'Не удалось вступить',
-      tickLockUntil:'',
-      log:pushTaskLog(data.log,'error',joinErr.slice(0,200)||'join failed'),
-     };
-     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'audience_task').run();
-     return reply({ok:false,error:next.error,task:next,needJoin:true});
-    }
-    data={...data,tickLockUntil:'',log:pushTaskLog(data.log,'ok','Вступили в источник')};
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(data),owner,id,'audience_task').run();
-    return reply({ok:true,joined:true,task:data});
-   }
+   if(result.join==='need_join')return await joinAudienceSource();
    if(!result.ok){
     const errMsg=String(result.error||'Сбор не удался').slice(0,500);
     const next={...data,status:'error',error:errMsg,tickLockUntil:'',log:pushTaskLog(data.log,'error',errMsg)};
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'audience_task').run();
-    return reply({ok:false,error:errMsg,trace:result.trace||'',task:next});
+    const saved=await tickRun.finish(next);
+    return reply({ok:false,error:errMsg,trace:result.trace||'',task:saved});
    }
    const seen=new Set(seenIds);
-   let added=0;
+   const fresh:AudienceUserData[]=[];
    for(const u of result.users||[]){
     const userId=String(u.userId||'');
     if(!userId||seen.has(userId))continue;
     seen.add(userId);
-    const userData={
+    fresh.push({
      taskId:id,
      userId,
      username:String(u.username||'').slice(0,64),
@@ -3275,11 +3747,11 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      invited:false,
      accessHash:String(u.accessHash||'').slice(0,40),
      collectedByAccountId:accountId,
-    };
-    await db.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)').bind(crypto.randomUUID(),owner,'audience_user',JSON.stringify(userData),null,new Date().toISOString()).run();
-    added++;
+    });
    }
+   const added=await insertAudienceUsers(db,owner,id,fresh);
    const collected=(Number(data.collected)||0)+added;
+   const scannedMessages=(Number(data.scannedMessages)||0)+(Number(result.messagesScanned)||0);
    // hasMore от воркера — даже если батч пустой из‑за фильтров, продолжаем курсор
    const hasMore=result.hasMore===true;
    const cursorSame=String(result.cursor||'')===String(data.cursor||'');
@@ -3289,9 +3761,12 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    // Не стопаем по streak, пока hasMore и курсор двигается
    const forceDone=(!added&&(!hasMore||(cursorSame&&emptyStreak>=3)));
    const done=!hasMore||hitLimit||forceDone;
+   const warning=String(result.warning||'').slice(0,300);
+   const log=warning?pushTaskLog(data.log,'warn',warning):data.log;
    const next={
     ...data,
     collected,
+    scannedMessages,
     total:Math.max(Number(data.total)||0,collected),
     cursor:String(result.cursor||data.cursor||''),
     hasMore:!done&&hasMore,
@@ -3303,20 +3778,22 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     accountRotateAt:preferId&&accountId===preferId?(Number(data.accountRotateAt)||0):(Number(data.accountRotateAt)||0)+1,
     tickLockUntil:'',
     error:forceDone&&!collected?'Фильтры слишком жёсткие — никого не нашли':'',
+    ...(warning?{warning}:{}),
     log:pushTaskLog(
-     data.log,
+     log,
      added?'ok':(done?'ok':'info'),
      done
       ?(added?`Сбор завершён · ${collected}`:`Сбор завершён · некого собирать · ${collected}`)
       :`+${added} · всего ${collected}${result.mode?` · ${result.mode}`:''}`,
     ),
    };
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'audience_task').run();
-   return reply({ok:true,added,task:next});
+   const saved=await tickRun.finish(next);
+   return reply({ok:true,added,task:saved});
   }catch(e){
+   if(isRetryableTickError(e))return retryAudienceTick(e);
    const next={...data,status:'error',error:String((e as Error).message||e).slice(0,500),tickLockUntil:'',log:pushTaskLog(data.log,'error',String((e as Error).message||e))};
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'audience_task').run();
-   return reply({ok:false,error:next.error,task:next},503);
+   const saved=await tickRun.finish(next);
+   return reply({ok:false,error:next.error,task:saved},503);
   }
  }
  if(b.action==='export_audience'){
@@ -3324,14 +3801,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const format=z.enum(['json','csv']).default('csv').parse(b.format??'csv');
   const row:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'audience_task').first();
   if(!row)return reply({error:'Задача сбора не найдена'},404);
-  const all=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='audience_user'").bind(owner).all();
-  const users:any[]=[];
-  for(const r of all.results){
-   try{
-    const u=JSON.parse(String(r.data));
-    if(u.taskId===id)users.push(u);
-   }catch{/* */}
-  }
+  const users:any[]=await listAudienceUsers(db,owner,id);
   if(format==='json')return reply({ok:true,format,users,count:users.length});
   const lines=['userId,username,name,premium,status'];
   for(const u of users){
@@ -3347,88 +3817,71 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   if(!row)return reply({error:'Задача инвайта не найдена'},404);
   const data=JSON.parse(row.data);
   if(b.action==='pause_invite'){
-   const next={...data,status:'paused',nextAt:'',tickLockUntil:'',log:pushTaskLog(data.log,'info','Задача остановлена')};
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'invite_task').run();
-   return reply({ok:true,task:next});
+   const next={...data,status:'paused',nextAt:'',...keepLiveLock(data),log:pushTaskLog(data.log,'info','Задача остановлена')};
+   const saved=await commitTaskEdit(db,owner,id,'invite_task',data,next)??next;
+   return reply({ok:true,task:saved});
   }
   // Уже запущена — не дублируем лог (двойной клик / гонка с poller)
   if(data.status==='running'){
-   const lockT=Date.parse(String(data.tickLockUntil||''));
-   const locked=Number.isFinite(lockT)&&lockT>Date.now();
+   const locked=tickLockIsLive(data);
    const next={
     ...data,
     error:'',
     // Если тик не идёт — сбрасываем паузу, чтобы poller сразу продолжил
     nextAt:locked?data.nextAt:'',
-    tickLockUntil:locked?data.tickLockUntil:'',
+    ...keepLiveLock(data),
    };
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'invite_task').run();
-   return reply({ok:true,task:next,already:true});
+   const saved=await commitTaskEdit(db,owner,id,'invite_task',data,next)??next;
+   return reply({ok:true,task:saved,already:true});
   }
   // Пересчитать total из базы аудитории
-  const users=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='audience_user'").bind(owner).all();
-  let total=0;
-  for(const r of users.results){
-   try{
-    const u=JSON.parse(String(r.data));
-    if(u.taskId===data.audienceTaskId&&!u.invited)total++;
-   }catch{/* */}
-  }
+  const left:any=await db.prepare(`SELECT COUNT(*) AS n FROM records WHERE owner=? AND kind='audience_user'
+   AND json_extract(data,'$.taskId')=? AND coalesce(json_extract(data,'$.invited'),0)=0
+   AND coalesce(json_extract(data,'$.inviteSoftFails'),0)<${INVITE_SOFT_FAIL_LIMIT}`).bind(owner,String(data.audienceTaskId||'')).first();
+  const total=Number(left?.n)||0;
   const next={
    ...data,
    total:Math.max(Number(data.done)||0,Number(data.total)||0,total+(Number(data.done)||0)),
    status:'running',
    error:'',
    nextAt:'',
-   tickLockUntil:'',
+   ...keepLiveLock(data),
    log:pushTaskLog(data.log,'info',`Задача запущена · к приглашению ~${total}`),
   };
-  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'invite_task').run();
-  return reply({ok:true,task:next});
+  const saved=await commitTaskEdit(db,owner,id,'invite_task',data,next)??next;
+  return reply({ok:true,task:saved});
  }
  if(b.action==='tick_invite'){
   const id=z.string().uuid().parse(b.id);
-  const row:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'invite_task').first();
-  if(!row)return reply({error:'Задача инвайта не найдена'},404);
-  let data=JSON.parse(row.data);
-  if(data.status==='scheduled'){
-   // Автодозапуск после отлёжки аккаунтов / Play
-   if(data.nextAt){
-    const t=Date.parse(data.nextAt);
-    if(Number.isFinite(t)&&t>Date.now())return reply({ok:true,waiting:true,waitSec:Math.ceil((t-Date.now())/1000),task:data});
-   }
-   data={...data,status:'running',nextAt:'',tickLockUntil:'',log:pushTaskLog(data.log,'info','Задача запущена автоматически')};
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(data),owner,id,'invite_task').run();
-  }
-  if(data.status!=='running')return reply({ok:true,skipped:true,status:data.status,task:data});
-  if(data.nextAt){
-   const t=Date.parse(data.nextAt);
-   if(Number.isFinite(t)&&t>Date.now())return reply({ok:true,waiting:true,waitSec:Math.ceil((t-Date.now())/1000),task:data});
-  }
-  // Анти-гонка: параллельные tick_invite (кнопка ▶ + poller) затирали логи
-  if(data.tickLockUntil){
-   const lockT=Date.parse(data.tickLockUntil);
-   if(Number.isFinite(lockT)&&lockT>Date.now()){
-    return reply({ok:true,busy:true,waitSec:Math.ceil((lockT-Date.now())/1000),task:data});
-   }
-  }
-  const tickLockUntil=new Date(Date.now()+120_000).toISOString();
-  data={...data,tickLockUntil,nextAt:''};
-  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(data),owner,id,'invite_task').run();
+  // Анти-гонка: параллельные tick_invite (кнопка ▶ + poller + cron) — атомарный лок
+  const opened=await openTaskTick(owner,id,'invite_task','Задача инвайта не найдена');
+  if('response' in opened)return opened.response;
+  const tickRun=opened.session;
+  let data:any=tickRun.base;
+  // Автодозапуск после отлёжки аккаунтов / Play
+  if(data.status==='scheduled')data={...data,status:'running',log:pushTaskLog(data.log,'info','Задача запущена автоматически')};
+  data={...data,nextAt:''};
+  const post=tickWorkerPost(tickRun);
 
   const day=moscowDayKey();
   let invitedToday=Number(data.invitedToday)||0;
   if(data.inviteDay!==day){invitedToday=0;data={...data,inviteDay:day,invitedToday:0}}
-  if(data.dailyLimitEnabled&&invitedToday>=Number(data.dailyLimit||50)){
-   const next={...data,status:'paused',tickLockUntil:'',log:pushTaskLog(data.log,'warn','Дневной лимит задачи достигнут')};
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'invite_task').run();
-   return reply({ok:true,dailyLimit:true,task:next});
+  // Дневной лимит задачи: батч не больше остатка; исчерпан — ждём полуночи МСК (REQ-V3)
+  const batchSize=inviteBatchLimit(data,invitedToday);
+  if(!batchSize){
+   const resumeIso=moscowNextMidnightIso();
+   const next={...data,status:'scheduled',error:'',nextAt:resumeIso,tickLockUntil:'',log:pushTaskLogs(data.log,[
+    {level:'warn',text:`Дневной лимит задачи достигнут (${invitedToday})`},
+    {level:'info',text:`Задача продолжится автоматически ${formatRuWhen(resumeIso)}`},
+   ])};
+   const saved=await tickRun.finish(next);
+   return reply({ok:true,dailyLimit:true,scheduled:true,task:saved});
   }
   const accountIds:string[]=Array.isArray(data.accountIds)?data.accountIds:[];
   if(!accountIds.length){
    const next={...data,status:'error',error:'Нет аккаунтов',tickLockUntil:'',log:pushTaskLog(data.log,'error','Нет активных аккаунтов')};
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'invite_task').run();
-   return reply({ok:false,error:next.error,task:next});
+   const saved=await tickRun.finish(next);
+   return reply({ok:false,error:next.error,task:saved});
   }
   const accRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='account'").bind(owner).all();
   const accMap=new Map<string,any>();
@@ -3454,8 +3907,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     error:`Остановлено: ${pct}% аккаунтов недоступны`,
     log:pushTaskLog(data.log,'warn',`Задача остановлена: ${pct}% аккаунтов недоступны`),
    };
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'invite_task').run();
-   return reply({ok:true,stopped:true,task:next});
+   const saved=await tickRun.finish(next);
+   return reply({ok:true,stopped:true,task:saved});
   }
   const liveIds=accountIds.filter(aid=>{
    const a=accMap.get(aid);
@@ -3481,8 +3934,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
       {level:'info',text:`Задача остановлена и запустится автоматически ${formatRuWhen(resumeIso)}`},
      ]),
     };
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'invite_task').run();
-    return reply({ok:true,stopped:true,scheduled:true,accountBlind:true,task:next});
+    const saved=await tickRun.finish(next);
+    return reply({ok:true,stopped:true,scheduled:true,accountBlind:true,task:saved});
    }
    const quotaHit=accountIds.filter(aid=>{
     const a=accMap.get(aid);
@@ -3492,7 +3945,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     .map(aid=>{
      const a=accMap.get(aid);
      if(!a)return 0;
-     if(!(isDayLimitCooldown(a)||String(a.status||'')==='spamblock'))return 0;
+     if(!(isDayLimitedFor(a,'memberInvite')||String(a.status||'')==='spamblock'))return 0;
      const t=Date.parse(String(a.cooldownUntil||''));
      return Number.isFinite(t)&&t>Date.now()?t:0;
     })
@@ -3510,49 +3963,38 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      {level:'info',text:`Задача остановлена и запустится автоматически ${formatRuWhen(resumeIso)}`},
     ]),
    };
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'invite_task').run();
-   return reply({ok:true,stopped:true,scheduled:true,task:next});
+   const saved=await tickRun.finish(next);
+   return reply({ok:true,stopped:true,scheduled:true,task:saved});
   }
   let accountIndex=Number(data.accountIndex)||0;
   if(accountIndex>=liveIds.length)accountIndex=0;
   const accountId=liveIds[accountIndex%liveIds.length];
   const accountLabel=accName(accountId);
-  // Кандидаты из базы — сначала с username (иначе get_input_entity(id) часто падает)
-  const allUsers=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='audience_user'").bind(owner).all();
-  const batchSize=Math.max(1,Math.min(20,Number(data.batchSize)||1));
-  const candidates:{id:string;userId:string;username:string;accessHash:string;accountId:string}[]=[];
-  for(const r of allUsers.results){
+  // Кандидаты — SQL-фильтр по аудитории задачи + LIMIT (REQ-V6): сначала собранные этим же слотом
+  // (accessHash валиден), затем с username (иначе get_input_entity(id) часто падает)
+  const candidateRows=await db.prepare(`SELECT id,data FROM records WHERE owner=? AND kind='audience_user'
+   AND json_extract(data,'$.taskId')=? AND coalesce(json_extract(data,'$.invited'),0)=0
+   AND coalesce(json_extract(data,'$.inviteSoftFails'),0)<${INVITE_SOFT_FAIL_LIMIT}
+   ORDER BY coalesce(json_extract(data,'$.collectedByAccountId'),json_extract(data,'$.accountId'),'')=? DESC,
+    coalesce(json_extract(data,'$.username'),'')<>'' DESC, created, id
+   LIMIT ?`).bind(owner,String(data.audienceTaskId||''),accountId,batchSize).all();
+  const batch:{id:string;userId:string;username:string;accessHash:string;accountId:string}[]=[];
+  for(const r of candidateRows.results){
    try{
     const u=JSON.parse(String(r.data));
-    if(u.taskId!==data.audienceTaskId||u.invited)continue;
-    if(Number(u.inviteSoftFails||0)>=3){
-     // После 3 soft-fail — списываем, чтобы не крутить вечно
-     try{
-      await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...u,invited:true,skipReason:u.skipReason||'soft_fail_limit'}),owner,String(r.id),'audience_user').run();
-     }catch{/* */}
-     continue;
-    }
-    candidates.push({
+    batch.push({
      id:String(r.id),
      userId:String(u.userId),
      username:String(u.username||''),
      accessHash:String(u.accessHash||''),
-     accountId:String(u.accountId||''),
+     accountId:String(u.collectedByAccountId||u.accountId||''),
     });
-   }catch{/* */}
+   }catch{/* битая строка аудитории — пропускаем */}
   }
-  // Предпочитаем юзеров этого же слота (accessHash валиден) и с username
-  candidates.sort((a,b)=>{
-   const aSame=a.accountId&&a.accountId===accountId?1:0;
-   const bSame=b.accountId&&b.accountId===accountId?1:0;
-   if(aSame!==bSame)return bSame-aSame;
-   return (b.username?1:0)-(a.username?1:0);
-  });
-  const batch=candidates.slice(0,batchSize);
   if(!batch.length){
    const next={...data,status:'completed',hasMore:false,tickLockUntil:'',log:pushTaskLog(data.log,'ok',`Готово · ${data.done||0} инвайтов`)};
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'invite_task').run();
-   return reply({ok:true,completed:true,task:next});
+   const saved=await tickRun.finish(next);
+   return reply({ok:true,completed:true,task:saved});
   }
   let sourceUrl='';
   try{
@@ -3562,27 +4004,27 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const logEntries:{level:'info'|'ok'|'warn'|'error';text:string}[]=[
    {level:'info',text:`Работает аккаунт ${bracketLabel(accountLabel)}`},
   ];
-  const persistInviteTask=async(patch:Record<string,unknown>,entries?:{level:'info'|'ok'|'warn'|'error';text:string}[])=>{
-   // Перечитываем перед записью — не затираем параллельный start/pause
-   const freshRow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'invite_task').first();
-   const fresh=freshRow?JSON.parse(freshRow.data):data;
-   if(fresh.status==='paused'){
-    const paused={...fresh,tickLockUntil:''};
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(paused),owner,id,'invite_task').run();
-    return paused;
-   }
-   const next={
-    ...fresh,
-    ...patch,
-    log:entries?pushTaskLogs(Array.isArray(fresh.log)?fresh.log:data.log,entries):(patch.log??fresh.log),
-    tickLockUntil:'',
-   };
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'invite_task').run();
-   return next;
+  // Мержим в строку «как сейчас»: пауза посреди тика сохраняет прогресс, статус остаётся paused (REQ-I3)
+  const persistInviteTask=(patch:Record<string,unknown>,entries:{level:'info'|'ok'|'warn'|'error';text:string}[]=[])=>
+   tickRun.finish({...data,...patch},entries);
+  // Прогресс до сбоя (для catch): инвайты, уже отмеченные в базе аудитории
+  let okN=0;
+  let alreadyN=0;
+  let skippedN=0;
+  const progressPatch=()=>({
+   done:(Number(data.done)||0)+okN,
+   invitedToday:invitedToday+okN,
+   inviteDay:day,
+   alreadyMembers:(Number(data.alreadyMembers)||0)+alreadyN,
+   skipped:(Number(data.skipped)||0)+skippedN,
+  });
+  const updateInviteAccount=async(aid:string,next:Record<string,unknown>)=>{
+   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,aid,'account').run();
+   accMap.set(aid,next);
   };
   try{
    const {payload,account}=await loadAccountSessionPayload(owner,accountId);
-   const joinRes=await workerPost('/join-group',{...payload,url:data.targetUrl});
+   const joinRes=await post('/join-group',{...payload,url:data.targetUrl},workerAppTimeoutMs('join'));
    if(!joinRes.ok&&joinRes.join!=='already'&&!/уже|already/i.test(String(joinRes.error||''))){
     const pause=randomPauseSec(data.pauseFromSec,data.pauseToSec);
     if(isAccountBlindResult(joinRes)){
@@ -3590,18 +4032,29 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...(accMap.get(accountId)||{}),...accountBlindPatch(),error:String(joinRes.error||'').slice(0,500)}),owner,accountId,'account').run();
     }
     logEntries.push({level:'error',text:`Аккаунт ${bracketLabel(accountLabel)} не смог вступить в группу: ${String(joinRes.error||'').slice(0,120)}`});
+    // Цель не видит ни один живой слот подряд — это цель, а не ферма: стоп вместо вечной ротации (REQ-V2)
+    const targetMiss=['missing','private'].includes(String(joinRes.join||''))&&!isAccountBlindResult(joinRes);
+    const targetMissStreak=targetMiss?(Number(data.targetMissStreak)||0)+1:0;
+    if(targetMissStreak>=liveIds.length){
+     const error=`Целевая группа недоступна ни одному аккаунту: ${String(joinRes.error||'не найдена').slice(0,300)}`;
+     const next=await persistInviteTask({status:'error',error,nextAt:'',targetMissStreak:0},[...logEntries,{level:'error',text:error}]);
+     return reply({ok:false,error,targetError:'target_missing',task:next});
+    }
     logEntries.push({level:'info',text:`Ожидание ${pause} секунд`});
     const next=await persistInviteTask({
      accountIndex:(accountIndex+1)%liveIds.length,
      nextAt:new Date(Date.now()+pause*1000).toISOString(),
      status:'running',
+     targetMissStreak,
     },logEntries);
     return reply({ok:true,needJoin:true,task:next});
    }
-   if(sourceUrl){
-    try{await workerPost('/join-group',{...payload,url:sourceUrl})}catch{/* источник опционален */}
+   data={...data,targetMissStreak:0};
+   // Источник опционален: не тратим на него стену тика, если вступление уже не влезает
+   if(sourceUrl&&tickRun.budget.fits(workerAppTimeoutMs('join'))){
+    try{await post('/join-group',{...payload,url:sourceUrl},workerAppTimeoutMs('join'))}catch{/* источник опционален */}
    }
-   const result=await workerPost('/invite-users',{
+   const result=await post('/invite-users',{
     ...payload,
     targetUrl:data.targetUrl,
     sourceUrl,
@@ -3611,103 +4064,76 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      username:x.username,
      accessHash:x.accountId===accountId?x.accessHash:'',
     })),
-   },180_000);
+   },workerAppTimeoutMs('invite'));
 
-   // PEER_FLOOD / spamblock / frozen → статус аккаунта. FloodWait — только пауза тика.
-   let accountWentCooldown=false;
-   let cooldownUntil='';
-   if(result.status==='spamblock'||String(result.error||'').includes('PEER_FLOOD')){
-    cooldownUntil=cooldownHoursFromNow(24);
-    accountWentCooldown=true;
+   // Разбор ответа — lib/processes/invite-tick.ts (REQ-V7). Квота слота бампится за реальные инвайты
+   // при любом исходе, в т.ч. FloodWait (REQ-V5); «уже в группе» квоту не тратит (REQ-V4).
+   const accRow:any=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,accountId,'account').first();
+   const accBefore=accRow?JSON.parse(accRow.data):(accMap.get(accountId)||{});
+   const outcome=interpretInviteWorkerResult(result,accBefore);
+   if(outcome.accountPatch){
+    const accountPatch=outcome.kind==='account_blind'?{...outcome.accountPatch,...accountBlindPatch()}:outcome.accountPatch;
+    await updateInviteAccount(accountId,accountPatch);
+   }else if(outcome.kind==='account_blind'){
+    await updateInviteAccount(accountId,{...accBefore,...accountBlindPatch(),error:outcome.message});
+   }
+   if(outcome.kind==='spamblock'){
     logEntries.push({level:'error',text:`Аккаунт ${bracketLabel(accountLabel)} получил блокировку на неопределённое время (PEER_FLOOD)`});
-    logEntries.push({level:'info',text:`Аккаунт ${bracketLabel(accountLabel)} ушёл в спамблок до ${formatRuWhen(cooldownUntil)}`});
-    const arow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,accountId,'account').first();
-    if(arow){
-     const adata=JSON.parse(arow.data);
-     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(withSpamblockStatus(adata,'PEER_FLOOD')),owner,accountId,'account').run();
-    }
-   }else if(result.status==='frozen'){
-    accountWentCooldown=true;
+    logEntries.push({level:'info',text:`Аккаунт ${bracketLabel(accountLabel)} ушёл в спамблок до ${formatRuWhen(String(outcome.accountPatch?.cooldownUntil||''))}`});
+   }else if(outcome.kind==='frozen'){
     logEntries.push({level:'error',text:`Аккаунт ${bracketLabel(accountLabel)} заморожен`});
-    const arow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,accountId,'account').first();
-    if(arow){
-     const adata=JSON.parse(arow.data);
-     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(withFrozenStatus(adata,result.error||'')),owner,accountId,'account').run();
-    }
    }
 
-   // Сначала разбираем успешные из батча — даже при FloodWait
-   let okN=0;
-   for(const r of result.results||[]){
-    const hit=batch.find(x=>x.userId===String(r.userId));
-    const uname=String(r.username||hit?.username||'');
-    const uid=String(r.userId||hit?.userId||'');
-    if(r.ok){
-     okN++;
-     logEntries.push({level:'ok',text:inviteUserOkText(uname,uid)});
-     if(hit){
-      const urow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,hit.id,'audience_user').first();
-      if(urow){
-       const ud=JSON.parse(urow.data);
-       await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...ud,invited:true,skipReason:''}),owner,hit.id,'audience_user').run();
-      }
-     }
-    }else{
-     const reason=String(r.error||'fail').slice(0,120);
-     logEntries.push({level:'error',text:inviteUserFailText(uname,reason,uid)});
-     if(hit){
-      const softFail=/no_entity|privacy|USER_PRIVACY|не удалось|access_hash/i.test(reason);
-      const urow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,hit.id,'audience_user').first();
-      if(urow){
-       const ud=JSON.parse(urow.data);
-       // soft: не помечаем invited — другой слот может пройти
-       if(softFail){
-        await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...ud,invited:false,skipReason:reason,inviteSoftFails:(Number(ud.inviteSoftFails)||0)+1}),owner,hit.id,'audience_user').run();
-       }else{
-        await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...ud,invited:true,skipReason:reason}),owner,hit.id,'audience_user').run();
-       }
-      }
-     }
-    }
+   const byUserId=new Map(batch.map(x=>[x.userId,x]));
+   for(const u of outcome.users){
+    const hit=byUserId.get(u.userId);
+    const uname=u.username||hit?.username||'';
+    logEntries.push(u.verdict==='invited'
+     ?{level:'ok',text:inviteUserOkText(uname,u.userId)}
+     :{level:u.verdict==='already'?'info':'error',text:inviteUserFailText(uname,u.reason,u.userId)});
+    if(!hit)continue;
+    const urow:any=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,hit.id,'audience_user').first();
+    if(!urow)continue;
+    const ud=JSON.parse(urow.data);
+    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...ud,...inviteUserPatch(u,ud)}),owner,hit.id,'audience_user').run();
    }
+   okN=outcome.okN;
+   alreadyN=outcome.alreadyN;
+   skippedN=outcome.skippedN;
 
-   if(result.status==='floodwait'||Number(result.floodWait)>0){
-    const waitSec=Math.max(60,Number(result.floodWait)||900);
-    logEntries.push({level:'error',text:`Аккаунт ${bracketLabel(accountLabel)} получил FloodWait ${waitSec}с — пауза тика`});
+   if(outcome.kind==='target_error'){
+    // Ошибка цели (нет прав, группа полна, канал, нет цели): останавливаем, пользователей не отмечаем (REQ-V2)
+    logEntries.push({level:'error',text:outcome.message});
+    const channel=outcome.code==='broadcast'?{channelTargetUrl:String(data.targetUrl||'')}:{};
+    const next=await persistInviteTask({...progressPatch(),...channel,status:'error',error:outcome.message,nextAt:''},logEntries);
+    return reply({ok:false,error:outcome.message,targetError:outcome.code,invited:okN,task:next});
+   }
+   if(outcome.kind==='flood'||outcome.kind==='account_blind'){
+    const waitSec=outcome.kind==='flood'?outcome.waitSec:randomPauseSec(data.pauseFromSec,data.pauseToSec);
+    logEntries.push(outcome.kind==='flood'
+     ?{level:'error',text:`Аккаунт ${bracketLabel(accountLabel)} получил FloodWait ${waitSec}с — пауза тика`}
+     :{level:'error',text:`Аккаунт ${bracketLabel(accountLabel)} не резолвит цель: ${outcome.message.slice(0,120)}`});
     logEntries.push({level:'info',text:`Ожидание ${waitSec} секунд`});
     const next=await persistInviteTask({
-     done:(Number(data.done)||0)+okN,
-     invitedToday:invitedToday+okN,
-     inviteDay:day,
+     ...progressPatch(),
      accountIndex:(accountIndex+1)%liveIds.length,
      nextAt:new Date(Date.now()+waitSec*1000).toISOString(),
      status:'running',
     },logEntries);
-    return reply({ok:true,invited:okN,task:next,floodWait:waitSec});
+    return reply({ok:true,invited:okN,task:next,floodWait:outcome.kind==='flood'?waitSec:undefined});
    }
 
-   const arow2:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,accountId,'account').first();
-   if(arow2&&okN&&!accountWentCooldown){
-    const adata=JSON.parse(arow2.data);
-    const mday=adata.memberInviteDay===day?Number(adata.memberInvitesToday)||0:0;
-    const bumped=applyQuotaCooldownIfExhausted({...adata,memberInviteDay:day,memberInvitesToday:mday+okN});
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(bumped),owner,accountId,'account').run();
-    accMap.set(accountId,bumped);
-   }
-
-   const stillLive=liveIds.filter(aid=>{
-    if(aid!==accountId)return true;
-    if(accountWentCooldown)return false;
-    return hasMemberInviteQuota(accMap.get(accountId));
-   });
+   const accountWentCooldown=outcome.wentCooldown;
+   const stillLive=liveIds.filter(aid=>aid!==accountId||inviteAccountStillLive(accMap.get(accountId),accountWentCooldown));
    if(!stillLive.length){
-    const resumeIso=accountWentCooldown?(cooldownUntil||cooldownHoursFromNow(24)):moscowNextMidnightIso();
-    logEntries.push({level:'info',text:accountWentCooldown?'Нет активных аккаунтов':'Ферма: дневной лимит инвайтов, берём следующий аккаунт после полуночи'});
+    const spamUntil=String(outcome.accountPatch?.cooldownUntil||'');
+    const resumeIso=outcome.kind==='spamblock'||outcome.kind==='frozen'
+     ?(spamUntil&&Date.parse(spamUntil)>Date.now()?spamUntil:cooldownHoursFromNow(24))
+     :moscowNextMidnightIso();
+    logEntries.push({level:'info',text:outcome.kind==='batch'?'Ферма: дневной лимит инвайтов, берём следующий аккаунт после полуночи':'Нет активных аккаунтов'});
     logEntries.push({level:'info',text:`Задача остановлена и запустится автоматически ${formatRuWhen(resumeIso)}`});
     const next=await persistInviteTask({
-     done:(Number(data.done)||0)+okN,
-     invitedToday:invitedToday+okN,
-     inviteDay:day,
+     ...progressPatch(),
      accountIndex:0,
      lastTickAt:new Date().toISOString(),
      nextAt:resumeIso,
@@ -3719,14 +4145,11 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
 
    const pause=randomPauseSec(data.pauseFromSec,data.pauseToSec);
    logEntries.push({level:'info',text:`Ожидание ${pause} секунд`});
-   const nextLive=stillLive.length?stillLive:liveIds;
    const nextIndex=accountWentCooldown
     ?0
-    :(accountIndex+1)%nextLive.length;
+    :(accountIndex+1)%stillLive.length;
    const next=await persistInviteTask({
-    done:(Number(data.done)||0)+okN,
-    invitedToday:invitedToday+okN,
-    inviteDay:day,
+    ...progressPatch(),
     accountIndex:nextIndex,
     lastTickAt:new Date().toISOString(),
     nextAt:new Date(Date.now()+pause*1000).toISOString(),
@@ -3735,7 +4158,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    },logEntries);
    return reply({ok:true,invited:okN,task:next,accountId,results:result.results||[],account:account.name});
   }catch(e){
+   if(isRetryableTickError(e)){
+    const retry=tickRetryPatch(e);
+    const next=await persistInviteTask({...progressPatch(),...retry.patch},[...logEntries,{level:'warn',text:retry.text}]);
+    return reply({ok:true,retry:true,waitSec:retry.waitSec,invited:okN,task:next});
+   }
    const next=await persistInviteTask({
+    ...progressPatch(),
     status:'error',
     error:String((e as Error).message||e).slice(0,500),
    },[
@@ -3815,16 +4244,15 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   if(!row)return reply({error:'Задача рассылки не найдена'},404);
   const data=JSON.parse(row.data);
   if(b.action==='pause_mailing'){
-   const next={...data,status:'paused',nextAt:'',tickLockUntil:'',log:pushTaskLog(data.log,'info','Задача остановлена',500)};
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'mailing_task').run();
-   return reply({ok:true,task:next});
+   const next={...data,status:'paused',nextAt:'',...keepLiveLock(data),log:pushTaskLog(data.log,'info','Задача остановлена',500)};
+   const saved=await commitTaskEdit(db,owner,id,'mailing_task',data,next)??next;
+   return reply({ok:true,task:saved});
   }
   if(data.status==='running'){
-   const lockT=Date.parse(String(data.tickLockUntil||''));
-   const locked=Number.isFinite(lockT)&&lockT>Date.now();
-   const next={...data,error:'',nextAt:locked?data.nextAt:'',tickLockUntil:locked?data.tickLockUntil:''};
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'mailing_task').run();
-   return reply({ok:true,task:next,already:true});
+   const locked=tickLockIsLive(data);
+   const next={...data,error:'',nextAt:locked?data.nextAt:'',...keepLiveLock(data)};
+   const saved=await commitTaskEdit(db,owner,id,'mailing_task',data,next)??next;
+   return reply({ok:true,task:saved,already:true});
   }
   if(data.sourceKind==='audience'&&!data.audienceTaskId){
    return reply({error:'Выберите базу аудитории'},400);
@@ -3854,11 +4282,10 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     }catch{/* */}
    }
   }else{
-   const users=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='audience_user'").bind(owner).all();
+   const users=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='audience_user' AND json_extract(data,'$.taskId')=?").bind(owner,String(data.audienceTaskId||'')).all();
    for(const r of users.results){
     try{
      const u=JSON.parse(String(r.data));
-     if(u.taskId!==data.audienceTaskId)continue;
      if(!u.username&&!u.userId)continue;
      const key=recipientKey({sourceKind:'audience',userId:u.userId,username:u.username});
      if(key&&!delivered.has(key))pending++;
@@ -3872,7 +4299,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    status:'running' as const,
    error:'',
    nextAt:'',
-   tickLockUntil:'',
+   ...keepLiveLock(data),
    log:pushTaskLog(data.log,'info',`Задача запущена · к отправке ~${pending}`,500),
   };
   // Диагностика аккаунтов при старте
@@ -3922,13 +4349,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     ),
    };
   }
-  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'mailing_task').run();
+  const saved=await commitTaskEdit(db,owner,id,'mailing_task',data,next)??next;
   if(next.status==='running'){
    void notifyMailingEvent(db,owner,String(next.name||'Рассылка'),`Запущена · к отправке ~${pending}`);
   }else if(next.status==='paused'&&next.error){
    void notifyMailingEvent(db,owner,String(next.name||'Рассылка'),`Не стартовала: ${next.error}`);
   }
-  return reply({ok:true,task:next});
+  return reply({ok:true,task:saved});
  }
 
  if(b.action==='refill_mailing_ai_pool'){
@@ -3942,37 +4369,28 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    aiPool:refill.pool,
    log:pushTaskLog(data.log,refill.added?'ok':'warn',refill.added?`AI-пул пополнен: +${refill.added}`:(refill.error||'Пул не пополнен'),500),
   };
-  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'mailing_task').run();
-  return reply({ok:true,task:next,added:refill.added,error:refill.error||''});
+  const saved=await commitTaskEdit(db,owner,id,'mailing_task',data,next)??next;
+  return reply({ok:true,task:saved,added:refill.added,error:refill.error||''});
  }
 
  if(b.action==='tick_mailing'){
   const id=z.string().uuid().parse(b.id);
-  const row:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'mailing_task').first();
-  if(!row)return reply({error:'Задача рассылки не найдена'},404);
-  let data=JSON.parse(row.data);
-  if(data.status==='scheduled'){
-   if(data.nextAt){
-    const t=Date.parse(data.nextAt);
-    if(Number.isFinite(t)&&t>Date.now())return reply({ok:true,waiting:true,waitSec:Math.ceil((t-Date.now())/1000),task:data});
-   }
-   data={...data,status:'running',nextAt:'',tickLockUntil:'',log:pushTaskLog(data.log,'info','Задача запущена автоматически',500)};
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(data),owner,id,'mailing_task').run();
+  const opened=await openTaskTick(owner,id,'mailing_task','Задача рассылки не найдена');
+  if('response' in opened)return opened.response;
+  const tickRun=opened.session;
+  let data:any=tickRun.base;
+  if(data.status==='scheduled')data={...data,status:'running',log:pushTaskLog(data.log,'info','Задача запущена автоматически',500)};
+  data={...data,nextAt:''};
+  const post=tickWorkerPost(tickRun);
+  // «pending» тика, который не дошёл до финиша: не шлём повторно, а показываем как «могло уйти» (R1)
+  for(const stale of await expireStalePendingClaims(db,owner,id)){
+   const d=staleClaimDelivery(stale,(data.deliveryMode||'dm') as MailingDeliveryMode);
+   data={
+    ...data,
+    deliveries:pushMailingDelivery(Array.isArray(data.deliveries)?data.deliveries:[],d),
+    log:pushTaskLog(data.log,'warn',`${d.username?`@${d.username}`:`id${d.userId||d.leadId}`}: ${STALE_CLAIM_ERROR}`,500),
+   };
   }
-  if(data.status!=='running')return reply({ok:true,skipped:true,status:data.status,task:data});
-  if(data.nextAt){
-   const t=Date.parse(data.nextAt);
-   if(Number.isFinite(t)&&t>Date.now())return reply({ok:true,waiting:true,waitSec:Math.ceil((t-Date.now())/1000),task:data});
-  }
-  if(data.tickLockUntil){
-   const lockT=Date.parse(data.tickLockUntil);
-   if(Number.isFinite(lockT)&&lockT>Date.now()){
-    return reply({ok:true,busy:true,waitSec:Math.ceil((lockT-Date.now())/1000),task:data});
-   }
-  }
-  const tickLockUntil=new Date(Date.now()+120_000).toISOString();
-  data={...data,tickLockUntil,nextAt:''};
-  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(data),owner,id,'mailing_task').run();
 
   const day=moscowDayKey();
   let sentToday=Number(data.sentToday)||0;
@@ -3989,15 +4407,15 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      ...(data.autoStart!==false?[{level:'info' as const,text:`Автозапуск после сброса лимитов ${formatRuWhen(resumeIso)}`}]:[]),
     ],500),
    };
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'mailing_task').run();
-   return reply({ok:true,dailyLimit:true,task:next});
+   const saved=await tickRun.finish(next);
+   return reply({ok:true,dailyLimit:true,task:saved});
   }
 
   const accountIds:string[]=Array.isArray(data.accountIds)?data.accountIds:[];
   if(!accountIds.length){
    const next={...data,status:'error',error:'Нет аккаунтов',tickLockUntil:'',log:pushTaskLog(data.log,'error','Нет активных аккаунтов',500)};
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'mailing_task').run();
-   return reply({ok:false,error:next.error,task:next});
+   const saved=await tickRun.finish(next);
+   return reply({ok:false,error:next.error,task:saved});
   }
   const accRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='account'").bind(owner).all();
   const accMap=new Map<string,any>();
@@ -4008,20 +4426,37 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const a=accMap.get(aid);
    return String(a?.name||a?.username||a?.phone||aid).slice(0,40);
   };
-  const mailingMode=(data.deliveryMode||'dm') as 'dm'|'chat';
+  const deliveryMode=(data.deliveryMode||'dm') as MailingDeliveryMode;
+  const hasSendQuota=(a:any)=>deliveryMode==='chat'?hasChatQuota(a):hasMessageQuota(a);
+  /** accMap обновляется после каждой отправки — квота/флуд/спамблок проверяются перед каждым письмом (REQ-M6). */
+  const canSendFrom=(aid:string)=>{
+   const a=accMap.get(aid);
+   return isAccountUsable(a)&&!isAccountFlooded(a)&&hasSendQuota(a);
+  };
+  /** Когда ферма снова сможет слать: ближайший конец FloodWait / отлёжки / спамблока, полночь при лимите. */
+  const farmResumeIso=()=>{
+   const now=Date.now();
+   const ends:number[]=[];
+   for(const aid of accountIds){
+    const a=accMap.get(aid);
+    if(!a)continue;
+    const flood=Date.parse(String(a.floodUntil||''));
+    if(isAccountUsable(a)&&Number.isFinite(flood)&&flood>now)ends.push(flood);
+    if(isAccountUsable(a)&&!hasSendQuota(a))ends.push(Date.parse(moscowNextMidnightIso()));
+    if(isDayLimitedFor(a,deliveryMode==='chat'?'chat':'message')||String(a.status||'')==='spamblock'){
+     const t=Date.parse(String(a.cooldownUntil||''));
+     if(Number.isFinite(t)&&t>now)ends.push(t);
+    }
+   }
+   return new Date(ends.length?Math.min(...ends):now+60*60*1000).toISOString();
+  };
   const dead=accountIds.filter(aid=>{
    const a=accMap.get(aid);
    if(!a)return true;
    return ['disconnected','unauthorized','frozen','proxy_error'].includes(String(a.status));
   }).length;
   const pct=Math.round((dead/accountIds.length)*100);
-  const liveIds=accountIds.filter(aid=>{
-   const a=accMap.get(aid);
-   if(!isAccountUsable(a))return false;
-   const floodT=Date.parse(String(a?.floodUntil||''));
-   if(Number.isFinite(floodT)&&floodT>Date.now())return false;
-   return mailingMode==='chat'?hasChatQuota(a):hasMessageQuota(a);
-  });
+  const liveIds=accountIds.filter(canSendFrom);
   // Стоп по % — только если живых не осталось (раньше стопили при 30% даже с рабочими аккаунтами)
   if(!liveIds.length){
    if(pct>=Number(data.stopDisconnectedPct||30)&&dead>0){
@@ -4035,24 +4470,15 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
       {level:'info',text:'Проверьте прокси и статусы в разделе «Аккаунты»'},
      ],500),
     };
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'mailing_task').run();
+    const saved=await tickRun.finish(next);
     void notifyMailingEvent(db,owner,String(next.name||'Рассылка'),next.error||'Остановлено: аккаунты недоступны');
-    return reply({ok:true,stopped:true,task:next});
+    return reply({ok:true,stopped:true,task:saved});
    }
    const quotaHit=accountIds.filter(aid=>{
     const a=accMap.get(aid);
-    if(!isAccountUsable(a))return false;
-    return mailingMode==='chat'?!hasChatQuota(a):!hasMessageQuota(a);
+    return isAccountUsable(a)&&!hasSendQuota(a);
    }).length;
-   const ends=accountIds.map(aid=>{
-    const a=accMap.get(aid);
-    if(!a)return 0;
-    // Таймер учитываем только для реальной отлёжки / спамблока.
-    if(!(isDayLimitCooldown(a)||String(a.status||'')==='spamblock'))return 0;
-    const t=Date.parse(String(a.cooldownUntil||''));
-    return Number.isFinite(t)&&t>Date.now()?t:0;
-   }).filter(t=>t>0).sort((a,b)=>a-b);
-   const resumeIso=quotaHit?moscowNextMidnightIso():new Date(ends[0]||Date.now()+60*60*1000).toISOString();
+   const resumeIso=farmResumeIso();
    const next={
     ...data,
     status:'scheduled',
@@ -4062,13 +4488,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     log:pushTaskLogs(data.log,[
      {level:'warn',text:quotaHit
       ?`Ферма: дневной лимит сообщений на всех аккаунтах (${quotaHit})`
-      :'Нет активных аккаунтов (прокси / отлёжка / лимит сообщений)'},
+      :'Нет активных аккаунтов (прокси / отлёжка / лимит Telegram / лимит сообщений)'},
      {level:'info',text:`Задача запустится автоматически ${formatRuWhen(resumeIso)}`},
     ],500),
    };
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'mailing_task').run();
+   const saved=await tickRun.finish(next);
    void notifyMailingEvent(db,owner,String(next.name||'Рассылка'),`Пауза: нет активных аккаунтов · автозапуск ${formatRuWhen(resumeIso)}`);
-   return reply({ok:true,stopped:true,scheduled:true,task:next});
+   return reply({ok:true,stopped:true,scheduled:true,task:saved});
   }
   if(dead>0){
    data={...data,log:pushTaskLog(data.log,'warn',`Часть аккаунтов недоступна: ${dead}/${accountIds.length} · работаем с ${liveIds.length}`,500)};
@@ -4081,7 +4507,6 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     const refill=await refillMailingAiPool(owner,{...data,aiPool:pool});
     pool=refill.pool;
     data={...data,aiPool:pool,log:pushTaskLog(data.log,refill.added?'ok':'warn',refill.added?`AI-пул: +${refill.added}`:(refill.error||'AI-пул пуст'),500)};
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...data,tickLockUntil}),owner,id,'mailing_task').run();
    }
    if(!pool.length){
     const pause=randomPauseSec(60,120);
@@ -4091,8 +4516,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      tickLockUntil:'',
      log:pushTaskLog(data.log,'warn',`Нет AI-текстов · пауза ${pause}с`,500),
     };
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'mailing_task').run();
-    return reply({ok:true,needAi:true,task:next});
+    const saved=await tickRun.finish(next);
+    return reply({ok:true,needAi:true,task:saved});
    }
   }
 
@@ -4103,6 +4528,9 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const deferredUntil:Record<string,string>={
    ...(data.deferredUntil&&typeof data.deferredUntil==='object'?data.deferredUntil:{}),
   };
+  let peerMisses:PeerMissState={
+   ...(data.peerMisses&&typeof data.peerMisses==='object'?data.peerMisses:{}),
+  };
   const nowMs=Date.now();
   const isDeferred=(key:string)=>{
    const until=deferredUntil[key];
@@ -4110,9 +4538,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const t=Date.parse(until);
    return Number.isFinite(t)&&t>nowMs;
   };
+  const isQueued=(key:string)=>!!key&&!deliveredKeys.has(key)&&!isDeferred(key);
   const batchSize=Math.max(1,Math.min(10,Number(data.batchPerTick)||1));
+  // Дневной лимит задачи режет батч, а не только стартовую проверку (REQ-M6)
+  const dailyLeft=data.dailyLimitEnabled?Math.max(0,Number(data.dailyLimit||200)-sentToday):batchSize;
   type Cand={
    key:string;
+   personKey:string;
    userId:string;
    username:string;
    leadId:string;
@@ -4124,7 +4556,6 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   };
   const candidates:Cand[]=[];
   const sourceKind=(data.sourceKind||'audience') as MailingSourceKind;
-  const deliveryMode=(data.deliveryMode||'dm') as MailingDeliveryMode;
 
   if(sourceKind==='leads'){
    const leads=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='lead'").bind(owner).all();
@@ -4143,18 +4574,21 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      if(filter==='hot_warm'&&temp!=='hot'&&temp!=='warm')continue;
      if(deliveryMode==='dm'&&!L.senderId&&!L.senderUsername)continue;
      if(deliveryMode==='chat'&&(!L.groupId||!L.tgMsgId))continue;
-     const key=recipientKey({sourceKind:'leads',leadId:String(r.id),userId:L.senderId,username:L.senderUsername});
-     if(!key||deliveredKeys.has(key)||isDeferred(key))continue;
+     const userId=String(L.senderId||'');
+     const username=String(L.senderUsername||'').replace(/^@/,'');
+     const key=recipientKey({sourceKind:'leads',leadId:String(r.id),userId,username});
+     const personKey=mailingPersonKey(deliveryMode,{userId,username,leadId:String(r.id)});
+     if(!isQueued(key))continue;
      const g=L.groupId?gMap.get(String(L.groupId)):null;
      candidates.push({
       key,
-      userId:String(L.senderId||''),
-      username:String(L.senderUsername||'').replace(/^@/,''),
+      personKey,
+      userId,
+      username,
       leadId:String(r.id),
       groupUrl:String(g?.url||''),
       tgMsgId:String(L.tgMsgId||''),
       accessHash:String(L.senderAccessHash||''),
-      accountId:String(L.accountId||''),
       recordId:String(r.id),
       preferredAccountId:String(L.accountId||g?.accountId||g?.joinedAccountId||''),
      });
@@ -4169,23 +4603,26 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      if(trow)audienceUrl=String(JSON.parse(String(trow.data)).url||'');
     }catch{/* */}
    }
-   const allUsers=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='audience_user'").bind(owner).all();
-   for(const r of allUsers.results){
+   // SQL-фильтр по базе задачи, не скан всей аудитории владельца (как инвайт/сбор)
+   const taskUsers=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='audience_user' AND json_extract(data,'$.taskId')=?").bind(owner,audienceTaskId).all();
+   for(const r of taskUsers.results){
     try{
      const u=JSON.parse(String(r.data));
-     if(u.taskId!==data.audienceTaskId)continue;
-     const key=recipientKey({sourceKind:'audience',userId:u.userId,username:u.username});
-     if(!key||deliveredKeys.has(key)||isDeferred(key))continue;
      if(!u.username&&!u.userId)continue;
+     const userId=String(u.userId||'');
+     const username=String(u.username||'').replace(/^@/,'');
+     const key=recipientKey({sourceKind:'audience',userId,username});
+     const personKey=mailingPersonKey(deliveryMode,{userId,username,leadId:''});
+     if(!isQueued(key))continue;
      candidates.push({
       key,
-      userId:String(u.userId||''),
-      username:String(u.username||'').replace(/^@/,''),
+      personKey,
+      userId,
+      username,
       leadId:'',
       groupUrl:audienceUrl,
       tgMsgId:'',
       accessHash:String(u.accessHash||u.senderAccessHash||''),
-      accountId:String(u.accountId||''),
       recordId:String(r.id),
       preferredAccountId:String(u.collectedByAccountId||''),
      });
@@ -4194,7 +4631,20 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    candidates.sort((a,b)=>(b.username?1:0)-(a.username?1:0));
   }
 
-  const batch=candidates.slice(0,batchSize);
+  // Реестр получателей владельца (не ограничен 5000 ключами, общий для всех рассылок — REQ-M2, REQ-M3):
+  // проверяем порциями кандидатов (IN …), пока не набран батч
+  const batchLimit=Math.min(batchSize,dailyLeft);
+  const batch:Cand[]=[];
+  for(let i=0;i<candidates.length&&batch.length<batchLimit;i+=CONTACTED_CHUNK){
+   const chunk=candidates.slice(i,i+CONTACTED_CHUNK);
+   const contacted=await findContactedRecipients(db,owner,id,chunk);
+   for(const c of chunk){
+    if(batch.length>=batchLimit)break;
+    if(c.personKey&&contacted.personKeys.has(c.personKey))continue;
+    if(deliveryMode==='dm'&&c.leadId&&contacted.leadIds.has(c.leadId))continue;
+    batch.push(c);
+   }
+  }
   if(!batch.length){
    const decision=mailingEmptyBatchDecision(deferredUntil);
    if(decision.action==='wait'){
@@ -4216,12 +4666,12 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
       500,
      ),
     };
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'mailing_task').run();
-    return reply({ok:true,waiting:true,waitSec:decision.waitSec,task:next});
+    const saved=await tickRun.finish(next);
+    return reply({ok:true,waiting:true,waitSec:decision.waitSec,task:saved});
    }
    const next={...data,status:'completed',tickLockUntil:'',log:pushTaskLog(data.log,'ok',`Готово · ${data.sentTotal||0} доставлено`,500)};
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'mailing_task').run();
-   return reply({ok:true,completed:true,task:next});
+   const saved=await tickRun.finish(next);
+   return reply({ok:true,completed:true,task:saved});
   }
 
   let accountId=pickMailingSendAccountId(
@@ -4239,23 +4689,67 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    logEntries.push({level:'info',text:'Смена аккаунта (смешанный режим)'});
   }
 
-  const persistMailingTask=async(patch:Record<string,unknown>,entries?:{level:'info'|'ok'|'warn'|'error';text:string}[])=>{
-   const freshRow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'mailing_task').first();
-   const fresh=freshRow?JSON.parse(freshRow.data):data;
-   if(fresh.status==='paused'){
-    const paused={...fresh,tickLockUntil:''};
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(paused),owner,id,'mailing_task').run();
-    return paused;
-   }
-   const next={
-    ...fresh,
-    ...patch,
-    log:entries?pushTaskLogs(Array.isArray(fresh.log)?fresh.log:data.log,entries,500):(patch.log??fresh.log),
-    tickLockUntil:'',
-   };
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'mailing_task').run();
-   return next;
+  // Мержим в строку «как сейчас»: пауза посреди тика сохраняет прогресс, статус остаётся paused (REQ-I3)
+  const persistMailingTask=(patch:Record<string,unknown>,entries:{level:'info'|'ok'|'warn'|'error';text:string}[]=[])=>
+   tickRun.finish({...data,...patch},entries);
+
+  // Прогресс батча живёт вне try: при 429/таймауте на середине батча доставленное не теряется (REQ-I2)
+  let activeAccountId=accountId;
+  let okN=0;
+  let failN=0;
+  const aiPool:string[]=Array.isArray(data.aiPool)?[...data.aiPool]:[];
+  let aiPoolUsed=Number(data.aiPoolUsed)||0;
+  let deliveries:MailingDelivery[]=Array.isArray(data.deliveries)?[...data.deliveries]:[];
+  const newKeys:string[]=[...deliveredKeys];
+  /** Письмо, ответ воркера на которое ещё не получен: при сбое post() решаем, могло ли оно уйти (R1/R2). */
+  let inFlight:{cand:Cand;claim:MailingRecipientEntry|null;text:string;accountId:string}|null=null;
+  const returnAiText=(text:string)=>{
+   if(data.contentMode!=='ai'||!text)return;
+   aiPool.unshift(text);
+   aiPoolUsed=Math.max(0,aiPoolUsed-1);
   };
+  const readAccount=async(aid:string):Promise<Record<string,unknown>|null>=>{
+   const row:any=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,aid,'account').first();
+   return row?JSON.parse(String(row.data)):null;
+  };
+  const writeAccount=async(aid:string,next:Record<string,unknown>)=>{
+   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,aid,'account').run();
+   accMap.set(aid,next);
+  };
+  const pushDelivery=(cand:Cand,aid:string,text:string,result:any,ok:boolean,error:string)=>{
+   deliveries=pushMailingDelivery(deliveries,{
+    at:new Date().toISOString(),
+    key:cand.key,
+    userId:String(cand.userId||result?.chatId||''),
+    username:cand.username,
+    leadId:cand.leadId,
+    accountId:aid,
+    ok,
+    error:error.slice(0,400),
+    messageId:String(result?.messageId||'').slice(0,40),
+    chatId:String(result?.chatId||cand.userId||'').slice(0,40),
+    link:String(result?.link||'').slice(0,300),
+    textPreview:mailingTextPreview(text,200),
+    mode:deliveryMode,
+   });
+  };
+  const progressPatch=()=>({
+   sentTotal:(Number(data.sentTotal)||0)+okN,
+   sentToday:sentToday+okN,
+   failed:(Number(data.failed)||0)+failN,
+   sendDay:day,
+   lastAccountId:activeAccountId,
+   aiPool,
+   aiPoolUsed,
+   // Легаси-дедуп и UI; источник правды — реестр mailing_recipient (не обрезается)
+   deliveredKeys:newKeys.slice(-5000),
+   deferredUntil:Object.fromEntries(Object.entries(deferredUntil).filter(([,v])=>{
+    const t=Date.parse(v);
+    return Number.isFinite(t)&&t>Date.now();
+   })),
+   peerMisses,
+   deliveries,
+  });
 
   try{
    const payloadCache=new Map<string,any>();
@@ -4265,50 +4759,64 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     payloadCache.set(aid,payload);
     return payload;
    };
-   let activeAccountId=accountId;
    let activeLabel=accountLabel;
-   let payload=await loadPayload(activeAccountId);
-   let okN=0;
-   let failN=0;
-   let accountWentCooldown=false;
+   let accountStopped=false;
    let cooldownUntil='';
-   let aiPool:string[]=Array.isArray(data.aiPool)?[...data.aiPool]:[];
-   let aiPoolUsed=Number(data.aiPoolUsed)||0;
-   let deliveries:MailingDelivery[]=Array.isArray(data.deliveries)?[...data.deliveries]:[];
-   const newKeys:string[]=[...deliveredKeys];
    let nextAccountIndex=accountIndex;
+   const rotate=()=>{nextAccountIndex=(nextAccountIndex+1)%Math.max(1,liveIds.length)};
 
    for(const cand of batch){
+    if(!tickRun.budget.fits(workerAppTimeoutMs('send'))){
+     logEntries.push({level:'info',text:'Лимит времени тика — остальные получатели на следующем тике'});
+     break;
+    }
+    const sendable=liveIds.filter(canSendFrom);
+    if(!sendable.length){
+     logEntries.push({level:'info',text:'На этом тике аккаунтов с квотой больше нет'});
+     break;
+    }
+    // «Нет access_hash» у этого слота — следующая попытка другим аккаунтом (REQ-M5)
+    const pool=untriedAccountIds(peerMisses,cand.key,sendable);
+    if(!pool.length)continue;
+    const aid=pickMailingSendAccountId(
+     pool,
+     deliveryMode==='dm'?[cand.preferredAccountId,activeAccountId]:[activeAccountId],
+     nextAccountIndex,
+    );
+    if(aid!==activeAccountId){
+     activeAccountId=aid;
+     activeLabel=accName(aid);
+     logEntries.push({level:'info',text:`${aid===cand.preferredAccountId?'Peer → аккаунт':'Смена аккаунта →'} ${bracketLabel(activeLabel)}`});
+    }
+    const payload=await loadPayload(activeAccountId);
+
+    // Pending до отправки: другая задача/тик этому человеку уже не напишет, таймаут не приведёт к дублю (R1)
+    const claim:MailingRecipientEntry|null=cand.personKey?{
+     key:cand.personKey,state:'pending',taskId:id,accountId:activeAccountId,leadId:cand.leadId,at:new Date().toISOString(),error:'',
+    }:null;
+    if(claim&&!await claimMailingRecipient(db,owner,claim)){
+     logEntries.push({level:'info',text:`${cand.username?`@${cand.username}`:`id${cand.userId}`}: уже получил рассылку — пропускаем`});
+     newKeys.push(cand.key);
+     continue;
+    }
+
     let text='';
     if(data.contentMode==='ai'){
      text=String(aiPool.shift()||'').trim();
-     if(!text){
-      logEntries.push({level:'warn',text:'AI-пул исчерпан на этом тике'});
-      break;
-     }
-     aiPoolUsed++;
+     if(text)aiPoolUsed++;
+     else logEntries.push({level:'warn',text:'AI-пул исчерпан на этом тике'});
     }else{
      text=resolveSpintax(String(data.templateText||'')).slice(0,4000);
-     if(!text){
-      logEntries.push({level:'error',text:'Пустой текст после Spintax'});
-      break;
-     }
+     if(!text)logEntries.push({level:'error',text:'Пустой текст после Spintax'});
     }
-
-    // Для DM предпочитаем слот, который видел peer (скан/сбор)
-    if(deliveryMode==='dm'){
-     const preferred=pickMailingSendAccountId(liveIds,[cand.preferredAccountId],nextAccountIndex);
-     if(preferred&&preferred!==activeAccountId){
-      activeAccountId=preferred;
-      activeLabel=accName(activeAccountId);
-      payload=await loadPayload(activeAccountId);
-      logEntries.push({level:'info',text:`Peer → аккаунт ${bracketLabel(activeLabel)}`});
-     }
+    if(!text){
+     if(claim)await releaseMailingRecipient(db,owner,claim.key);
+     break;
     }
 
     // accessHash сессионный — валиден только для слота, который видел peer
     const accessHash=cand.preferredAccountId&&cand.preferredAccountId===activeAccountId?String(cand.accessHash||''):'';
-    let result=await workerPost('/send-message',{
+    const sendBody={
      ...payload,
      mode:deliveryMode,
      text,
@@ -4321,293 +4829,119 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      silent:!!data.silent,
      // Удаление диалога ломает входящие ответы → «Переписки»
      deleteDialog:false,
-    },120_000);
-
+    };
+    inFlight={cand,claim,text,accountId:activeAccountId};
+    let result=await post('/send-message',sendBody,workerAppTimeoutMs('send'));
     // Чужой access_hash → retry без hash (username/группа/кэш)
     if(
      !result.ok&&
      deliveryMode==='dm'&&
-     cand.accessHash&&
+     accessHash&&
      /invalid peer|неверный peer/i.test(String(result.error||''))
     ){
-     result=await workerPost('/send-message',{
-      ...payload,
-      mode:'dm',
-      text,
-      url:cand.groupUrl||'',
-      replyTo:'',
-      tgMsgId:cand.tgMsgId||'',
-      senderId:cand.userId||'',
-      senderUsername:cand.username||'',
-      senderAccessHash:'',
-      silent:!!data.silent,
-      deleteDialog:false,
-     },120_000);
+     result=await post('/send-message',{...sendBody,replyTo:'',senderAccessHash:''},workerAppTimeoutMs('send'));
     }
+    inFlight=null;
 
     const errRaw=String(result.error||'');
-    const peerFlood=
-     result.status==='spamblock'||
-     isPeerFloodMailingError(errRaw)||
-     errRaw.includes('PEER_FLOOD');
-    const accountFrozen=
-     result.status==='frozen'||
-     /FROZEN|заморожен/i.test(errRaw);
-    const rateLimited=
-     !peerFlood&&
-     !accountFrozen&&
-     (result.status==='flood'||
-      !!result.flood||
-      Number(result.waitSec)>0||
-      isRateLimitMailingError(errRaw));
+    const fresh=await readAccount(activeAccountId)||accMap.get(activeAccountId)||{};
+    const outcome=interpretMailingSendResult(result,fresh,deliveryMode);
 
-    if(rateLimited){
-     const waitSec=Math.max(
-      60,
-      Number(result.waitSec)||0,
-      parseMailingFloodWaitSec(errRaw,900),
-     );
-     // FloodWait / Too many requests — пауза тика/получателя, аккаунт НЕ в «Отлёжку».
-     deferredUntil[cand.key]=new Date(Date.now()+waitSec*1000).toISOString();
-     if(data.contentMode==='ai'&&text){
-      aiPool.unshift(text);
-      aiPoolUsed=Math.max(0,aiPoolUsed-1);
-     }
-     logEntries.push({level:'error',text:`Аккаунт ${bracketLabel(activeLabel)}: лимит Telegram · пауза ${waitSec}с`});
-     logEntries.push({level:'info',text:`Получатель отложен на ${Math.ceil(waitSec/60)} мин (Too many requests)`});
-     // Меняем слот фермы; статус аккаунта не трогаем.
-     nextAccountIndex=(nextAccountIndex+1)%Math.max(1,liveIds.length);
+    if(outcome.kind==='rate_limit'){
+     // FloodWait — аккаунт на паузу (floodUntil), статус не трогаем; получатель свободен для другого слота (REQ-M4)
+     if(claim)await releaseMailingRecipient(db,owner,claim.key);
+     returnAiText(text);
+     await writeAccount(activeAccountId,outcome.accountPatch);
+     logEntries.push({level:'error',text:`Аккаунт ${bracketLabel(activeLabel)}: лимит Telegram · пауза ${outcome.waitSec}с`});
+     logEntries.push({level:'info',text:`Аккаунт не используется до ${formatRuWhen(String(outcome.accountPatch.floodUntil))} · дальше другой слот фермы`});
+     rotate();
      break;
     }
-    if(accountFrozen){
-     accountWentCooldown=true;
-     if(data.contentMode==='ai'&&text){
-      aiPool.unshift(text);
-      aiPoolUsed=Math.max(0,aiPoolUsed-1);
-     }
-     cooldownUntil=moscowNextMidnightIso();
-     logEntries.push({level:'error',text:`Аккаунт ${bracketLabel(activeLabel)}: заморожен Telegram`});
-     const arow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,activeAccountId,'account').first();
-     if(arow){
-      const adata=JSON.parse(arow.data);
-      await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(
-       withFrozenStatus(adata,errRaw.slice(0,500)||'FROZEN'),
-      ),owner,activeAccountId,'account').run();
-     }
-     nextAccountIndex=(nextAccountIndex+1)%Math.max(1,liveIds.length);
-     break;
-    }
-    const banWrite=/banned from sending|chat_write_forbidden|user_banned_in_channel/i.test(errRaw);
-    if(peerFlood||banWrite){
-     accountWentCooldown=true;
-     cooldownUntil=cooldownHoursFromNow(24);
-     if(data.contentMode==='ai'&&text){
-      aiPool.unshift(text);
-      aiPoolUsed=Math.max(0,aiPoolUsed-1);
-     }
-     logEntries.push({level:'error',text:banWrite
+    if(outcome.kind==='frozen'||outcome.kind==='spamblock'){
+     if(claim)await releaseMailingRecipient(db,owner,claim.key);
+     returnAiText(text);
+     await writeAccount(activeAccountId,outcome.accountPatch);
+     accountStopped=true;
+     cooldownUntil=outcome.kind==='frozen'?moscowNextMidnightIso():String(outcome.accountPatch.cooldownUntil||cooldownHoursFromNow(24));
+     logEntries.push({level:'error',text:outcome.kind==='frozen'
+      ?`Аккаунт ${bracketLabel(activeLabel)}: заморожен Telegram`
+      :outcome.writeBan
        ?`Аккаунт ${bracketLabel(activeLabel)}: ограничен Telegram (бан на запись) · спамблок 24ч`
        :`Аккаунт ${bracketLabel(activeLabel)}: спамблок`,
      });
-     const arow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,activeAccountId,'account').first();
-     if(arow){
-      const adata=JSON.parse(arow.data);
-      await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(
-       withSpamblockStatus(adata,banWrite?'WRITE_BAN_SUPERGROUPS':(errRaw.slice(0,500)||'PEER_FLOOD')),
-      ),owner,activeAccountId,'account').run();
-     }
-     nextAccountIndex=(nextAccountIndex+1)%Math.max(1,liveIds.length);
+     rotate();
      break;
     }
 
-    const link=String(result.link||'').slice(0,300);
-    const messageId=String(result.messageId||'').slice(0,40);
-    const freshHash=String(result.senderAccessHash||'').slice(0,40);
-    const ok=!!result.ok;
-    if(ok){
+    if(outcome.kind==='ok'){
      okN++;
+     await writeAccount(activeAccountId,outcome.bumped);
+     if(outcome.wentDayCooldown){
+      logEntries.push({level:'warn',text:`Аккаунт ${bracketLabel(activeLabel)} выработал дневной лимит — отлёжка до полуночи МСК`});
+     }
+     const link=String(result.link||'').slice(0,300);
+     const messageId=String(result.messageId||'').slice(0,40);
+     if(claim)await settleMailingRecipient(db,owner,{...claim,state:'sent',at:new Date().toISOString()});
      logEntries.push({level:'ok',text:mailingOkText(cand.username,cand.userId,link,text)});
      newKeys.push(cand.key);
      delete deferredUntil[cand.key];
-     // Помечаем лид как outreach рассылки + пишем исходящее в историю (Переписки откроются по ответу)
-     if(deliveryMode==='dm'){
-      try{
-       const outbound={
-        text:text.slice(0,4000),
-        mode:'dm' as const,
-        at:new Date().toISOString(),
-        ok:true,
-        error:'',
-        messageId,
-        link,
-        chatId:String(result.chatId||cand.userId||'').slice(0,40),
-        from:'us' as const,
-       };
-       if(cand.leadId){
-        const leadRow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,cand.leadId,'lead').first();
-        if(leadRow){
-         const L=JSON.parse(leadRow.data);
-         const replies=[...(Array.isArray(L.replies)?L.replies:[]),outbound].slice(-40);
-         await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({
-          ...L,
-          replies,
-          mailingTaskId:L.mailingTaskId||id,
-          accountId:activeAccountId,
-          senderId:L.senderId||cand.userId,
-          senderUsername:L.senderUsername||cand.username||String(result.senderUsername||''),
-          senderAccessHash:freshHash||L.senderAccessHash||cand.accessHash||'',
-         }),owner,cand.leadId,'lead').run();
-        }
-       }else{
-        // Рассылка по аудитории — создаём карточку, чтобы ответ попал в «Переписки»
-        const newId=crypto.randomUUID();
-        const leadData={
-         name:(cand.username?`@${cand.username}`:(cand.userId?`id${cand.userId}`:'Клиент')).slice(0,80),
-         message:text.slice(0,8000)||'Исходящая рассылка',
-         source:'Рассылка',
-         status:'working',
-         temperature:'warm',
-         draft:'',
-         tgMsgId:'',
-         groupId:'',
-         reason:'Исходящее из рассылки — ждём ответ',
-         viewed:false,
-         viewedAt:'',
-         excludeFromTraining:false,
-         senderId:String(cand.userId||'').slice(0,40),
-         senderUsername:String(cand.username||result.senderUsername||'').slice(0,64),
-         senderAccessHash:String(freshHash||cand.accessHash||'').slice(0,40),
-         messageKind:'',
-         peerId:String(cand.userId||'').slice(0,40),
-         replyToMsgId:'',
-         replies:[outbound],
-         conversationOpen:false,
-         conversationAt:'',
-         incomingLastText:'',
-         needsManager:false,
-         mailingTaskId:id,
-         accountId:activeAccountId,
-        };
-        await db.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)').bind(newId,owner,'lead',JSON.stringify(leadData),null,new Date().toISOString()).run();
-        cand.leadId=newId;
-        // Обновим hash у audience_user — пригодится на повторной рассылке
-        if(cand.recordId&&freshHash){
-         try{
-          const urow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,cand.recordId,'audience_user').first();
-          if(urow){
-           const ud=JSON.parse(urow.data);
-           await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({
-            ...ud,
-            accessHash:freshHash,
-            collectedByAccountId:ud.collectedByAccountId||activeAccountId,
-           }),owner,cand.recordId,'audience_user').run();
-          }
-         }catch{/* */}
-        }
-       }
-      }catch{/* */}
-     }
+     if(peerMisses[cand.key]){peerMisses={...peerMisses};delete peerMisses[cand.key]}
+     if(deliveryMode==='dm')await recordMailingOutreach(owner,id,cand,activeAccountId,text,result,messageId,link);
+     pushDelivery(cand,activeAccountId,text,result,true,'');
      // После успеха крутим слот (если не sticky-only)
-     nextAccountIndex=(nextAccountIndex+1)%Math.max(1,liveIds.length);
-    }else if(rateLimited||peerFlood||accountFrozen){
-     // FloodWait / spam / freeze — получателя не списываем навсегда
-     if((peerFlood||accountFrozen)&&!rateLimited){
-      deferredUntil[cand.key]=cooldownUntil||cooldownHoursFromNow(1);
-     }
-    }else if(isTransientPeerResolveError(errRaw)){
-     // Peer не виден этой сессии — отложить и сменить слот, НЕ снимать с очереди
-     failN++;
-     deferredUntil[cand.key]=new Date(Date.now()+3*60*1000).toISOString();
-     logEntries.push({level:'error',text:mailingFailText(cand.username,cand.userId,errRaw||'fail')});
-     logEntries.push({level:'info',text:'Peer отложен · следующий тик другим аккаунтом фермы'});
-     nextAccountIndex=(nextAccountIndex+1)%Math.max(1,liveIds.length);
-     if(data.contentMode==='ai'&&text){
-      aiPool.unshift(text);
-      aiPoolUsed=Math.max(0,aiPoolUsed-1);
-     }
-    }else{
-     failN++;
-     logEntries.push({level:'error',text:mailingFailText(cand.username,cand.userId,errRaw||'fail')});
-     if(isPermanentMailingRecipientError(errRaw)){
-      newKeys.push(cand.key);
-      delete deferredUntil[cand.key];
-     }else{
-      // Peer/session — откладываем, другой слот может пройти
-      deferredUntil[cand.key]=new Date(Date.now()+30*60_000).toISOString();
-     }
-     if(isDeadAccountMailingError(errRaw)){
-      accountWentCooldown=true;
-      logEntries.push({level:'warn',text:`Аккаунт ${bracketLabel(activeLabel)} недоступен: ${errRaw.slice(0,120)}`});
-      const arow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,activeAccountId,'account').first();
-      if(arow){
-       const adata=JSON.parse(arow.data);
-       await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({
-        ...adata,
-        status:'unauthorized',
-        error:errRaw.slice(0,500),
-        checkingAt:'',
-       }),owner,activeAccountId,'account').run();
-      }
-      nextAccountIndex=(nextAccountIndex+1)%Math.max(1,liveIds.length);
-      break;
-     }
-    }
-    if(ok||(!rateLimited&&!peerFlood&&!accountFrozen)){
-     const entry:MailingDelivery={
-      at:new Date().toISOString(),
-      key:cand.key,
-      userId:String(cand.userId||result.chatId||''),
-      username:cand.username,
-      leadId:cand.leadId,
-      accountId:activeAccountId,
-      ok,
-      error:ok?'':String(result.error||'').slice(0,400),
-      messageId,
-      chatId:String(result.chatId||cand.userId||'').slice(0,40),
-      link,
-      textPreview:mailingTextPreview(text,200),
-      mode:deliveryMode,
-     };
-     deliveries=pushMailingDelivery(deliveries,entry);
+     rotate();
+     continue;
     }
 
-    if(accountWentCooldown)break;
+    failN++;
+    returnAiText(text);
+    logEntries.push({level:'error',text:mailingFailText(cand.username,cand.userId,errRaw||'fail')});
+    pushDelivery(cand,activeAccountId,text,result,false,errRaw||'fail');
+    if(outcome.failKind==='peer_miss'){
+     const miss=notePeerMiss(peerMisses,cand.key,activeAccountId,liveIds);
+     peerMisses=miss.state;
+     rotate();
+     if(miss.permanent){
+      if(claim)await settleMailingRecipient(db,owner,{...claim,state:'failed',error:outcome.error});
+      newKeys.push(cand.key);
+      delete deferredUntil[cand.key];
+      logEntries.push({level:'info',text:'Peer не открылся ни на одном доступном аккаунте фермы — получатель пропущен'});
+     }else{
+      if(claim)await releaseMailingRecipient(db,owner,claim.key);
+      deferredUntil[cand.key]=new Date(Date.now()+3*60*1000).toISOString();
+      logEntries.push({level:'info',text:'Peer отложен · следующая попытка другим аккаунтом фермы'});
+     }
+     continue;
+    }
+    if(outcome.failKind==='permanent'){
+     if(claim)await settleMailingRecipient(db,owner,{...claim,state:'failed',error:outcome.error});
+     newKeys.push(cand.key);
+     delete deferredUntil[cand.key];
+     continue;
+    }
+    // Peer/session — откладываем, другой слот может пройти
+    if(claim)await releaseMailingRecipient(db,owner,claim.key);
+    deferredUntil[cand.key]=new Date(Date.now()+30*60_000).toISOString();
+    if(outcome.failKind==='dead_account'){
+     accountStopped=true;
+     logEntries.push({level:'warn',text:`Аккаунт ${bracketLabel(activeLabel)} недоступен: ${errRaw.slice(0,120)}`});
+     await writeAccount(activeAccountId,{...fresh,status:'unauthorized',error:errRaw.slice(0,500),checkingAt:''});
+     rotate();
+     break;
+    }
    }
 
    accountId=activeAccountId;
    accountLabel=activeLabel;
    accountIndex=nextAccountIndex;
 
-   if(okN){
-    const arow2:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,accountId,'account').first();
-    if(arow2){
-     const adata=JSON.parse(arow2.data);
-     const counters=deliveryMode==='chat'
-      ?bumpChatCounters(adata,okN)
-      :bumpMessageCounters(adata,okN);
-     const bumped=applyQuotaCooldownIfExhausted({...adata,...counters});
-     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(bumped),owner,accountId,'account').run();
-     accMap.set(accountId,bumped);
-     if(bumped.status==='cooldown'){
-      logEntries.push({level:'warn',text:`Аккаунт ${bracketLabel(accountLabel)} выработал дневной лимит — отлёжка до полуночи МСК`});
-     }else if(!hasMessageQuota(bumped)&&deliveryMode!=='chat'){
-      logEntries.push({level:'warn',text:`Аккаунт ${bracketLabel(accountLabel)} выработал дневной лимит сообщений — дальше другой слот фермы`});
-     }
-    }
-   }
-
-   const stillLive=liveIds.filter(aid=>{
-    if(aid!==accountId)return true;
-    if(accountWentCooldown)return false;
-    const a=accMap.get(accountId);
-    return deliveryMode==='chat'?hasChatQuota(a):hasMessageQuota(a);
-   });
+   const stillLive=liveIds.filter(canSendFrom);
    let pause=randomPauseSec(data.pauseFromSec,data.pauseToSec);
    if(data.pauseBetweenAccounts&&prevAccountId&&prevAccountId!==accountId){
     pause=Math.max(pause,randomPauseSec(data.pauseFromSec,data.pauseToSec));
    }
-   // После FloodWait: если ферма жива — обычная пауза смены аккаунта; иначе ждём полный cooldown
-   if(accountWentCooldown&&cooldownUntil){
+   // После спамблока/заморозки: если ферма жива — обычная пауза смены аккаунта; иначе ждём полный cooldown
+   if(accountStopped&&cooldownUntil){
     const left=Math.ceil((Date.parse(cooldownUntil)-Date.now())/1000);
     if(Number.isFinite(left)&&left>0){
      if(stillLive.length)pause=Math.max(pause,Math.min(90,left));
@@ -4616,58 +4950,57 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    }
    logEntries.push({level:'info',text:`Ожидание ${pause} секунд`});
 
-   const cleanedDeferred:Record<string,string>={};
-   for(const [k,v] of Object.entries(deferredUntil)){
-    const t=Date.parse(v);
-    if(Number.isFinite(t)&&t>Date.now())cleanedDeferred[k]=v;
-   }
-
    if(!stillLive.length){
-    const resumeIso=accountWentCooldown?(cooldownUntil||cooldownHoursFromNow(24)):moscowNextMidnightIso();
-    logEntries.push({level:'info',text:accountWentCooldown?'Нет активных аккаунтов':'Ферма: дневной лимит сообщений, следующий аккаунт после полуночи'});
+    const resumeIso=farmResumeIso();
+    logEntries.push({level:'info',text:accountStopped?'Нет активных аккаунтов':'Ферма: лимит сообщений / пауза Telegram на всех аккаунтах'});
     logEntries.push({level:'info',text:`Автозапуск ${formatRuWhen(resumeIso)}`});
     const next=await persistMailingTask({
-     sentTotal:(Number(data.sentTotal)||0)+okN,
-     sentToday:sentToday+okN,
-     failed:(Number(data.failed)||0)+failN,
-     sendDay:day,
+     ...progressPatch(),
      accountIndex:0,
-     lastAccountId:accountId,
      lastTickAt:new Date().toISOString(),
      nextAt:resumeIso,
      status:'scheduled',
-     aiPool,
-     aiPoolUsed,
-     deliveredKeys:newKeys.slice(-5000),
-     deferredUntil:cleanedDeferred,
-     deliveries,
      error:'',
     },logEntries);
     return reply({ok:true,sent:okN,scheduled:true,task:next});
    }
 
-   const nextLive=stillLive.length?stillLive:liveIds;
-   const nextIndex=accountWentCooldown?0:(accountIndex%Math.max(1,nextLive.length));
+   const nextIndex=accountStopped?0:(accountIndex%Math.max(1,stillLive.length));
    const next=await persistMailingTask({
-    sentTotal:(Number(data.sentTotal)||0)+okN,
-    sentToday:sentToday+okN,
-    failed:(Number(data.failed)||0)+failN,
-    sendDay:day,
+    ...progressPatch(),
     accountIndex:nextIndex,
-    lastAccountId:accountId,
     lastTickAt:new Date().toISOString(),
     nextAt:new Date(Date.now()+pause*1000).toISOString(),
     status:'running',
-    aiPool,
-    aiPoolUsed,
-    deliveredKeys:newKeys.slice(-5000),
-    deferredUntil:cleanedDeferred,
-    deliveries,
     error:'',
    },logEntries);
    return reply({ok:true,sent:okN,failed:failN,task:next,accountId});
   }catch(e){
+   // Доставленное до сбоя уже записано (реестр, квота аккаунта); здесь — судьба письма «в полёте»
+   if(inFlight){
+    const {cand,claim,text}=inFlight;
+    const label=cand.username?`@${cand.username}`:`id${cand.userId}`;
+    try{
+     if(isAmbiguousSendError(e)){
+      // Воркер мог успеть отправить: не повторяем автоматически (R1)
+      if(claim)await settleMailingRecipient(db,owner,{...claim,state:'unknown',error:'timeout'});
+      newKeys.push(cand.key);
+      pushDelivery(cand,inFlight.accountId,text,null,false,'Нет ответа Telegram-воркера — сообщение могло уйти, повтора не будет');
+      logEntries.push({level:'warn',text:`${label}: нет ответа Telegram-воркера — сообщение могло уйти, повторно не пишем`});
+     }else{
+      // Точно не отправлено (воркер занят и т.п.): получатель и AI-текст возвращаются в очередь (R2)
+      if(claim)await releaseMailingRecipient(db,owner,claim.key);
+      returnAiText(text);
+     }
+    }catch{/* реестр — best effort, прогресс задачи важнее */}
+   }
+   if(isRetryableTickError(e)){
+    const retry=tickRetryPatch(e);
+    const next=await persistMailingTask({...progressPatch(),...retry.patch},[...logEntries,{level:'warn',text:retry.text}]);
+    return reply({ok:true,retry:true,waitSec:retry.waitSec,sent:okN,task:next});
+   }
    const next=await persistMailingTask({
+    ...progressPatch(),
     status:'error',
     error:String((e as Error).message||e).slice(0,500),
    },[
@@ -4680,7 +5013,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
 
  if(b.action==='poll_dm_replies'){
   const accRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='account'").bind(owner).all();
-  const live:{id:string;data:any}[]=[];
+  const live:LiveAccount[]=[];
   for(const r of accRows.results){
    try{
     const a=JSON.parse(String(r.data));
@@ -4688,179 +5021,14 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    }catch{/* */}
   }
   if(!live.length)return reply({ok:true,opened:0,skipped:true,reason:'no_accounts'});
-
-  const mailingRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='mailing_task'").bind(owner).all();
-  type Hit={taskId:string;leadId:string;userId:string;username:string;preview:string;groupId:string;accountId:string};
-  const hits:Hit[]=[];
-  const mailingAccountIds=new Set<string>();
-  for(const r of mailingRows.results){
-   try{
-    const d=JSON.parse(String(r.data));
-    for(const del of (Array.isArray(d.deliveries)?d.deliveries:[])){
-     if(!del||del.ok===false)continue;
-     if(String(del.mode||'dm')!=='dm')continue;
-     const aid=String(del.accountId||'');
-     if(aid)mailingAccountIds.add(aid);
-     hits.push({
-      taskId:String(r.id),
-      leadId:String(del.leadId||''),
-      userId:String(del.userId||del.chatId||''),
-      username:String(del.username||''),
-      preview:String(del.textPreview||'').slice(0,800),
-      groupId:'',
-      accountId:aid,
-     });
-    }
-   }catch{/* */}
+  // Каждая вкладка опрашивает раз в 15 с — одновременно работает один опрос на владельца
+  const lease=await acquireDmPollLease(db,owner);
+  if(!lease)return reply({ok:true,opened:0,skipped:true,reason:'busy'});
+  try{
+   return reply(await pollDmReplies(db,owner,live));
+  }finally{
+   await releaseDmPollLease(db,owner,lease);
   }
-  const leadRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='lead'").bind(owner).all();
-  const leads=leadRows.results.map((r:any)=>{
-   try{return {id:String(r.id),data:JSON.parse(String(r.data))}}catch{return null}
-  }).filter(Boolean) as {id:string;data:any}[];
-
-  const matchOutreach=(msg:any)=>{
-   const byDelivery=hits.find(h=>sameMailingPeer(h,msg));
-   if(byDelivery)return byDelivery;
-   const byLead=leads.find(L=>{
-    if(!sameMailingPeer(L.data,msg))return false;
-    const d=L.data||{};
-    if(d.conversationOpen||d.mailingTaskId)return true;
-    if(Array.isArray(d.replies)&&d.replies.some((x:any)=>x&&(x.from==='us'||x.mode==='dm')))return true;
-    return false;
-   });
-   if(byLead)return {taskId:String(byLead.data.mailingTaskId||''),leadId:byLead.id,userId:String(byLead.data.senderId||''),username:String(byLead.data.senderUsername||''),preview:String(byLead.data.message||''),groupId:String(byLead.data.groupId||''),accountId:String(byLead.data.accountId||'')};
-   return null;
-  };
-
-  let settingsRow:any=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='settings' LIMIT 1").bind(owner).first();
-  let settingsData:any={};
-  let settingsId='';
-  if(settingsRow){
-   settingsId=String(settingsRow.id);
-   try{settingsData=JSON.parse(String(settingsRow.data))}catch{settingsData={}}
-  }
-  const cursor=Math.max(0,Number(settingsData.inboxPollCursor)||0);
-  const preferred=live.filter(a=>mailingAccountIds.has(a.id));
-  const rest=live.filter(a=>!mailingAccountIds.has(a.id));
-  const pool=(preferred.length?preferred.concat(rest):live);
-  const take=Math.min(4,Math.max(2,pool.length));
-  const slice=pool.slice(cursor%pool.length).concat(pool.slice(0,cursor%pool.length)).slice(0,take);
-  const nextCursor=(cursor+slice.length)%Math.max(1,pool.length);
-
-  let opened=0;
-  const names:string[]=[];
-  for(const acc of slice){
-   let result:any;
-   try{
-    const {payload}=await loadAccountSessionPayload(owner,acc.id);
-    result=await workerPost('/inbox-dms',{...payload,sinceTs:Number(acc.data.inboxSinceTs)||0,limitDialogs:30},90_000);
-   }catch{
-    continue;
-   }
-   const msgs:any[]=Array.isArray(result?.messages)?result.messages:[];
-   let maxSafeTs=Number(acc.data.inboxSinceTs)||0;
-   let unmatchedHit=false;
-   for(const msg of msgs){
-    const ts=Number(msg.ts)||0;
-    const outreach=matchOutreach(msg);
-    if(!outreach){
-     if(hits.some(h=>sameMailingPeer(h,msg)))unmatchedHit=true;
-     else if(ts>maxSafeTs)maxSafeTs=ts;
-     continue;
-    }
-    if(ts>maxSafeTs)maxSafeTs=ts;
-    const mid=String(msg.messageId||'');
-    let leadRow=outreach.leadId?leads.find(L=>L.id===outreach.leadId):undefined;
-    if(!leadRow)leadRow=leads.find(L=>sameMailingPeer(L.data,msg));
-    const text=String(msg.text||'').trim()||(msg.hasMedia?'[медиа]':'');
-    if(!text)continue;
-    const incoming={
-     text:text.slice(0,4000),
-     mode:'dm' as const,
-     at:String(msg.at||new Date().toISOString()).slice(0,40),
-     ok:true,
-     error:'',
-     messageId:mid.slice(0,40),
-     link:msg.username?`https://t.me/${String(msg.username).replace(/^@/,'')}`:'',
-     chatId:String(msg.userId||'').slice(0,40),
-     from:'client' as const,
-    };
-    if(leadRow){
-     const already=(Array.isArray(leadRow.data.replies)?leadRow.data.replies:[]).some((x:any)=>String(x.messageId||'')===mid&&mid);
-     if(already)continue;
-     const replies=[...(Array.isArray(leadRow.data.replies)?leadRow.data.replies:[]),incoming].slice(-40);
-     const next={
-      ...leadRow.data,
-      replies,
-      status:'working',
-      conversationOpen:true,
-      conversationAt:new Date().toISOString(),
-      incomingLastText:incoming.text,
-      needsManager:true,
-      viewed:false,
-      temperature:'hot',
-      accountId:acc.id,
-      senderId:leadRow.data.senderId||String(msg.userId||''),
-      senderUsername:leadRow.data.senderUsername||String(msg.username||''),
-      mailingTaskId:leadRow.data.mailingTaskId||outreach.taskId,
-      draft:leadRow.data.draft||'',
-     };
-     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,leadRow.id,'lead').run();
-     leadRow.data=next;
-     opened++;
-     names.push(String(next.name||msg.name||msg.username||'Клиент'));
-     void notifyConversationEvent(db,owner,String(next.name||''),String(next.senderUsername||msg.username||''),incoming.text);
-    }else{
-     const newId=crypto.randomUUID();
-     const data={
-      name:String(msg.name||msg.username||'Клиент').slice(0,80),
-      message:outreach.preview||incoming.text,
-      source:'Рассылка · ответ',
-      status:'working',
-      temperature:'hot',
-      draft:'',
-      tgMsgId:'',
-      groupId:outreach.groupId||'',
-      reason:'Клиент ответил на рассылку',
-      viewed:false,
-      viewedAt:'',
-      excludeFromTraining:false,
-      senderId:String(msg.userId||'').slice(0,40),
-      senderUsername:String(msg.username||'').slice(0,64),
-      messageKind:'',
-      peerId:String(msg.userId||'').slice(0,40),
-      replyToMsgId:'',
-      replies:[incoming],
-      conversationOpen:true,
-      conversationAt:new Date().toISOString(),
-      incomingLastText:incoming.text,
-      needsManager:true,
-      mailingTaskId:outreach.taskId,
-      accountId:acc.id,
-     };
-     await db.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)').bind(newId,owner,'lead',JSON.stringify(data),null,new Date().toISOString()).run();
-     leads.push({id:newId,data});
-     opened++;
-     names.push(String(data.name));
-     void notifyConversationEvent(db,owner,data.name,data.senderUsername,incoming.text);
-    }
-   }
-   if(maxSafeTs&&!unmatchedHit){
-    const fresh:any=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,acc.id,'account').first();
-    if(fresh){
-     try{
-      const adata=JSON.parse(String(fresh.data));
-      await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...adata,inboxSinceTs:maxSafeTs}),owner,acc.id,'account').run();
-     }catch{/* */}
-    }
-   }
-  }
-  if(settingsId){
-   try{
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...settingsData,inboxPollCursor:nextCursor}),owner,settingsId,'settings').run();
-   }catch{/* */}
-  }
-  return reply({ok:true,opened,names:names.slice(0,12),nextCursor});
  }
 
  const kind=kindSchema.parse(b.kind);
@@ -4898,6 +5066,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    await db.prepare('DELETE FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,kind).run();
    return reply({ok:true,usersRemoved:removed});
   }
+  if(kind==='lead')await rememberDeletedLead(owner,id);
   await db.prepare('DELETE FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,kind).run();
   return reply({ok:true});
  }
@@ -4928,6 +5097,12 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
  if(kind==='invite_task'){
   data.targetUrl=canonicalizeTgUrl(normalizeTgRef(data.targetUrl));
   if(!data.name)data.name=data.targetUrl;
+  // Канал (витрина) не принимает инвайты: известен как канал-источник аудитории или по прошлому тику (REQ-V2)
+  const knownChannel=await db.prepare(`SELECT id FROM records WHERE owner=? AND (
+   (kind='audience_task' AND json_extract(data,'$.sourceKind')='channel' AND json_extract(data,'$.url')=?)
+   OR (kind='invite_task' AND json_extract(data,'$.channelTargetUrl')=?)
+  ) LIMIT 1`).bind(owner,data.targetUrl,data.targetUrl).first();
+  if(knownChannel)return reply({error:'Цель — канал, не группа: инвайт участников работает только в супергруппу или чат'},400);
  }
  if(kind==='audience_task'||kind==='invite_task'||kind==='mailing_task'){
   const ids:string[]=Array.isArray(data.accountIds)?data.accountIds:[];
@@ -4948,6 +5123,10 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    if(reason)return reply({error:reason,duplicate:true},409);
   }
  }
+ // REQ-L10: поля, которыми владеет сервер (переписка, скан, уведомления), клиентский save не затирает
+ if(existing&&(kind==='lead'||kind==='group')){
+  try{Object.assign(data,keepServerOwnedFields(kind,JSON.parse(existing.data),data))}catch{/* битая запись — сохраняем как пришло */}
+ }
  if(kind==='group'&&existing){
   try{
    const prev=JSON.parse(existing.data);
@@ -4957,35 +5136,6 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     data.joinStateAt=prev.joinStateAt||'';
     // Не возвращаем битый joinStateError из БД (объект Zod от старого бага).
     data.joinStateError=sanitizeJoinStateError(prev.joinStateError);
-   }
-  }catch{/* */}
- }
- // Редактирование задачи из формы не должно затирать журнал/доставки/пул
- if(existing&&(kind==='audience_task'||kind==='invite_task'||kind==='mailing_task')){
-  try{
-   const prev=JSON.parse(existing.data);
-   const body=b.data&&typeof b.data==='object'?(b.data as Record<string,unknown>):{};
-   if(!('log' in body)){
-    data.log=Array.isArray(prev.log)?prev.log.slice(-500):[];
-   }
-   if(kind==='mailing_task'){
-    if(!('deliveries' in body))data.deliveries=Array.isArray(prev.deliveries)?prev.deliveries:[];
-    if(!('deliveredKeys' in body))data.deliveredKeys=Array.isArray(prev.deliveredKeys)?prev.deliveredKeys:[];
-    if(!('deferredUntil' in body))data.deferredUntil=prev.deferredUntil&&typeof prev.deferredUntil==='object'?prev.deferredUntil:{};
-    if(!('aiPool' in body))data.aiPool=Array.isArray(prev.aiPool)?prev.aiPool:[];
-    if(!('aiPoolUsed' in body)&&prev.aiPoolUsed!=null)data.aiPoolUsed=Number(prev.aiPoolUsed)||0;
-    if(!('sentTotal' in body)&&prev.sentTotal!=null)data.sentTotal=Number(prev.sentTotal)||0;
-    if(!('sentToday' in body)&&prev.sentToday!=null)data.sentToday=Number(prev.sentToday)||0;
-    if(!('failed' in body)&&prev.failed!=null)data.failed=Number(prev.failed)||0;
-    if(!('accountIndex' in body)&&prev.accountIndex!=null)data.accountIndex=Number(prev.accountIndex)||0;
-    if(!('nextAt' in body)&&prev.nextAt!=null)data.nextAt=String(prev.nextAt||'');
-    if(!('tickLockUntil' in body)&&prev.tickLockUntil!=null)data.tickLockUntil=String(prev.tickLockUntil||'');
-   }
-   if(kind==='audience_task'){
-    if(!('collected' in body)&&prev.collected!=null)data.collected=Number(prev.collected)||0;
-    if(!('total' in body)&&prev.total!=null)data.total=Number(prev.total)||0;
-    if(!('cursor' in body)&&prev.cursor!=null)data.cursor=String(prev.cursor||'');
-    if(!('hasMore' in body)&&prev.hasMore!=null)data.hasMore=!!prev.hasMore;
    }
   }catch{/* */}
  }
@@ -4999,7 +5149,9 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   }else data.username=uname;
  }
  if(b.clearSecret!==undefined&&typeof b.clearSecret!=='boolean')return reply({error:'Некорректная команда очистки секрета'},400);if(b.clearSecret&&b.secret)return reply({error:'Нельзя одновременно заменить и удалить секрет'},400);const secret=b.clearSecret?null:b.secret?await seal(z.string().max(200000).parse(b.secret),owner):existing?.secret??null;
- if(existing)await db.prepare('UPDATE records SET data=?,secret=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(data),secret,owner,id,kind).run();
+ // Задачи: с клиента только конфиг; прогресс/статус/лок/журнал — серверные, мерж в строку «как сейчас» (REQ-I5)
+ if(existing&&(kind==='audience_task'||kind==='invite_task'||kind==='mailing_task'))await updateTaskData(db,owner,id,kind,fresh=>mergeTaskSave(kind,fresh,data));
+ else if(existing)await db.prepare('UPDATE records SET data=?,secret=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(data),secret,owner,id,kind).run();
  else await db.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)').bind(id,owner,kind,JSON.stringify(data),secret,new Date().toISOString()).run();
  let provision:any=null;
  if(!existing&&kind==='account'&&secret&&b.provisionUsername===true){
