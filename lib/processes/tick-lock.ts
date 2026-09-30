@@ -301,3 +301,40 @@ export function tickCommitFromSnapshot(base: TaskData, next: TaskData): TickComm
   }
   return { patch, entries: nextLog.slice(from) };
 }
+
+/**
+ * A user action (pause / start / refill) built as a whole `next` from its `base` read, replayed
+ * onto the row as it is now: only the keys it changed and the log lines it appended, so tick
+ * progress committed in between survives. A live tick lock is kept, an expired one cleared.
+ */
+export function rebaseTaskEdit(
+  fresh: TaskData,
+  base: TaskData,
+  next: TaskData,
+  kind: TickTaskKind,
+  now = Date.now(),
+): TaskData {
+  const commit = tickCommitFromSnapshot(base, next);
+  const out: TaskData = { ...fresh };
+  for (const [key, value] of Object.entries(commit.patch)) {
+    if (!(LOCK_KEYS as readonly string[]).includes(key)) out[key] = value;
+  }
+  if (commit.entries?.length) out.log = appendLog(fresh.log, commit.entries, TICK_LOG_CAP[kind]);
+  if (!tickLockIsLive(fresh, now)) {
+    out.tickLockUntil = "";
+    out.tickLockId = "";
+  }
+  return out;
+}
+
+/** CAS write of a user action; returns the stored row (null when the task is gone). */
+export function commitTaskEdit(
+  db: D1LikeDatabase,
+  owner: string,
+  id: string,
+  kind: TickTaskKind,
+  base: TaskData,
+  next: TaskData,
+): Promise<TaskData | null> {
+  return updateTaskData(db, owner, id, kind, (fresh) => rebaseTaskEdit(fresh, base, next, kind));
+}

@@ -50,7 +50,7 @@ import {CONTACTED_CHUNK,STALE_CLAIM_ERROR,claimMailingRecipient,expireStalePendi
 import {checkProxyTarget} from '@/lib/security/net-guard';
 import {proxyCheckTimeoutMs,workerAppTimeoutMs,workerSlots} from '@/lib/worker-timeouts';
 import {WorkerBusyError,isRetryableTickError,tickRetryPatch} from '@/lib/processes/tick-retry';
-import {startTickSession,tickLockIsLive,tickLockWaitSec,updateTaskData,type TaskData,type TickSession,type TickTaskKind} from '@/lib/processes/tick-lock';
+import {commitTaskEdit,startTickSession,tickLockIsLive,tickLockWaitSec,updateTaskData,type TaskData,type TickSession,type TickTaskKind} from '@/lib/processes/tick-lock';
 import {mergeTaskSave} from '@/lib/processes/task-save-merge';
 import {JOIN_GATE_ROTATE_WAIT_SEC,JOIN_PENDING_ERROR,audienceJoinGate,classifyCollectFailure,insertAudienceUsers,interpretAudienceJoin,isDeadSessionError,isSlotBlindError,listAudienceUsers,loadAudienceSeenIds,type AudienceUserData} from '@/lib/processes/audience-tick';
 import {authorizeWorkspaceAction,keepOwnerSecretsOnSave,visibleRecordsFor,type WorkspaceActor} from '@/lib/security/workspace-authz';
@@ -3350,8 +3350,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const data=JSON.parse(row.data);
   if(b.action==='pause_audience'){
    const next={...data,status:'paused',error:'',nextAt:'',log:pushTaskLog(data.log,'info','Пауза')};
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'audience_task').run();
-   return reply({ok:true,task:next});
+   const saved=await commitTaskEdit(db,owner,id,'audience_task',data,next)??next;
+   return reply({ok:true,task:saved});
   }
   if(!data.accountIds?.length)return reply({error:'Выберите хотя бы один аккаунт'},400);
   const next={
@@ -3363,8 +3363,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    ...keepLiveLock(data),
    log:pushTaskLog(data.log,'info','Запуск сбора'),
   };
-  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'audience_task').run();
-  return reply({ok:true,task:next});
+  const saved=await commitTaskEdit(db,owner,id,'audience_task',data,next)??next;
+  return reply({ok:true,task:saved});
  }
  if(b.action==='tick_audience'){
   const id=z.string().uuid().parse(b.id);
@@ -3766,8 +3766,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const data=JSON.parse(row.data);
   if(b.action==='pause_invite'){
    const next={...data,status:'paused',nextAt:'',...keepLiveLock(data),log:pushTaskLog(data.log,'info','Задача остановлена')};
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'invite_task').run();
-   return reply({ok:true,task:next});
+   const saved=await commitTaskEdit(db,owner,id,'invite_task',data,next)??next;
+   return reply({ok:true,task:saved});
   }
   // Уже запущена — не дублируем лог (двойной клик / гонка с poller)
   if(data.status==='running'){
@@ -3779,8 +3779,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     nextAt:locked?data.nextAt:'',
     ...keepLiveLock(data),
    };
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'invite_task').run();
-   return reply({ok:true,task:next,already:true});
+   const saved=await commitTaskEdit(db,owner,id,'invite_task',data,next)??next;
+   return reply({ok:true,task:saved,already:true});
   }
   // Пересчитать total из базы аудитории
   const left:any=await db.prepare(`SELECT COUNT(*) AS n FROM records WHERE owner=? AND kind='audience_user'
@@ -3796,8 +3796,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    ...keepLiveLock(data),
    log:pushTaskLog(data.log,'info',`Задача запущена · к приглашению ~${total}`),
   };
-  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'invite_task').run();
-  return reply({ok:true,task:next});
+  const saved=await commitTaskEdit(db,owner,id,'invite_task',data,next)??next;
+  return reply({ok:true,task:saved});
  }
  if(b.action==='tick_invite'){
   const id=z.string().uuid().parse(b.id);
@@ -4193,14 +4193,14 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const data=JSON.parse(row.data);
   if(b.action==='pause_mailing'){
    const next={...data,status:'paused',nextAt:'',...keepLiveLock(data),log:pushTaskLog(data.log,'info','Задача остановлена',500)};
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'mailing_task').run();
-   return reply({ok:true,task:next});
+   const saved=await commitTaskEdit(db,owner,id,'mailing_task',data,next)??next;
+   return reply({ok:true,task:saved});
   }
   if(data.status==='running'){
    const locked=tickLockIsLive(data);
    const next={...data,error:'',nextAt:locked?data.nextAt:'',...keepLiveLock(data)};
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'mailing_task').run();
-   return reply({ok:true,task:next,already:true});
+   const saved=await commitTaskEdit(db,owner,id,'mailing_task',data,next)??next;
+   return reply({ok:true,task:saved,already:true});
   }
   if(data.sourceKind==='audience'&&!data.audienceTaskId){
    return reply({error:'Выберите базу аудитории'},400);
@@ -4297,13 +4297,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     ),
    };
   }
-  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'mailing_task').run();
+  const saved=await commitTaskEdit(db,owner,id,'mailing_task',data,next)??next;
   if(next.status==='running'){
    void notifyMailingEvent(db,owner,String(next.name||'Рассылка'),`Запущена · к отправке ~${pending}`);
   }else if(next.status==='paused'&&next.error){
    void notifyMailingEvent(db,owner,String(next.name||'Рассылка'),`Не стартовала: ${next.error}`);
   }
-  return reply({ok:true,task:next});
+  return reply({ok:true,task:saved});
  }
 
  if(b.action==='refill_mailing_ai_pool'){
@@ -4317,8 +4317,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    aiPool:refill.pool,
    log:pushTaskLog(data.log,refill.added?'ok':'warn',refill.added?`AI-пул пополнен: +${refill.added}`:(refill.error||'Пул не пополнен'),500),
   };
-  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'mailing_task').run();
-  return reply({ok:true,task:next,added:refill.added,error:refill.error||''});
+  const saved=await commitTaskEdit(db,owner,id,'mailing_task',data,next)??next;
+  return reply({ok:true,task:saved,added:refill.added,error:refill.error||''});
  }
 
  if(b.action==='tick_mailing'){
