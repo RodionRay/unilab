@@ -66,6 +66,8 @@ export const ACTION_RULES:Readonly<Record<string,ActionRule>>={
  import_catalog:rule(['groups']),
  mark_auto_rescan:rule(['groups']),
  enqueue_joins:rule(['groups']),
+ set_group_join_decision:rule(['groups']),
+ rescore_join_queue:rule(['groups']),
  set_group_join_state:rule(['groups']),
  assign_group_accounts:rule(['groups']),
  heal_group_join_state:rule(['groups']),
