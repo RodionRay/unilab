@@ -39,6 +39,7 @@ export const TICK_PROGRESS_KEYS: Readonly<Record<TickTaskKind, readonly string[]
     "failed",
     "deliveredKeys",
     "deferredUntil",
+    "peerMisses",
     "deliveries",
     "aiPool",
     "aiPoolUsed",

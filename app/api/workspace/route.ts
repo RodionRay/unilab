@@ -24,22 +24,17 @@ import {
 } from '@/lib/processes/scan-flow';
 import {appendLearnExamples,extractTermsFromHotMessages,extractStopTermsFromMessage,mergeKeywords,mergeKeywordsPreferNew,parseKeywordCsv} from '@/lib/ai-keywords';
 import {sanitizeMinusTerms,scanStopTerms} from '@/lib/lead-stopwords';
-import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpChatCounters,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasInviteQuota,hasMemberInviteQuota,hasMessageQuota,isAccountUsable,isDayLimitCooldown,isOnCooldown,joinWaitSec,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
+import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasInviteQuota,hasMemberInviteQuota,hasMessageQuota,isAccountFlooded,isAccountUsable,isDayLimitCooldown,isOnCooldown,joinWaitSec,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
 import {bracketLabel,formatRuWhen,inviteUserFailText,inviteUserOkText,normalizeStatusFilters,normalizeTgRef,pushTaskLog,pushTaskLogs,randomPauseSec} from '@/lib/audience-invite';
 import {canonicalizeTgUrl,duplicateReason,isDuplicateKind,telegramEntityKey} from '@/lib/record-identity';
 import {
  DEFAULT_DM_SOFT_CLOSE,
  isDeadAccountMailingError,
- isPeerFloodMailingError,
- isPermanentMailingRecipientError,
- isRateLimitMailingError,
- isTransientPeerResolveError,
  mailingEmptyBatchDecision,
  mailingFailText,
  mailingOkText,
  mailingTextPreview,
  normalizeMailText,
- parseMailingFloodWaitSec,
  pickMailingSendAccountId,
  pushMailingDelivery,
  recipientKey,
@@ -49,6 +44,8 @@ import {
  type MailingLeadFilter,
  type MailingSourceKind,
 } from '@/lib/mailing';
+import {interpretMailingSendResult,isAmbiguousSendError,mailingPersonKey,notePeerMiss,untriedAccountIds,type PeerMissState} from '@/lib/processes/mailing-tick';
+import {claimMailingRecipient,loadContactedRecipients,releaseMailingRecipient,settleMailingRecipient,type MailingRecipientEntry} from '@/lib/processes/mailing-recipients';
 import {checkProxyTarget} from '@/lib/security/net-guard';
 import {proxyCheckTimeoutMs,workerAppTimeoutMs,workerSlots} from '@/lib/worker-timeouts';
 import {WorkerBusyError,isRetryableTickError,tickRetryPatch} from '@/lib/processes/tick-retry';
@@ -1455,6 +1452,82 @@ async function notifyMailingEvent(db:any,owner:string,title:string,detail:string
  try{await notifyTelegramText(token,chatId,text)}catch{/* */}
 }
 
+type MailingOutreachTarget={userId:string;username:string;leadId:string;accessHash:string;recordId:string};
+
+/** Успешное ЛС рассылки: исходящее в историю лида (или новая карточка «Рассылка»), чтобы ответ попал в «Переписки». */
+async function recordMailingOutreach(owner:string,taskId:string,cand:MailingOutreachTarget,accountId:string,text:string,result:any,messageId:string,link:string){
+ const db=database();
+ const freshHash=String(result.senderAccessHash||'').slice(0,40);
+ const outbound={
+  text:text.slice(0,4000),
+  mode:'dm' as const,
+  at:new Date().toISOString(),
+  ok:true,
+  error:'',
+  messageId,
+  link,
+  chatId:String(result.chatId||cand.userId||'').slice(0,40),
+  from:'us' as const,
+ };
+ try{
+  if(cand.leadId){
+   const leadRow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,cand.leadId,'lead').first();
+   if(!leadRow)return;
+   const L=JSON.parse(leadRow.data);
+   const replies=[...(Array.isArray(L.replies)?L.replies:[]),outbound].slice(-40);
+   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({
+    ...L,
+    replies,
+    mailingTaskId:L.mailingTaskId||taskId,
+    accountId,
+    senderId:L.senderId||cand.userId,
+    senderUsername:L.senderUsername||cand.username||String(result.senderUsername||''),
+    senderAccessHash:freshHash||L.senderAccessHash||cand.accessHash||'',
+   }),owner,cand.leadId,'lead').run();
+   return;
+  }
+  // Рассылка по аудитории — создаём карточку, чтобы ответ попал в «Переписки»
+  const leadData={
+   name:(cand.username?`@${cand.username}`:(cand.userId?`id${cand.userId}`:'Клиент')).slice(0,80),
+   message:text.slice(0,8000)||'Исходящая рассылка',
+   source:'Рассылка',
+   status:'working',
+   temperature:'warm',
+   draft:'',
+   tgMsgId:'',
+   groupId:'',
+   reason:'Исходящее из рассылки — ждём ответ',
+   viewed:false,
+   viewedAt:'',
+   excludeFromTraining:false,
+   senderId:String(cand.userId||'').slice(0,40),
+   senderUsername:String(cand.username||result.senderUsername||'').slice(0,64),
+   senderAccessHash:String(freshHash||cand.accessHash||'').slice(0,40),
+   messageKind:'',
+   peerId:String(cand.userId||'').slice(0,40),
+   replyToMsgId:'',
+   replies:[outbound],
+   conversationOpen:false,
+   conversationAt:'',
+   incomingLastText:'',
+   needsManager:false,
+   mailingTaskId:taskId,
+   accountId,
+  };
+  await db.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)').bind(crypto.randomUUID(),owner,'lead',JSON.stringify(leadData),null,new Date().toISOString()).run();
+  // Обновим hash у audience_user — пригодится на повторной рассылке
+  if(!cand.recordId||!freshHash)return;
+  const urow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,cand.recordId,'audience_user').first();
+  if(!urow)return;
+  const ud=JSON.parse(urow.data);
+  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({
+   ...ud,
+   accessHash:freshHash,
+   collectedByAccountId:ud.collectedByAccountId||accountId,
+  }),owner,cand.recordId,'audience_user').run();
+ }catch{/* история лида — best effort, доставка уже учтена */}
+}
+
 async function notifyConversationEvent(db:any,owner:string,name:string,username:string,text:string){
  const settings=await loadNotifySettings(db,owner);
  if(!settings?.notifyEnabled)return;
@@ -1719,7 +1792,7 @@ export async function GET(){const session=await getSessionUser();if(!session?.us
  try{await healStuckProxyChecks(owner,45_000)}catch{/* */}
  try{await healCorruptGroupJoinFields(owner)}catch{/* */}
  // audience_user не отдаём в список кабинета (тысячи строк) — только задачи и остальное
- const result=await database().prepare("SELECT id,kind,data,created,secret IS NOT NULL AS hasSecret FROM records WHERE owner=? AND kind!='ai_guard' AND kind!='audience_user' ORDER BY created DESC").bind(owner).all();
+ const result=await database().prepare("SELECT id,kind,data,created,secret IS NOT NULL AS hasSecret FROM records WHERE owner=? AND kind!='ai_guard' AND kind!='audience_user' AND kind!='mailing_recipient' ORDER BY created DESC").bind(owner).all();
  let telegramConnected=false;
  try{const h=await fetch(workerUrl()+'/health',{signal:AbortSignal.timeout(1500)});telegramConnected=h.ok}catch{telegramConnected=false}
  const envKey=!!envAiApiKey();
@@ -2973,7 +3046,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const accRow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,sendAccountId,'account').first();
   if(accRow){
    const acc=JSON.parse(accRow.data);
-   const bumped=applyQuotaCooldownIfExhausted({...acc,...bumpMessageCounters(acc,1)});
+   const bumped=applyQuotaCooldownIfExhausted({...acc,...bumpMessageCounters(acc,1)},'message');
    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(bumped),owner,sendAccountId,'account').run();
   }
   const link=String(finalResult.link||'').slice(0,300);
@@ -4260,20 +4333,37 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const a=accMap.get(aid);
    return String(a?.name||a?.username||a?.phone||aid).slice(0,40);
   };
-  const mailingMode=(data.deliveryMode||'dm') as 'dm'|'chat';
+  const deliveryMode=(data.deliveryMode||'dm') as MailingDeliveryMode;
+  const hasSendQuota=(a:any)=>deliveryMode==='chat'?hasChatQuota(a):hasMessageQuota(a);
+  /** accMap обновляется после каждой отправки — квота/флуд/спамблок проверяются перед каждым письмом (REQ-M6). */
+  const canSendFrom=(aid:string)=>{
+   const a=accMap.get(aid);
+   return isAccountUsable(a)&&!isAccountFlooded(a)&&hasSendQuota(a);
+  };
+  /** Когда ферма снова сможет слать: ближайший конец FloodWait / отлёжки / спамблока, полночь при лимите. */
+  const farmResumeIso=()=>{
+   const now=Date.now();
+   const ends:number[]=[];
+   for(const aid of accountIds){
+    const a=accMap.get(aid);
+    if(!a)continue;
+    const flood=Date.parse(String(a.floodUntil||''));
+    if(isAccountUsable(a)&&Number.isFinite(flood)&&flood>now)ends.push(flood);
+    if(isAccountUsable(a)&&!hasSendQuota(a))ends.push(Date.parse(moscowNextMidnightIso()));
+    if(isDayLimitCooldown(a)||String(a.status||'')==='spamblock'){
+     const t=Date.parse(String(a.cooldownUntil||''));
+     if(Number.isFinite(t)&&t>now)ends.push(t);
+    }
+   }
+   return new Date(ends.length?Math.min(...ends):now+60*60*1000).toISOString();
+  };
   const dead=accountIds.filter(aid=>{
    const a=accMap.get(aid);
    if(!a)return true;
    return ['disconnected','unauthorized','frozen','proxy_error'].includes(String(a.status));
   }).length;
   const pct=Math.round((dead/accountIds.length)*100);
-  const liveIds=accountIds.filter(aid=>{
-   const a=accMap.get(aid);
-   if(!isAccountUsable(a))return false;
-   const floodT=Date.parse(String(a?.floodUntil||''));
-   if(Number.isFinite(floodT)&&floodT>Date.now())return false;
-   return mailingMode==='chat'?hasChatQuota(a):hasMessageQuota(a);
-  });
+  const liveIds=accountIds.filter(canSendFrom);
   // Стоп по % — только если живых не осталось (раньше стопили при 30% даже с рабочими аккаунтами)
   if(!liveIds.length){
    if(pct>=Number(data.stopDisconnectedPct||30)&&dead>0){
@@ -4293,18 +4383,9 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    }
    const quotaHit=accountIds.filter(aid=>{
     const a=accMap.get(aid);
-    if(!isAccountUsable(a))return false;
-    return mailingMode==='chat'?!hasChatQuota(a):!hasMessageQuota(a);
+    return isAccountUsable(a)&&!hasSendQuota(a);
    }).length;
-   const ends=accountIds.map(aid=>{
-    const a=accMap.get(aid);
-    if(!a)return 0;
-    // Таймер учитываем только для реальной отлёжки / спамблока.
-    if(!(isDayLimitCooldown(a)||String(a.status||'')==='spamblock'))return 0;
-    const t=Date.parse(String(a.cooldownUntil||''));
-    return Number.isFinite(t)&&t>Date.now()?t:0;
-   }).filter(t=>t>0).sort((a,b)=>a-b);
-   const resumeIso=quotaHit?moscowNextMidnightIso():new Date(ends[0]||Date.now()+60*60*1000).toISOString();
+   const resumeIso=farmResumeIso();
    const next={
     ...data,
     status:'scheduled',
@@ -4314,7 +4395,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     log:pushTaskLogs(data.log,[
      {level:'warn',text:quotaHit
       ?`Ферма: дневной лимит сообщений на всех аккаунтах (${quotaHit})`
-      :'Нет активных аккаунтов (прокси / отлёжка / лимит сообщений)'},
+      :'Нет активных аккаунтов (прокси / отлёжка / лимит Telegram / лимит сообщений)'},
      {level:'info',text:`Задача запустится автоматически ${formatRuWhen(resumeIso)}`},
     ],500),
    };
@@ -4354,6 +4435,9 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const deferredUntil:Record<string,string>={
    ...(data.deferredUntil&&typeof data.deferredUntil==='object'?data.deferredUntil:{}),
   };
+  let peerMisses:PeerMissState={
+   ...(data.peerMisses&&typeof data.peerMisses==='object'?data.peerMisses:{}),
+  };
   const nowMs=Date.now();
   const isDeferred=(key:string)=>{
    const until=deferredUntil[key];
@@ -4361,9 +4445,16 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const t=Date.parse(until);
    return Number.isFinite(t)&&t>nowMs;
   };
+  // Реестр получателей владельца: не ограничен 5000 ключами и общий для всех рассылок (REQ-M2, REQ-M3)
+  const contacted=await loadContactedRecipients(db,owner,id);
+  const isQueued=(key:string,personKey:string)=>
+   !!key&&!deliveredKeys.has(key)&&!isDeferred(key)&&!(personKey&&contacted.personKeys.has(personKey));
   const batchSize=Math.max(1,Math.min(10,Number(data.batchPerTick)||1));
+  // Дневной лимит задачи режет батч, а не только стартовую проверку (REQ-M6)
+  const dailyLeft=data.dailyLimitEnabled?Math.max(0,Number(data.dailyLimit||200)-sentToday):batchSize;
   type Cand={
    key:string;
+   personKey:string;
    userId:string;
    username:string;
    leadId:string;
@@ -4375,7 +4466,6 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   };
   const candidates:Cand[]=[];
   const sourceKind=(data.sourceKind||'audience') as MailingSourceKind;
-  const deliveryMode=(data.deliveryMode||'dm') as MailingDeliveryMode;
 
   if(sourceKind==='leads'){
    const leads=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='lead'").bind(owner).all();
@@ -4394,18 +4484,22 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      if(filter==='hot_warm'&&temp!=='hot'&&temp!=='warm')continue;
      if(deliveryMode==='dm'&&!L.senderId&&!L.senderUsername)continue;
      if(deliveryMode==='chat'&&(!L.groupId||!L.tgMsgId))continue;
-     const key=recipientKey({sourceKind:'leads',leadId:String(r.id),userId:L.senderId,username:L.senderUsername});
-     if(!key||deliveredKeys.has(key)||isDeferred(key))continue;
+     if(deliveryMode==='dm'&&contacted.leadIds.has(String(r.id)))continue;
+     const userId=String(L.senderId||'');
+     const username=String(L.senderUsername||'').replace(/^@/,'');
+     const key=recipientKey({sourceKind:'leads',leadId:String(r.id),userId,username});
+     const personKey=mailingPersonKey(deliveryMode,{userId,username,leadId:String(r.id)});
+     if(!isQueued(key,personKey))continue;
      const g=L.groupId?gMap.get(String(L.groupId)):null;
      candidates.push({
       key,
-      userId:String(L.senderId||''),
-      username:String(L.senderUsername||'').replace(/^@/,''),
+      personKey,
+      userId,
+      username,
       leadId:String(r.id),
       groupUrl:String(g?.url||''),
       tgMsgId:String(L.tgMsgId||''),
       accessHash:String(L.senderAccessHash||''),
-      accountId:String(L.accountId||''),
       recordId:String(r.id),
       preferredAccountId:String(L.accountId||g?.accountId||g?.joinedAccountId||''),
      });
@@ -4425,18 +4519,21 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     try{
      const u=JSON.parse(String(r.data));
      if(u.taskId!==data.audienceTaskId)continue;
-     const key=recipientKey({sourceKind:'audience',userId:u.userId,username:u.username});
-     if(!key||deliveredKeys.has(key)||isDeferred(key))continue;
      if(!u.username&&!u.userId)continue;
+     const userId=String(u.userId||'');
+     const username=String(u.username||'').replace(/^@/,'');
+     const key=recipientKey({sourceKind:'audience',userId,username});
+     const personKey=mailingPersonKey(deliveryMode,{userId,username,leadId:''});
+     if(!isQueued(key,personKey))continue;
      candidates.push({
       key,
-      userId:String(u.userId||''),
-      username:String(u.username||'').replace(/^@/,''),
+      personKey,
+      userId,
+      username,
       leadId:'',
       groupUrl:audienceUrl,
       tgMsgId:'',
       accessHash:String(u.accessHash||u.senderAccessHash||''),
-      accountId:String(u.accountId||''),
       recordId:String(r.id),
       preferredAccountId:String(u.collectedByAccountId||''),
      });
@@ -4445,7 +4542,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    candidates.sort((a,b)=>(b.username?1:0)-(a.username?1:0));
   }
 
-  const batch=candidates.slice(0,batchSize);
+  const batch=candidates.slice(0,Math.min(batchSize,dailyLeft));
   if(!batch.length){
    const decision=mailingEmptyBatchDecision(deferredUntil);
    if(decision.action==='wait'){
@@ -4502,33 +4599,37 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   let aiPoolUsed=Number(data.aiPoolUsed)||0;
   let deliveries:MailingDelivery[]=Array.isArray(data.deliveries)?[...data.deliveries]:[];
   const newKeys:string[]=[...deliveredKeys];
-  let accountCredited=false;
-  const creditSentAccount=async()=>{
-   if(!okN||accountCredited)return;
-   accountCredited=true;
-   const arow2:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,activeAccountId,'account').first();
-   if(!arow2)return;
-   const adata=JSON.parse(arow2.data);
-   const counters=deliveryMode==='chat'
-    ?bumpChatCounters(adata,okN)
-    :bumpMessageCounters(adata,okN);
-   const bumped=applyQuotaCooldownIfExhausted({...adata,...counters});
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(bumped),owner,activeAccountId,'account').run();
-   accMap.set(activeAccountId,bumped);
-   const label=accName(activeAccountId);
-   if(bumped.status==='cooldown'){
-    logEntries.push({level:'warn',text:`Аккаунт ${bracketLabel(label)} выработал дневной лимит — отлёжка до полуночи МСК`});
-   }else if(!hasMessageQuota(bumped)&&deliveryMode!=='chat'){
-    logEntries.push({level:'warn',text:`Аккаунт ${bracketLabel(label)} выработал дневной лимит сообщений — дальше другой слот фермы`});
-   }
+  /** Письмо, ответ воркера на которое ещё не получен: при сбое post() решаем, могло ли оно уйти (R1/R2). */
+  let inFlight:{cand:Cand;claim:MailingRecipientEntry|null;text:string;accountId:string}|null=null;
+  const returnAiText=(text:string)=>{
+   if(data.contentMode!=='ai'||!text)return;
+   aiPool.unshift(text);
+   aiPoolUsed=Math.max(0,aiPoolUsed-1);
   };
-  const liveDeferred=()=>{
-   const out:Record<string,string>={};
-   for(const [k,v] of Object.entries(deferredUntil)){
-    const t=Date.parse(v);
-    if(Number.isFinite(t)&&t>Date.now())out[k]=v;
-   }
-   return out;
+  const readAccount=async(aid:string):Promise<Record<string,unknown>|null>=>{
+   const row:any=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,aid,'account').first();
+   return row?JSON.parse(String(row.data)):null;
+  };
+  const writeAccount=async(aid:string,next:Record<string,unknown>)=>{
+   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,aid,'account').run();
+   accMap.set(aid,next);
+  };
+  const pushDelivery=(cand:Cand,aid:string,text:string,result:any,ok:boolean,error:string)=>{
+   deliveries=pushMailingDelivery(deliveries,{
+    at:new Date().toISOString(),
+    key:cand.key,
+    userId:String(cand.userId||result?.chatId||''),
+    username:cand.username,
+    leadId:cand.leadId,
+    accountId:aid,
+    ok,
+    error:error.slice(0,400),
+    messageId:String(result?.messageId||'').slice(0,40),
+    chatId:String(result?.chatId||cand.userId||'').slice(0,40),
+    link:String(result?.link||'').slice(0,300),
+    textPreview:mailingTextPreview(text,200),
+    mode:deliveryMode,
+   });
   };
   const progressPatch=()=>({
    sentTotal:(Number(data.sentTotal)||0)+okN,
@@ -4538,8 +4639,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    lastAccountId:activeAccountId,
    aiPool,
    aiPoolUsed,
+   // Легаси-дедуп и UI; источник правды — реестр mailing_recipient (не обрезается)
    deliveredKeys:newKeys.slice(-5000),
-   deferredUntil:liveDeferred(),
+   deferredUntil:Object.fromEntries(Object.entries(deferredUntil).filter(([,v])=>{
+    const t=Date.parse(v);
+    return Number.isFinite(t)&&t>Date.now();
+   })),
+   peerMisses,
    deliveries,
   });
 
@@ -4552,42 +4658,59 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     return payload;
    };
    let activeLabel=accountLabel;
-   let payload=await loadPayload(activeAccountId);
-   let accountWentCooldown=false;
+   let accountStopped=false;
    let cooldownUntil='';
    let nextAccountIndex=accountIndex;
+   const rotate=()=>{nextAccountIndex=(nextAccountIndex+1)%Math.max(1,liveIds.length)};
 
    for(const cand of batch){
+    const sendable=liveIds.filter(canSendFrom);
+    if(!sendable.length){
+     logEntries.push({level:'info',text:'На этом тике аккаунтов с квотой больше нет'});
+     break;
+    }
+    // «Нет access_hash» у этого слота — следующая попытка другим аккаунтом (REQ-M5)
+    const pool=untriedAccountIds(peerMisses,cand.key,sendable);
+    if(!pool.length)continue;
+    const aid=pickMailingSendAccountId(
+     pool,
+     deliveryMode==='dm'?[cand.preferredAccountId,activeAccountId]:[activeAccountId],
+     nextAccountIndex,
+    );
+    if(aid!==activeAccountId){
+     activeAccountId=aid;
+     activeLabel=accName(aid);
+     logEntries.push({level:'info',text:`${aid===cand.preferredAccountId?'Peer → аккаунт':'Смена аккаунта →'} ${bracketLabel(activeLabel)}`});
+    }
+    const payload=await loadPayload(activeAccountId);
+
+    // Pending до отправки: другая задача/тик этому человеку уже не напишет, таймаут не приведёт к дублю (R1)
+    const claim:MailingRecipientEntry|null=cand.personKey?{
+     key:cand.personKey,state:'pending',taskId:id,accountId:activeAccountId,leadId:cand.leadId,at:new Date().toISOString(),error:'',
+    }:null;
+    if(claim&&!await claimMailingRecipient(db,owner,claim)){
+     logEntries.push({level:'info',text:`${cand.username?`@${cand.username}`:`id${cand.userId}`}: уже получил рассылку — пропускаем`});
+     newKeys.push(cand.key);
+     continue;
+    }
+
     let text='';
     if(data.contentMode==='ai'){
      text=String(aiPool.shift()||'').trim();
-     if(!text){
-      logEntries.push({level:'warn',text:'AI-пул исчерпан на этом тике'});
-      break;
-     }
-     aiPoolUsed++;
+     if(text)aiPoolUsed++;
+     else logEntries.push({level:'warn',text:'AI-пул исчерпан на этом тике'});
     }else{
      text=resolveSpintax(String(data.templateText||'')).slice(0,4000);
-     if(!text){
-      logEntries.push({level:'error',text:'Пустой текст после Spintax'});
-      break;
-     }
+     if(!text)logEntries.push({level:'error',text:'Пустой текст после Spintax'});
     }
-
-    // Для DM предпочитаем слот, который видел peer (скан/сбор)
-    if(deliveryMode==='dm'){
-     const preferred=pickMailingSendAccountId(liveIds,[cand.preferredAccountId],nextAccountIndex);
-     if(preferred&&preferred!==activeAccountId){
-      activeAccountId=preferred;
-      activeLabel=accName(activeAccountId);
-      payload=await loadPayload(activeAccountId);
-      logEntries.push({level:'info',text:`Peer → аккаунт ${bracketLabel(activeLabel)}`});
-     }
+    if(!text){
+     if(claim)await releaseMailingRecipient(db,owner,claim.key);
+     break;
     }
 
     // accessHash сессионный — валиден только для слота, который видел peer
     const accessHash=cand.preferredAccountId&&cand.preferredAccountId===activeAccountId?String(cand.accessHash||''):'';
-    let result=await post('/send-message',{
+    const sendBody={
      ...payload,
      mode:deliveryMode,
      text,
@@ -4600,277 +4723,119 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      silent:!!data.silent,
      // Удаление диалога ломает входящие ответы → «Переписки»
      deleteDialog:false,
-    },workerAppTimeoutMs('send'));
-
+    };
+    inFlight={cand,claim,text,accountId:activeAccountId};
+    let result=await post('/send-message',sendBody,workerAppTimeoutMs('send'));
     // Чужой access_hash → retry без hash (username/группа/кэш)
     if(
      !result.ok&&
      deliveryMode==='dm'&&
-     cand.accessHash&&
+     accessHash&&
      /invalid peer|неверный peer/i.test(String(result.error||''))
     ){
-     result=await post('/send-message',{
-      ...payload,
-      mode:'dm',
-      text,
-      url:cand.groupUrl||'',
-      replyTo:'',
-      tgMsgId:cand.tgMsgId||'',
-      senderId:cand.userId||'',
-      senderUsername:cand.username||'',
-      senderAccessHash:'',
-      silent:!!data.silent,
-      deleteDialog:false,
-     },workerAppTimeoutMs('send'));
+     result=await post('/send-message',{...sendBody,replyTo:'',senderAccessHash:''},workerAppTimeoutMs('send'));
     }
+    inFlight=null;
 
     const errRaw=String(result.error||'');
-    const peerFlood=
-     result.status==='spamblock'||
-     isPeerFloodMailingError(errRaw)||
-     errRaw.includes('PEER_FLOOD');
-    const accountFrozen=
-     result.status==='frozen'||
-     /FROZEN|заморожен/i.test(errRaw);
-    const rateLimited=
-     !peerFlood&&
-     !accountFrozen&&
-     (result.status==='flood'||
-      !!result.flood||
-      Number(result.waitSec)>0||
-      isRateLimitMailingError(errRaw));
+    const fresh=await readAccount(activeAccountId)||accMap.get(activeAccountId)||{};
+    const outcome=interpretMailingSendResult(result,fresh,deliveryMode);
 
-    if(rateLimited){
-     const waitSec=Math.max(
-      60,
-      Number(result.waitSec)||0,
-      parseMailingFloodWaitSec(errRaw,900),
-     );
-     // FloodWait / Too many requests — пауза тика/получателя, аккаунт НЕ в «Отлёжку».
-     deferredUntil[cand.key]=new Date(Date.now()+waitSec*1000).toISOString();
-     if(data.contentMode==='ai'&&text){
-      aiPool.unshift(text);
-      aiPoolUsed=Math.max(0,aiPoolUsed-1);
-     }
-     logEntries.push({level:'error',text:`Аккаунт ${bracketLabel(activeLabel)}: лимит Telegram · пауза ${waitSec}с`});
-     logEntries.push({level:'info',text:`Получатель отложен на ${Math.ceil(waitSec/60)} мин (Too many requests)`});
-     // Меняем слот фермы; статус аккаунта не трогаем.
-     nextAccountIndex=(nextAccountIndex+1)%Math.max(1,liveIds.length);
+    if(outcome.kind==='rate_limit'){
+     // FloodWait — аккаунт на паузу (floodUntil), статус не трогаем; получатель свободен для другого слота (REQ-M4)
+     if(claim)await releaseMailingRecipient(db,owner,claim.key);
+     returnAiText(text);
+     await writeAccount(activeAccountId,outcome.accountPatch);
+     logEntries.push({level:'error',text:`Аккаунт ${bracketLabel(activeLabel)}: лимит Telegram · пауза ${outcome.waitSec}с`});
+     logEntries.push({level:'info',text:`Аккаунт не используется до ${formatRuWhen(String(outcome.accountPatch.floodUntil))} · дальше другой слот фермы`});
+     rotate();
      break;
     }
-    if(accountFrozen){
-     accountWentCooldown=true;
-     if(data.contentMode==='ai'&&text){
-      aiPool.unshift(text);
-      aiPoolUsed=Math.max(0,aiPoolUsed-1);
-     }
-     cooldownUntil=moscowNextMidnightIso();
-     logEntries.push({level:'error',text:`Аккаунт ${bracketLabel(activeLabel)}: заморожен Telegram`});
-     const arow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,activeAccountId,'account').first();
-     if(arow){
-      const adata=JSON.parse(arow.data);
-      await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(
-       withFrozenStatus(adata,errRaw.slice(0,500)||'FROZEN'),
-      ),owner,activeAccountId,'account').run();
-     }
-     nextAccountIndex=(nextAccountIndex+1)%Math.max(1,liveIds.length);
-     break;
-    }
-    const banWrite=/banned from sending|chat_write_forbidden|user_banned_in_channel/i.test(errRaw);
-    if(peerFlood||banWrite){
-     accountWentCooldown=true;
-     cooldownUntil=cooldownHoursFromNow(24);
-     if(data.contentMode==='ai'&&text){
-      aiPool.unshift(text);
-      aiPoolUsed=Math.max(0,aiPoolUsed-1);
-     }
-     logEntries.push({level:'error',text:banWrite
+    if(outcome.kind==='frozen'||outcome.kind==='spamblock'){
+     if(claim)await releaseMailingRecipient(db,owner,claim.key);
+     returnAiText(text);
+     await writeAccount(activeAccountId,outcome.accountPatch);
+     accountStopped=true;
+     cooldownUntil=outcome.kind==='frozen'?moscowNextMidnightIso():String(outcome.accountPatch.cooldownUntil||cooldownHoursFromNow(24));
+     logEntries.push({level:'error',text:outcome.kind==='frozen'
+      ?`Аккаунт ${bracketLabel(activeLabel)}: заморожен Telegram`
+      :outcome.writeBan
        ?`Аккаунт ${bracketLabel(activeLabel)}: ограничен Telegram (бан на запись) · спамблок 24ч`
        :`Аккаунт ${bracketLabel(activeLabel)}: спамблок`,
      });
-     const arow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,activeAccountId,'account').first();
-     if(arow){
-      const adata=JSON.parse(arow.data);
-      await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(
-       withSpamblockStatus(adata,banWrite?'WRITE_BAN_SUPERGROUPS':(errRaw.slice(0,500)||'PEER_FLOOD')),
-      ),owner,activeAccountId,'account').run();
-     }
-     nextAccountIndex=(nextAccountIndex+1)%Math.max(1,liveIds.length);
+     rotate();
      break;
     }
 
-    const link=String(result.link||'').slice(0,300);
-    const messageId=String(result.messageId||'').slice(0,40);
-    const freshHash=String(result.senderAccessHash||'').slice(0,40);
-    const ok=!!result.ok;
-    if(ok){
+    if(outcome.kind==='ok'){
      okN++;
+     await writeAccount(activeAccountId,outcome.bumped);
+     if(outcome.wentDayCooldown){
+      logEntries.push({level:'warn',text:`Аккаунт ${bracketLabel(activeLabel)} выработал дневной лимит — отлёжка до полуночи МСК`});
+     }
+     const link=String(result.link||'').slice(0,300);
+     const messageId=String(result.messageId||'').slice(0,40);
+     if(claim)await settleMailingRecipient(db,owner,{...claim,state:'sent',at:new Date().toISOString()});
      logEntries.push({level:'ok',text:mailingOkText(cand.username,cand.userId,link,text)});
      newKeys.push(cand.key);
      delete deferredUntil[cand.key];
-     // Помечаем лид как outreach рассылки + пишем исходящее в историю (Переписки откроются по ответу)
-     if(deliveryMode==='dm'){
-      try{
-       const outbound={
-        text:text.slice(0,4000),
-        mode:'dm' as const,
-        at:new Date().toISOString(),
-        ok:true,
-        error:'',
-        messageId,
-        link,
-        chatId:String(result.chatId||cand.userId||'').slice(0,40),
-        from:'us' as const,
-       };
-       if(cand.leadId){
-        const leadRow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,cand.leadId,'lead').first();
-        if(leadRow){
-         const L=JSON.parse(leadRow.data);
-         const replies=[...(Array.isArray(L.replies)?L.replies:[]),outbound].slice(-40);
-         await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({
-          ...L,
-          replies,
-          mailingTaskId:L.mailingTaskId||id,
-          accountId:activeAccountId,
-          senderId:L.senderId||cand.userId,
-          senderUsername:L.senderUsername||cand.username||String(result.senderUsername||''),
-          senderAccessHash:freshHash||L.senderAccessHash||cand.accessHash||'',
-         }),owner,cand.leadId,'lead').run();
-        }
-       }else{
-        // Рассылка по аудитории — создаём карточку, чтобы ответ попал в «Переписки»
-        const newId=crypto.randomUUID();
-        const leadData={
-         name:(cand.username?`@${cand.username}`:(cand.userId?`id${cand.userId}`:'Клиент')).slice(0,80),
-         message:text.slice(0,8000)||'Исходящая рассылка',
-         source:'Рассылка',
-         status:'working',
-         temperature:'warm',
-         draft:'',
-         tgMsgId:'',
-         groupId:'',
-         reason:'Исходящее из рассылки — ждём ответ',
-         viewed:false,
-         viewedAt:'',
-         excludeFromTraining:false,
-         senderId:String(cand.userId||'').slice(0,40),
-         senderUsername:String(cand.username||result.senderUsername||'').slice(0,64),
-         senderAccessHash:String(freshHash||cand.accessHash||'').slice(0,40),
-         messageKind:'',
-         peerId:String(cand.userId||'').slice(0,40),
-         replyToMsgId:'',
-         replies:[outbound],
-         conversationOpen:false,
-         conversationAt:'',
-         incomingLastText:'',
-         needsManager:false,
-         mailingTaskId:id,
-         accountId:activeAccountId,
-        };
-        await db.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)').bind(newId,owner,'lead',JSON.stringify(leadData),null,new Date().toISOString()).run();
-        cand.leadId=newId;
-        // Обновим hash у audience_user — пригодится на повторной рассылке
-        if(cand.recordId&&freshHash){
-         try{
-          const urow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,cand.recordId,'audience_user').first();
-          if(urow){
-           const ud=JSON.parse(urow.data);
-           await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({
-            ...ud,
-            accessHash:freshHash,
-            collectedByAccountId:ud.collectedByAccountId||activeAccountId,
-           }),owner,cand.recordId,'audience_user').run();
-          }
-         }catch{/* */}
-        }
-       }
-      }catch{/* */}
-     }
+     if(peerMisses[cand.key]){peerMisses={...peerMisses};delete peerMisses[cand.key]}
+     if(deliveryMode==='dm')await recordMailingOutreach(owner,id,cand,activeAccountId,text,result,messageId,link);
+     pushDelivery(cand,activeAccountId,text,result,true,'');
      // После успеха крутим слот (если не sticky-only)
-     nextAccountIndex=(nextAccountIndex+1)%Math.max(1,liveIds.length);
-    }else if(rateLimited||peerFlood||accountFrozen){
-     // FloodWait / spam / freeze — получателя не списываем навсегда
-     if((peerFlood||accountFrozen)&&!rateLimited){
-      deferredUntil[cand.key]=cooldownUntil||cooldownHoursFromNow(1);
-     }
-    }else if(isTransientPeerResolveError(errRaw)){
-     // Peer не виден этой сессии — отложить и сменить слот, НЕ снимать с очереди
-     failN++;
-     deferredUntil[cand.key]=new Date(Date.now()+3*60*1000).toISOString();
-     logEntries.push({level:'error',text:mailingFailText(cand.username,cand.userId,errRaw||'fail')});
-     logEntries.push({level:'info',text:'Peer отложен · следующий тик другим аккаунтом фермы'});
-     nextAccountIndex=(nextAccountIndex+1)%Math.max(1,liveIds.length);
-     if(data.contentMode==='ai'&&text){
-      aiPool.unshift(text);
-      aiPoolUsed=Math.max(0,aiPoolUsed-1);
-     }
-    }else{
-     failN++;
-     logEntries.push({level:'error',text:mailingFailText(cand.username,cand.userId,errRaw||'fail')});
-     if(isPermanentMailingRecipientError(errRaw)){
-      newKeys.push(cand.key);
-      delete deferredUntil[cand.key];
-     }else{
-      // Peer/session — откладываем, другой слот может пройти
-      deferredUntil[cand.key]=new Date(Date.now()+30*60_000).toISOString();
-     }
-     if(isDeadAccountMailingError(errRaw)){
-      accountWentCooldown=true;
-      logEntries.push({level:'warn',text:`Аккаунт ${bracketLabel(activeLabel)} недоступен: ${errRaw.slice(0,120)}`});
-      const arow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,activeAccountId,'account').first();
-      if(arow){
-       const adata=JSON.parse(arow.data);
-       await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({
-        ...adata,
-        status:'unauthorized',
-        error:errRaw.slice(0,500),
-        checkingAt:'',
-       }),owner,activeAccountId,'account').run();
-      }
-      nextAccountIndex=(nextAccountIndex+1)%Math.max(1,liveIds.length);
-      break;
-     }
-    }
-    if(ok||(!rateLimited&&!peerFlood&&!accountFrozen)){
-     const entry:MailingDelivery={
-      at:new Date().toISOString(),
-      key:cand.key,
-      userId:String(cand.userId||result.chatId||''),
-      username:cand.username,
-      leadId:cand.leadId,
-      accountId:activeAccountId,
-      ok,
-      error:ok?'':String(result.error||'').slice(0,400),
-      messageId,
-      chatId:String(result.chatId||cand.userId||'').slice(0,40),
-      link,
-      textPreview:mailingTextPreview(text,200),
-      mode:deliveryMode,
-     };
-     deliveries=pushMailingDelivery(deliveries,entry);
+     rotate();
+     continue;
     }
 
-    if(accountWentCooldown)break;
+    failN++;
+    returnAiText(text);
+    logEntries.push({level:'error',text:mailingFailText(cand.username,cand.userId,errRaw||'fail')});
+    pushDelivery(cand,activeAccountId,text,result,false,errRaw||'fail');
+    if(outcome.failKind==='peer_miss'){
+     const miss=notePeerMiss(peerMisses,cand.key,activeAccountId,liveIds);
+     peerMisses=miss.state;
+     rotate();
+     if(miss.permanent){
+      if(claim)await settleMailingRecipient(db,owner,{...claim,state:'failed',error:outcome.error});
+      newKeys.push(cand.key);
+      delete deferredUntil[cand.key];
+      logEntries.push({level:'info',text:'Peer не открылся ни на одном доступном аккаунте фермы — получатель пропущен'});
+     }else{
+      if(claim)await releaseMailingRecipient(db,owner,claim.key);
+      deferredUntil[cand.key]=new Date(Date.now()+3*60*1000).toISOString();
+      logEntries.push({level:'info',text:'Peer отложен · следующая попытка другим аккаунтом фермы'});
+     }
+     continue;
+    }
+    if(outcome.failKind==='permanent'){
+     if(claim)await settleMailingRecipient(db,owner,{...claim,state:'failed',error:outcome.error});
+     newKeys.push(cand.key);
+     delete deferredUntil[cand.key];
+     continue;
+    }
+    // Peer/session — откладываем, другой слот может пройти
+    if(claim)await releaseMailingRecipient(db,owner,claim.key);
+    deferredUntil[cand.key]=new Date(Date.now()+30*60_000).toISOString();
+    if(outcome.failKind==='dead_account'){
+     accountStopped=true;
+     logEntries.push({level:'warn',text:`Аккаунт ${bracketLabel(activeLabel)} недоступен: ${errRaw.slice(0,120)}`});
+     await writeAccount(activeAccountId,{...fresh,status:'unauthorized',error:errRaw.slice(0,500),checkingAt:''});
+     rotate();
+     break;
+    }
    }
 
    accountId=activeAccountId;
    accountLabel=activeLabel;
    accountIndex=nextAccountIndex;
 
-   await creditSentAccount();
-
-   const stillLive=liveIds.filter(aid=>{
-    if(aid!==accountId)return true;
-    if(accountWentCooldown)return false;
-    const a=accMap.get(accountId);
-    return deliveryMode==='chat'?hasChatQuota(a):hasMessageQuota(a);
-   });
+   const stillLive=liveIds.filter(canSendFrom);
    let pause=randomPauseSec(data.pauseFromSec,data.pauseToSec);
    if(data.pauseBetweenAccounts&&prevAccountId&&prevAccountId!==accountId){
     pause=Math.max(pause,randomPauseSec(data.pauseFromSec,data.pauseToSec));
    }
-   // После FloodWait: если ферма жива — обычная пауза смены аккаунта; иначе ждём полный cooldown
-   if(accountWentCooldown&&cooldownUntil){
+   // После спамблока/заморозки: если ферма жива — обычная пауза смены аккаунта; иначе ждём полный cooldown
+   if(accountStopped&&cooldownUntil){
     const left=Math.ceil((Date.parse(cooldownUntil)-Date.now())/1000);
     if(Number.isFinite(left)&&left>0){
      if(stillLive.length)pause=Math.max(pause,Math.min(90,left));
@@ -4880,8 +4845,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    logEntries.push({level:'info',text:`Ожидание ${pause} секунд`});
 
    if(!stillLive.length){
-    const resumeIso=accountWentCooldown?(cooldownUntil||cooldownHoursFromNow(24)):moscowNextMidnightIso();
-    logEntries.push({level:'info',text:accountWentCooldown?'Нет активных аккаунтов':'Ферма: дневной лимит сообщений, следующий аккаунт после полуночи'});
+    const resumeIso=farmResumeIso();
+    logEntries.push({level:'info',text:accountStopped?'Нет активных аккаунтов':'Ферма: лимит сообщений / пауза Telegram на всех аккаунтах'});
     logEntries.push({level:'info',text:`Автозапуск ${formatRuWhen(resumeIso)}`});
     const next=await persistMailingTask({
      ...progressPatch(),
@@ -4894,8 +4859,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     return reply({ok:true,sent:okN,scheduled:true,task:next});
    }
 
-   const nextLive=stillLive.length?stillLive:liveIds;
-   const nextIndex=accountWentCooldown?0:(accountIndex%Math.max(1,nextLive.length));
+   const nextIndex=accountStopped?0:(accountIndex%Math.max(1,stillLive.length));
    const next=await persistMailingTask({
     ...progressPatch(),
     accountIndex:nextIndex,
@@ -4906,8 +4870,24 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    },logEntries);
    return reply({ok:true,sent:okN,failed:failN,task:next,accountId});
   }catch(e){
-   // Доставленное до сбоя не теряем: ключи, счётчики, доставки, квота аккаунта
-   try{await creditSentAccount()}catch{/* квота — следующим тиком */}
+   // Доставленное до сбоя уже записано (реестр, квота аккаунта); здесь — судьба письма «в полёте»
+   if(inFlight){
+    const {cand,claim,text}=inFlight;
+    const label=cand.username?`@${cand.username}`:`id${cand.userId}`;
+    try{
+     if(isAmbiguousSendError(e)){
+      // Воркер мог успеть отправить: не повторяем автоматически (R1)
+      if(claim)await settleMailingRecipient(db,owner,{...claim,state:'unknown',error:'timeout'});
+      newKeys.push(cand.key);
+      pushDelivery(cand,inFlight.accountId,text,null,false,'Нет ответа Telegram-воркера — сообщение могло уйти, повтора не будет');
+      logEntries.push({level:'warn',text:`${label}: нет ответа Telegram-воркера — сообщение могло уйти, повторно не пишем`});
+     }else{
+      // Точно не отправлено (воркер занят и т.п.): получатель и AI-текст возвращаются в очередь (R2)
+      if(claim)await releaseMailingRecipient(db,owner,claim.key);
+      returnAiText(text);
+     }
+    }catch{/* реестр — best effort, прогресс задачи важнее */}
+   }
    if(isRetryableTickError(e)){
     const retry=tickRetryPatch(e);
     const next=await persistMailingTask({...progressPatch(),...retry.patch},[...logEntries,{level:'warn',text:retry.text}]);
