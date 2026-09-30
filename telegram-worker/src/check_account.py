@@ -2131,6 +2131,7 @@ async def send_message(
 ) -> dict[str, Any]:
     from telethon.errors import (
         FloodWaitError,
+        PeerFloodError,
         RPCError,
         UserPrivacyRestrictedError,
         UserBannedInChannelError,
@@ -2450,6 +2451,9 @@ async def send_message(
                 "Смените аккаунт фермы или подождите 24ч."
             )[:400],
         }
+    except PeerFloodError as e:
+        # str(PeerFloodError) = «Too many requests …» — это спамблок аккаунта, не FloodWait
+        return {"ok": False, "status": "spamblock", "error": f"PEER_FLOOD: {e}"[:400]}
     except FloodWaitError as e:
         return {"ok": False, "status": "flood", "error": f"FloodWait {e.seconds}с", "waitSec": int(e.seconds)}
     except RPCError as e:
