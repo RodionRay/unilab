@@ -127,6 +127,72 @@ export function cronTargetAllowed(appUrl) {
 }
 
 /**
+ * One cron endpoint polled in a loop (e.g. /api/cron/tasks-tick): never two calls in
+ * flight, Bearer CRON_SECRET only to https/loopback, a quick catch-up run when the
+ * app answers `more:true` or the call timed out.
+ * @param {{ name: string, url: string, secret: string, fetchMs: number, catchUpMs: number,
+ *   fetchImpl?: typeof fetch, schedule?: (fn: () => void, ms: number) => unknown,
+ *   log?: Pick<Console, "log" | "warn"> }} opts
+ */
+export function createCronLoop(opts) {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const schedule = opts.schedule ?? setTimeout;
+  const log = opts.log ?? console;
+  const problem = cronSecretProblem(opts.secret);
+  let busy = false;
+  let catchUpPending = false;
+  /** @type {{ at: string, result: unknown }} */
+  const last = { at: "", result: null };
+
+  const catchUp = () => {
+    if (catchUpPending) return;
+    catchUpPending = true;
+    schedule(() => {
+      catchUpPending = false;
+      void tick();
+    }, opts.catchUpMs);
+  };
+
+  async function tick() {
+    if (busy) return { skipped: true, reason: "busy" };
+    if (problem) return { skipped: true, reason: "no_secret" };
+    if (!cronTargetAllowed(opts.url)) return { skipped: true, reason: "insecure_app_url" };
+    busy = true;
+    const t0 = Date.now();
+    try {
+      const res = await fetchImpl(opts.url, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${opts.secret}`, "Content-Type": "application/json" },
+        body: "{}",
+        redirect: "error",
+        signal: AbortSignal.timeout(opts.fetchMs),
+      });
+      const data = await res.json().catch(() => ({}));
+      last.at = new Date().toISOString();
+      last.result = { status: res.status, ...data };
+      if (!res.ok) log.warn(`[${opts.name}] fail`, res.status, data?.error || "", `${Date.now() - t0}ms`);
+      if (res.ok && data?.more) catchUp();
+      return data;
+    } catch (e) {
+      const msg = String(/** @type {Error} */ (e)?.message || e);
+      last.at = new Date().toISOString();
+      last.result = { ok: false, error: msg };
+      const abort = /aborted|timeout/i.test(msg);
+      log.warn(abort ? `[${opts.name}] timeout — next run continues` : `[${opts.name}] error ${msg}`);
+      if (abort) catchUp();
+      return last.result;
+    } finally {
+      busy = false;
+    }
+  }
+
+  return {
+    tick,
+    status: () => ({ url: opts.url, busy, lastAt: last.at, last: last.result }),
+  };
+}
+
+/**
  * Remove work dirs left behind by a crashed worker (they may hold plaintext sessions).
  * @param {{ dir?: string, maxAgeMs?: number, now?: number }} [opts]
  */
