@@ -565,7 +565,7 @@ export function marketVerifiedCount(marketId: string): number {
 }
 
 
-const NICHE_ALIASES: Record<string, GroupNiche[]> = {
+export const NICHE_ALIASES: Record<string, GroupNiche[]> = {
   маркетплейс: ["marketplaces"],
   маркетплейсы: ["marketplaces"],
   marketplace: ["marketplaces"],

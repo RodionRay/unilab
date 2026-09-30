@@ -212,6 +212,112 @@ export function accountBlindPatch(now = Date.now()): { resolveBlindUntil: string
   return { resolveBlindUntil: new Date(now + ACCOUNT_BLIND_COOLDOWN_MS).toISOString() };
 }
 
+/** «Слот не видит @x» from this many DIFFERENT accounts → the link is dead, stop spending joins on it. */
+export const USERNAME_DEAD_AFTER_ACCOUNTS = 3;
+
+const USERNAME_MISSING_RE = /не видит @|no user has|nobody is using|username_not_occupied|username_invalid/i;
+
+export type MissingTrackedGroup = {
+  accountId?: string;
+  url?: string;
+  error?: string;
+  joinStateError?: string;
+  usernameMissing?: boolean;
+  joinMissingAccounts?: unknown;
+  joinDead?: boolean;
+};
+
+export function missingAccountsOf(group: MissingTrackedGroup): string[] {
+  const raw = Array.isArray(group.joinMissingAccounts) ? group.joinMissingAccounts : [];
+  return [...new Set(raw.map((x) => String(x || "")).filter(Boolean))].slice(0, 20);
+}
+
+export type UsernameMissingStep = {
+  dead: boolean;
+  missingAccounts: string[];
+  patch: Record<string, unknown>;
+};
+
+/**
+ * One more account could not resolve the group's @username. Returns the group patch: the account joins
+ * the «tried» list; after USERNAME_DEAD_AFTER_ACCOUNTS distinct accounts the group is marked dead
+ * (out of the auto-queue until the owner fixes the link or approves a retry).
+ */
+export function recordUsernameMissing(
+  group: MissingTrackedGroup,
+  accountId: string,
+  errorText: string,
+): UsernameMissingStep {
+  const missingAccounts = [...new Set([...missingAccountsOf(group), String(accountId || "")].filter(Boolean))];
+  const dead = missingAccounts.length >= USERNAME_DEAD_AFTER_ACCOUNTS;
+  const base = {
+    usernameMissing: true,
+    joinMissingAccounts: missingAccounts,
+    error: String(errorText || "Слот не видит группу").slice(0, 500),
+  };
+  if (!dead) return { dead, missingAccounts, patch: base };
+  const msg = `Ссылка не открывается: ${missingAccounts.length} разных аккаунта не видят группу — проверьте ссылку`;
+  return {
+    dead,
+    missingAccounts,
+    patch: {
+      ...base,
+      joinDead: true,
+      joinGaveUp: true,
+      status: "error",
+      error: msg,
+      joinState: "",
+      joinStateAt: "",
+      joinStateError: msg,
+    },
+  };
+}
+
+/**
+ * Migration for groups that already failed with «Слот не видит @» before tracking existed:
+ * count their current account as one failed resolver. Returns the same object when nothing changes.
+ */
+export function seedMissingAccounts<T extends MissingTrackedGroup>(group: T): T {
+  if (missingAccountsOf(group).length || group.joinDead) return group;
+  const text = `${group.error || ""} ${group.joinStateError || ""}`;
+  if (!group.accountId || !(group.usernameMissing || USERNAME_MISSING_RE.test(text))) return group;
+  return { ...group, joinMissingAccounts: [String(group.accountId)] };
+}
+
+export function isUsernameMissingResult(result: {
+  usernameMissing?: unknown;
+  join?: unknown;
+  error?: unknown;
+} | null | undefined): boolean {
+  if (!result) return false;
+  return !!result.usernameMissing || USERNAME_MISSING_RE.test(String(result.error || ""));
+}
+
+export type JoinFailureKind =
+  /** Telegram spam filter on the account (PEER_FLOOD) → spamblock. */
+  | "peer_flood"
+  /** Account is in 500 channels/groups → no more joins until it leaves some. */
+  | "channels_too_much"
+  /** The group's fault (private, banned, dead link): does not count against the account. */
+  | "group"
+  /** Anything else: counts towards the account's consecutive-error pause. */
+  | "account";
+
+/** Classify a failed /join-group answer (not flood/frozen/blind — those are handled before). */
+export function classifyJoinFailure(result: JoinWorkerResult & { usernameMissing?: unknown }): JoinFailureKind {
+  const err = String(result.error || "");
+  if (result.join === "peer_flood" || /PEER_FLOOD/i.test(err)) return "peer_flood";
+  if (result.join === "too_many" || /CHANNELS_TOO_MUCH|too many channels/i.test(err)) return "channels_too_much";
+  if (
+    ["missing", "private", "banned", "requested"].includes(String(result.join || "")) ||
+    isUsernameMissingResult(result) ||
+    /INVITE_HASH_EXPIRED|INVITE_HASH_INVALID|CHANNEL_PRIVATE|приватн|забанен/i.test(err)
+  ) {
+    return "group";
+  }
+  return "account";
+}
+
 export const JOIN_SUCCESS_PATCH: Required<JoinRetryFields> = {
   joinAttempts: 0,
   joinNextAt: "",
@@ -238,6 +344,7 @@ export type GroupHealAction =
  */
 export function planGroupHeal(opts: {
   group: JoinRetryFields & {
+    joinDead?: boolean;
     membership?: string;
     status?: string;
     joinedAt?: string;
@@ -269,7 +376,7 @@ export function planGroupHeal(opts: {
   ) {
     return "restore_previous";
   }
-  if (g.joinGaveUp) return "gave_up";
+  if (g.joinGaveUp || g.joinDead) return "gave_up";
   const next = g.joinNextAt ? Date.parse(g.joinNextAt) : 0;
   if (Number.isFinite(next) && next > now) return "wait";
   return dead ? "reassign" : "enqueue";

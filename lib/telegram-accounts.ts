@@ -407,6 +407,14 @@ export type JoinPaceState = {
   lastJoinAt?: string;
   joinsToday?: number;
   joinsDay?: string;
+  /** Рандомизированный gap после вступления (lib/join-pacing). */
+  joinNextAt?: string;
+  /** FloodWait + запас. */
+  floodUntil?: string;
+  /** Пауза после серии ошибок. */
+  joinPausedUntil?: string;
+  /** CHANNELS_TOO_MUCH и т.п. */
+  joinBlockedUntil?: string;
 };
 
 /** Сколько секунд ждать до следующего join. 0 = можно сейчас. */
@@ -414,12 +422,19 @@ export function joinWaitSec(
   state: JoinPaceState,
   now = Date.now(),
 ): number {
-  if (!state.lastJoinAt) return 0;
-  const last = Date.parse(state.lastJoinAt);
-  if (!Number.isFinite(last)) return 0;
-  const elapsed = (now - last) / 1000;
-  const need = JOIN_GAP_DEFAULT_SEC;
-  return elapsed >= need ? 0 : Math.ceil(need - elapsed);
+  const at = (iso?: string) => {
+    const t = Date.parse(String(iso || ""));
+    return Number.isFinite(t) ? t : 0;
+  };
+  const last = at(state.lastJoinAt);
+  const until = Math.max(
+    last ? last + JOIN_GAP_DEFAULT_SEC * 1000 : 0,
+    at(state.joinNextAt),
+    at(state.floodUntil),
+    at(state.joinPausedUntil),
+    at(state.joinBlockedUntil),
+  );
+  return until > now ? Math.ceil((until - now) / 1000) : 0;
 }
 
 export function normalizeJoinsToday(state: JoinPaceState): number {
