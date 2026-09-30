@@ -105,6 +105,34 @@ def frozen_action_error(action: str) -> dict[str, Any]:
     }
 
 
+def join_limit_error(exc: BaseException) -> dict[str, Any] | None:
+    """PEER_FLOOD / CHANNELS_TOO_MUCH as explicit join codes.
+
+    Both are the account's problem, not the group's: the app spamblocks the account (PEER_FLOOD)
+    or stops its joins for days (CHANNELS_TOO_MUCH) and hands the group to another account.
+    Mirrors lib/processes/join-flow.ts::classifyJoinFailure.
+    """
+    name = type(exc).__name__
+    message = str(getattr(exc, "message", "") or "").upper()
+    if name == "PeerFloodError" or message == "PEER_FLOOD":
+        return {
+            "ok": False,
+            "status": "spamblock",
+            "join": "peer_flood",
+            "error": "PEER_FLOOD: Telegram ограничил аккаунт (спам-фильтр) — вступления с него остановлены",
+            "member": False,
+        }
+    if name == "ChannelsTooMuchError" or message == "CHANNELS_TOO_MUCH":
+        return {
+            "ok": False,
+            "status": "setup",
+            "join": "too_many",
+            "error": "CHANNELS_TOO_MUCH: аккаунт уже в 500 каналах/группах — выйдите из лишних",
+            "member": False,
+        }
+    return None
+
+
 class ProxyHostRejected(ValueError):
     """Proxy host resolves to an internal address (SSRF guard) or does not resolve."""
 
@@ -863,6 +891,9 @@ async def join_group(client, url: str, peer_hint: dict | None = None) -> dict[st
     except RPCError as e:
         if is_frozen_rpc(e):
             return frozen_action_error("вступление")
+        limit = join_limit_error(e)
+        if limit:
+            return limit
         raise
 
 
