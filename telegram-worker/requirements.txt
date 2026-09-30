@@ -1,0 +1,12 @@
+# Pinned from the working venv (Python 3.9.6) on 2026-09-30: pip freeze.
+# Install: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+opentele==1.15.1
+pyaes==1.6.1
+pyasn1==0.6.4
+PyQt5==5.15.11
+PyQt5-Qt5==5.15.19
+PyQt5_sip==12.17.1
+PySocks==1.7.1
+rsa==4.9.1
+Telethon==1.36.0
+TgCrypto==1.2.5

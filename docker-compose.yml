@@ -1,0 +1,18 @@
+services:
+  uniseller:
+    build: .
+    ports:
+      # Host-side loopback only; the app binds 0.0.0.0 inside the container (see Dockerfile).
+      - "127.0.0.1:5173:5173"
+    env_file:
+      - .env
+    environment:
+      DATA_DIR: /data
+      # "none" unless a proxy in front overwrites a client-IP header (see README).
+      TRUSTED_IP_HEADER: ${TRUSTED_IP_HEADER:-none}
+    volumes:
+      - uniseller-data:/data
+    restart: unless-stopped
+
+volumes:
+  uniseller-data:

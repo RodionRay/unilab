@@ -1,0 +1,27 @@
+# Secrets, local state and Telegram sessions must never enter the build context.
+# `**/` = at any depth: Docker matches bare patterns only at the context root.
+**/.env
+**/.env.*
+!.env.example
+**/.data
+**/.wrangler
+**/.sites-runtime
+**/*.session
+**/*.session-journal
+**/tdata
+**/*.zip
+**/*.sqlite
+**/*.sqlite-*
+**/*.sqlite3
+**/.git
+**/.cursor
+.openai/*
+!.openai/hosting.json
+**/node_modules
+dist
+.next
+.vinext
+coverage
+telegram-worker/.venv
+telegram-worker/vendor
+uniseller-project

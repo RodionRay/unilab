@@ -1,0 +1,10 @@
+User-agent: *
+Allow: /
+Allow: /register
+Allow: /privacy
+Allow: /terms
+Disallow: /app
+Disallow: /api
+Disallow: /login
+
+Sitemap: https://uniseller.io/sitemap.xml
