@@ -20,7 +20,7 @@ import { findMinusHit, splitTerms } from "@/lib/lead-filter";
 import { scanStopTerms } from "@/lib/lead-stopwords";
 
 /** Bump when the formula changes: stored scores with another version are recomputed. */
-export const JOIN_RELEVANCE_VERSION = 1;
+export const JOIN_RELEVANCE_VERSION = 2;
 export const RELEVANCE_AUTO_MIN = 60;
 export const RELEVANCE_REVIEW_MIN = 35;
 
@@ -45,6 +45,8 @@ export type RelevanceGroup = {
   source?: string;
   about?: string;
   description?: string;
+  /** Leads already collected from this group (a scan before, or a previous membership). */
+  leadsTotal?: number;
 };
 
 /** Niches too wide to prove a topic match (every blog is «business/marketing»). */
@@ -77,6 +79,9 @@ const BLOG_PENALTY = 10;
 const OFF_NICHE_PENALTY = 20;
 const STOP_PENALTY = 30;
 const TINY_PENALTY = 5;
+const LEADS_POINTS = 20;
+const LEADS_MANY_POINTS = 30;
+const LEADS_MANY = 5;
 const TINY_MEMBERS = 300;
 /** Without any topical evidence a group never reaches the review band by format alone. */
 const NO_TOPIC_CAP = 30;
@@ -322,7 +327,13 @@ export function scoreGroupRelevance(
     score += Math.min(WEAK_MAX, weakHits.length * WEAK_POINTS);
     reasons.push(`слова продукта: ${weakHits.slice(0, 3).join(", ")}`);
   }
-  const topical = nicheHits.length > 0 || strongHits.length > 0;
+  // Evidence beats guessing: a group that already produced leads is on-topic whatever its title says.
+  const leads = Math.max(0, Number(group.leadsTotal) || 0);
+  if (leads > 0) {
+    score += leads >= LEADS_MANY ? LEADS_MANY_POINTS : LEADS_POINTS;
+    reasons.unshift(`уже давала лиды: ${leads}`);
+  }
+  const topical = nicheHits.length > 0 || strongHits.length > 0 || leads > 0;
 
   const isChannel = String(group.source || "").startsWith("tgstat") || TGSTAT_CHANNEL_RE.test(description);
   const isChat = !isChannel && (CHAT_RE.test(name) || CHAT_USERNAME_RE.test(username));
@@ -432,10 +443,10 @@ export function joinGateFor(group: JoinGateGroup): JoinGate {
     score,
   });
   if (groupIsMember(group)) return gate(true, "joined", "");
-  if (group.joinRejoin) return gate(true, "joined", "восстановление членства после смены аккаунта");
   if (group.joinDead) return gate(false, "dead", "Несколько аккаунтов не видят @username — проверьте ссылку");
-  if (group.joinDecision === "approved") return gate(true, "approved", "одобрено вручную");
   if (group.joinDecision === "skipped") return gate(false, "skipped", "пропущено вручную");
+  if (group.joinRejoin) return gate(true, "joined", "восстановление членства после смены аккаунта");
+  if (group.joinDecision === "approved") return gate(true, "approved", "одобрено вручную");
   if (score == null) return gate(false, "review", "ещё не оценена");
   const band = rel?.band === "auto" || rel?.band === "review" || rel?.band === "skip" ? rel.band : bandOf(score);
   return gate(band === "auto", band);
@@ -457,6 +468,15 @@ export function compareJoinPriority(a: JoinGateGroup, b: JoinGateGroup): number 
   return String(a.name || "").localeCompare(String(b.name || ""), "ru");
 }
 
+/**
+ * Migration: a group that was joined before (joinedAccountId is written only on join/request) but lost
+ * its membership to an old account swap keeps bypassing the gate. Same object when nothing changes.
+ */
+export function seedRejoin<T extends JoinGateGroup & { joinedAccountId?: string }>(group: T): T {
+  if (group.joinRejoin || group.joinDead || groupIsMember(group) || !String(group.joinedAccountId || "")) return group;
+  return { ...group, joinRejoin: true };
+}
+
 export type RescorePatch = {
   joinRelevance: GroupRelevance;
   /** Parked groups leave the auto-queue (state cleared), everything else keeps its state. */
@@ -472,7 +492,8 @@ export function rescoreGroup(
   profile: RelevanceProfile,
   opts: { force?: boolean; now?: Date } = {},
 ): RescorePatch | null {
-  if (groupIsMember(group) || group.joinRejoin) return null;
+  // Rejoins are scored too (queue order, UI) — the gate lets them through regardless.
+  if (groupIsMember(group)) return null;
   if (!opts.force && !isRelevanceStale(group.joinRelevance, profile)) return null;
   const joinRelevance = scoreGroupRelevance(group, profile, opts.now);
   const gate = joinGateFor({ ...group, joinRelevance });

@@ -357,6 +357,8 @@ describe('workspace API: join pacing',()=>{
 
     const g={...group(G_WB),joinNextAt:'',joinGaveUp:false};
     testDb().sqlite.prepare('UPDATE records SET data=? WHERE id=?').run(JSON.stringify(g),G_WB);
+    // The failed attempt above spent a half gap on the account; skip past it for the second attempt.
+    testDb().sqlite.prepare('UPDATE records SET data=? WHERE id=?').run(JSON.stringify({...account(ACCOUNT_ID),joinNextAt:'',lastJoinAt:''}),ACCOUNT_ID);
     stubWorker({ok:false,join:'failed',error:'Telegram не подтвердил вступление'});
     await POST(postRequest({action:'join_group',id:G_WB}));
     expect(account(ACCOUNT_ID).joinReservedUntil).toBe('');
@@ -373,5 +375,50 @@ describe('workspace API: join pacing',()=>{
     expect(res.status).toBe(200);
     expect(calls.filter(u=>u.endsWith('/join-group'))).toHaveLength(1);
     expect(group(G_NEW).joinRelevance.band).toBe('auto');
+  });
+
+  it('a failed attempt still spends a (half) gap on the account — no back-to-back Telegram calls',async()=>{
+    const G2='a0000000-0000-4000-8000-000000000013';
+    addRecord(G2,'group',unjoined('Ozon | Чат поставщиков','https://t.me/ozon_suppliers_test'));
+    const calls=stubWorker({ok:false,join:'private',error:'Группа приватная — нужен инвайт-ссылка'});
+
+    await POST(postRequest({action:'join_group',id:G_WB}));
+    const second=await POST(postRequest({action:'join_group',id:G2}));
+
+    expect(calls.filter(u=>u.endsWith('/join-group'))).toHaveLength(1);
+    expect(second.status).toBe(429);
+    const gap=(Date.parse(account(ACCOUNT_ID).joinNextAt)-Date.now())/1000;
+    expect(gap).toBeGreaterThanOrEqual(170);
+    expect(gap).toBeLessThanOrEqual(450);
+  });
+
+  it('only untried accounts paced → the pause is the group\'s, the farm keeps going (retryOther)',async()=>{
+    addRecord(ACC2,'account',{name:'Farm 2',phone:'+79990001123',status:'active',proxyId:'',joinNextAt:new Date(Date.now()+300_000).toISOString()},await seal(JSON.stringify({session:'s2'}),OWNER));
+    testDb().sqlite.prepare('UPDATE records SET created=? WHERE id=?').run('2026-01-01T00:00:00Z',ACC2);
+    const g={...group(G_WB),joinMissingAccounts:[ACCOUNT_ID],usernameMissing:true};
+    testDb().sqlite.prepare('UPDATE records SET data=? WHERE id=?').run(JSON.stringify(g),G_WB);
+    const calls=stubWorker({ok:true,join:'joined'});
+
+    const res=await POST(postRequest({action:'join_group',id:G_WB}));
+    const data=await body(res);
+
+    expect(res.status).toBe(429);
+    expect(data.retryOther).toBe(true);
+    expect(data.farmExhausted).toBeUndefined();
+    expect(calls.filter(u=>u.endsWith('/join-group'))).toHaveLength(0);
+  });
+
+  it('heal migrates legacy swapped groups (joinedAccountId, no membership) as rejoins, not new decisions',async()=>{
+    const G_OLD='a0000000-0000-4000-8000-000000000014';
+    addRecord(G_OLD,'group',unjoined('МойСклад | Блог','https://t.me/moysklad_blog_test',{joinedAccountId:ACCOUNT_ID,joinState:''}));
+    const G_SKIP='a0000000-0000-4000-8000-000000000015';
+    addRecord(G_SKIP,'group',unjoined('Главред','https://t.me/glvrd_old_test',{joinedAccountId:ACCOUNT_ID,joinDecision:'skipped',source:'tgstat-blogs',joinState:''}));
+
+    const healed=await body(await POST(postRequest({action:'heal_dead_group_accounts'})));
+
+    expect(group(G_OLD).joinRejoin).toBe(true);
+    expect(healed.items.map((i:{id:string})=>i.id)).toContain(G_OLD);
+    // The owner's «не вступать» still wins over the migration.
+    expect(healed.items.map((i:{id:string})=>i.id)).not.toContain(G_SKIP);
   });
 });

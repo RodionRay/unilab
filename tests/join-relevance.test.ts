@@ -11,6 +11,7 @@ import {
   productNiches,
   rescoreGroup,
   scoreGroupRelevance,
+  seedRejoin,
 } from "@/lib/join-relevance";
 
 /** Settings shaped like a marketplace-seller SaaS (no real customer data). */
@@ -72,6 +73,14 @@ describe("relevance score · bands", () => {
     expect(score({ name: "@sellertestwb", url: "https://t.me/sellertestwb" }).band).not.toBe("skip");
   });
 
+  it("a group that already produced leads is lifted even with a meaningless title", () => {
+    const bare = score({ name: "marketguruclub_test", url: "https://t.me/marketguruclub_test" });
+    const withLeads = scoreGroupRelevance({ name: "marketguruclub_test", url: "https://t.me/marketguruclub_test", leadsTotal: 11 }, profile);
+    expect(bare.band).toBe("skip");
+    expect(withLeads.score).toBeGreaterThanOrEqual(RELEVANCE_REVIEW_MIN);
+    expect(withLeads.reasons[0]).toMatch(/давала лиды: 11/);
+  });
+
   it("unconfigured settings switch the filter off instead of parking everything", () => {
     const r = scoreGroupRelevance({ name: "Что угодно", url: "https://t.me/anything_test" }, buildRelevanceProfile({}));
     expect(r.band).toBe("auto");
@@ -115,6 +124,15 @@ describe("join gate", () => {
     expect(joinGateFor({ joinDecision: "approved", joinRelevance: rel("skip", 5) }).allow).toBe(true);
     expect(joinGateFor({ joinDecision: "skipped", joinRelevance: rel("auto", 95) }).allow).toBe(false);
     expect(joinGateFor({ joinDead: true, joinRelevance: rel("auto", 95) }).state).toBe("dead");
+  });
+
+  it("rejoin (membership reset by an account swap) passes, but a dead link and «skipped» still win", () => {
+    expect(joinGateFor({ joinRejoin: true, joinRelevance: rel("skip", 0) })).toMatchObject({ allow: true, state: "joined" });
+    expect(joinGateFor({ joinRejoin: true, joinDead: true }).state).toBe("dead");
+    expect(joinGateFor({ joinRejoin: true, joinDecision: "skipped" }).state).toBe("skipped");
+    expect(seedRejoin({ joinedAccountId: "a1", membership: "none" })).toMatchObject({ joinRejoin: true });
+    const never = { membership: "none" };
+    expect(seedRejoin(never)).toBe(never);
   });
 
   it("an unscored group is parked for review, not joined blind", () => {

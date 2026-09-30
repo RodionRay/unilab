@@ -1,8 +1,8 @@
 import {getSessionUser} from '@/lib/auth';
 import {GROUP_CATALOG,isCatalogPlaceholderUrl} from '@/lib/group-catalog';
 import {JOIN_SUCCESS_PATCH,JOIN_WORKER_ERROR_RETRY_MS,accountBlindPatch,classifyJoinFailure,deadLinkPatch,isAccountBlindResult,isAccountResolveBlind,isUsernameMissingResult,joinFailurePatch,missingAccountsOf,planGroupHeal,recordUsernameMissing,sanitizeJoinStateError,seedMissingAccounts} from '@/lib/processes/join-flow';
-import {buildRelevanceProfile,compareJoinPriority,joinGateFor,rescoreGroup,type JoinGateState} from '@/lib/join-relevance';
-import {JOIN_RESERVE_MS,accountJoinWaitSec,channelsTooMuchPatch,farmThroughput,joinErrorPatch,joinFloodPatch,joinSuccessPatch,planJoinFarm,type FarmAccount} from '@/lib/join-pacing';
+import {buildRelevanceProfile,compareJoinPriority,joinGateFor,rescoreGroup,seedRejoin,type JoinGateState} from '@/lib/join-relevance';
+import {JOIN_RESERVE_MS,accountJoinWaitSec,channelsTooMuchPatch,joinAttemptPatch,farmThroughput,joinErrorPatch,joinFloodPatch,joinSuccessPatch,planJoinFarm,type FarmAccount} from '@/lib/join-pacing';
 import {database,seal,unseal} from '@/lib/server-store';
 import {aiChatText,envAiApiKey,resolveAiConfig} from '@/lib/ai-client';
 import {buildProjectBrief,leadMessageFingerprint,normalizeLeadMessage,parseLeadTemperature,ratingFromTemperatures,strongPlusTerms,type LeadTemperature} from '@/lib/lead-filter';
@@ -1124,10 +1124,11 @@ async function refreshGroupRelevance(owner:string,opts:{force?:boolean}={}){
  for(const row of rows.results){
   let d:any;
   try{d=JSON.parse(String(row.data))}catch{continue}
-  const patch=rescoreGroup(d,profile,{force:opts.force});
-  let next=d;
+  // Бывшие вступившие (членство сброшено старой пересадкой) — восстановление, не решение фильтра.
+  let next=seedRejoin(d);
+  const patch=rescoreGroup(next,profile,{force:opts.force});
   if(patch){
-   next={...d,joinRelevance:patch.joinRelevance};
+   next={...next,joinRelevance:patch.joinRelevance};
    if(patch.clearQueue){next={...next,joinState:'',joinStateAt:''};cleared++}
   }
   if(opts.force)next=seedMissingAccounts(next);
@@ -1817,11 +1818,16 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      },429);
     }
     const wait=Math.max(30,plan[0]!.waitSec);
+    // Готовы только аккаунты, уже не видевшие @ этой группы: пауза группы, не всей фермы.
+    const groupOnly=exclude.size>0&&planJoinFarm(farm).some(c=>c.waitSec===0);
     return reply({
-     error:`Все аккаунты на паузе между вступлениями: ~${Math.ceil(wait/60)} мин, чтобы не словить бан`,
+     error:groupOnly
+      ?`Аккаунты, ещё не пробовавшие эту группу, на паузе ~${Math.ceil(wait/60)} мин`
+      :`Все аккаунты на паузе между вступлениями: ~${Math.ceil(wait/60)} мин, чтобы не словить бан`,
      waitSec:wait,
      nextJoinAt:new Date(Date.now()+wait*1000).toISOString(),
      pace:true,
+     ...(groupOnly?{retryOther:true}:{}),
      rotatedAccount,
      group:gdata,
     },429);
@@ -1899,10 +1905,11 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     await patchAccount(owner,accountId,{...accountBlindPatch(),...release,error:String(result.error||'').slice(0,500)});
     try{await appendGlobalRescanLog(owner,'warn',`Аккаунт ${accountId.slice(0,8)} слеп на ResolveUsername${result.sessionRefreshed?' (новая сессия)':''} — отлёжка 6 ч`)}catch{/* */}
    }
-   if(failure==='account'){
-    await bumpJoinErrorStreak(owner,accountId);
-   }else if(failure==='group'){
-    await patchAccount(owner,accountId,release);
+   // Попытка дошла до Telegram, но не удалась — аккаунт всё равно выдерживает (половинную) паузу.
+   if(failure==='account'||failure==='group'){
+    if(!alreadyIn)await patchAccount(owner,accountId,joinAttemptPatch(ageDays));
+    else await patchAccount(owner,accountId,release);
+    if(failure==='account')await bumpJoinErrorStreak(owner,accountId);
    }
    if(frozen){
     await patchAccount(owner,accountId,d=>({...withFrozenStatus(d,result.error||'Аккаунт заморожен Telegram'),...release}));
@@ -1922,8 +1929,11 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      return reply({error:'Аккаунт заморожен — группа переназначена на живой аккаунт',accountFrozen:true,reassigned:true,needJoin:true,rejoinItem:rotated.rejoinItem,group:rotated.gdata},409);
     }
    }else if(!alreadyIn){
-    // Сбой воркера/сессии — ошибка на стороне аккаунта: серия ошибок ставит его вступления на паузу.
+    // Сбой воркера/сессии — ошибка на стороне аккаунта: пауза попытки + серия ошибок.
+    await patchAccount(owner,accountId,joinAttemptPatch(ageDays));
     await bumpJoinErrorStreak(owner,accountId);
+   }else{
+    await patchAccount(owner,accountId,release);
    }
    const next={...gdata,status:'error',error:msg.slice(0,500),joinState:'',joinStateAt:'',joinStateError:msg.slice(0,500),joinNextAt:new Date(Date.now()+JOIN_WORKER_ERROR_RETRY_MS).toISOString()};
    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'group').run();

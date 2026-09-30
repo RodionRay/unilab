@@ -14,6 +14,7 @@ niches / description / audience / subscriber count (`catalogEntryFor`, `membersF
 | Signal | Points |
 |---|---|
 | base | 25 |
+| already produced leads (`leadsTotal`) | +20, ≥ 5 leads +30; counts as topical evidence |
 | niche of the product (catalog niches, or inferred from the title outside the catalog) | +12 each, ≤ 36 |
 | strong term (keywords, hot signals, audience, everyday niche names: wb, озон, селлер, мойсклад …) | +14 each, ≤ 42 |
 | weak product word | +6 each, ≤ 12 |
@@ -32,7 +33,8 @@ config switch the filter off (everything auto).
 `joinGateFor(group)` is the single decision used by the server and the UI: joined/pending groups are
 always allowed and never rescored — so is a group whose membership was reset by an account swap
 (`joinRejoin`, set by heal reassign / restore-previous and by scan rotations, cleared on the next
-successful join); owner decisions (`joinDecision`: `approved` / `skipped`) beat the
+successful join; `seedRejoin` migrates older groups that have `joinedAccountId` but lost membership).
+A dead link and the owner's «не вступать» still win over a rejoin; rejoins are scored for queue order; owner decisions (`joinDecision`: `approved` / `skipped`) beat the
 score; a dead link (`joinDead`) is never auto-joined; a group without a score is parked, not joined blind.
 Queue order: `compareJoinPriority` — approved first, then score, then subscribers.
 
@@ -66,13 +68,15 @@ Parallel across accounts, serial per account and per proxy.
 | PEER_FLOOD | spamblock 24 h (`withSpamblockStatus`) | spam filter hit — stop the account |
 | CHANNELS_TOO_MUCH | no joins for 7 days (`channelsTooMuchPatch`) | account is in 500 chats |
 | consecutive account-side errors | 4 → joins paused 6 h (`joinErrorPatch`) | stop hammering a sick session |
+| failed attempt that reached Telegram (private, banned, dead link, worker error) | half a gap + proxy spacing, not counted in the cap (`joinAttemptPatch`) | a queue of bad links must not turn into back-to-back calls |
 
 `join_group` picks the group's own account if ready, else the soonest ready farm account
 (`planJoinFarm`), and reserves it with a compare-and-swap on the account row (`reserveJoinAccount`) so
 parallel joins never share an account or a proxy. The cron (`app/api/cron/auto-rescan/route.ts`) runs
 up to 4 joins at once (`JOIN_CONCURRENCY`, ≤ 8 per tick) and stops launching joins only on farm-wide
 answers: `farmExhausted` / `limitReached` (caps everywhere), every account resolve-blind, or `pace`
-without `retryOther` (every account inside its gap). Per-account answers (`retryOther`: FloodWait,
+without `retryOther` (every account inside its gap). When only the accounts that have not tried a group
+yet are paced, the answer carries `retryOther` — the pause is that group's, not the farm's. Per-account answers (`retryOther`: FloodWait,
 PEER_FLOOD, CHANNELS_TOO_MUCH) and per-group answers (`parked`, `deferred`) only skip that item.
 A joined group whose peer is refreshed uses its own account: it waits for that account's timers and
 reserves it like a new join. The tick summary logs throughput: joins today / farm cap, accounts

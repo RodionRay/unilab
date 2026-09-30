@@ -12,7 +12,7 @@ import Database from "better-sqlite3";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildRelevanceProfile, joinGateFor, rescoreGroup } from "@/lib/join-relevance";
+import { buildRelevanceProfile, joinGateFor, rescoreGroup, seedRejoin } from "@/lib/join-relevance";
 import { seedMissingAccounts } from "@/lib/processes/join-flow";
 
 type Row = { id: string; owner: string; data: string };
@@ -45,12 +45,14 @@ function main() {
     const scored: { name: string; score: number; state: string; reason: string }[] = [];
     let cleared = 0;
     let seeded = 0;
+    let rejoined = 0;
     for (const row of groups) {
       const g = JSON.parse(row.data);
-      const patch = rescoreGroup(g, profile, { force: true, now });
-      let next = g;
+      let next = seedRejoin(g);
+      if (next !== g) rejoined++;
+      const patch = rescoreGroup(next, profile, { force: true, now });
       if (patch) {
-        next = { ...g, joinRelevance: patch.joinRelevance };
+        next = { ...next, joinRelevance: patch.joinRelevance };
         if (patch.clearQueue) {
           next = { ...next, joinState: "", joinStateAt: "" };
           cleared++;
@@ -76,6 +78,7 @@ function main() {
       counts,
       queueCleared: cleared,
       missingSeeded: seeded,
+      rejoinSeeded: rejoined,
       top: scored.slice(0, top),
       bottom: scored.slice(-top),
     });

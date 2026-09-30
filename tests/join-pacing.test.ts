@@ -15,6 +15,7 @@ import {
   farmThroughput,
   floodMarginSec,
   joinErrorPatch,
+  joinAttemptPatch,
   joinFloodPatch,
   joinSuccessPatch,
   nextJoinGapSec,
@@ -81,6 +82,13 @@ describe("gaps, jitter and FloodWait", () => {
     expect(accountJoinWaitSec({ ...active, ...p }, NOW)).toBe(1150);
     // Legacy helper sees the same timer (used by evaluateJoinGate).
     expect(joinWaitSec({ ...p }, NOW)).toBe(1150);
+  });
+
+  it("a failed attempt spends half a gap and marks the proxy busy, without counting in the daily cap", () => {
+    const p = joinAttemptPatch(30, NOW, () => 0);
+    expect(Date.parse(p.joinNextAt!) - NOW).toBe((JOIN_GAP_AGED_SEC[0] / 2) * 1000);
+    expect(p.lastJoinAt).toBe(iso(NOW));
+    expect(p).not.toHaveProperty("joinsToday");
   });
 
   it("legacy lastJoinAt still spaces joins when no jitter slot is stored", () => {

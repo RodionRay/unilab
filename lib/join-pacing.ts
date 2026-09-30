@@ -186,6 +186,22 @@ export function joinSuccessPatch(
   };
 }
 
+/**
+ * A join attempt that reached Telegram but failed (private, banned, dead link …) still spends the
+ * account's rhythm: half a normal gap, and the proxy spacing via lastJoinAt. Not counted in the daily cap.
+ */
+export function joinAttemptPatch(
+  ageDays: number,
+  now = Date.now(),
+  rnd: () => number = Math.random,
+): Partial<PacedAccount> {
+  return {
+    lastJoinAt: new Date(now).toISOString(),
+    joinNextAt: new Date(now + Math.floor(nextJoinGapSec(ageDays, rnd) / 2) * 1000).toISOString(),
+    joinReservedUntil: "",
+  };
+}
+
 /** FloodWait: pause exactly the demanded time plus margin; the account stays active. */
 export function joinFloodPatch(waitSec: number, now = Date.now()): Partial<PacedAccount> & { error: string } {
   const sec = Math.max(1, Math.ceil(waitSec));
