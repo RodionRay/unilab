@@ -46,6 +46,27 @@ describe('catalogForProject',()=>{
     expect(catalogForProject(SELLER_PRODUCT).niches).not.toContain('auto');
   });
 
+  it.each([
+    ['авторы курсов и блогеры','auto',false],
+    ['автосалонов и автодилеров','auto',true],
+    ['продаём автомобили','auto',true],
+    ['ямы на дорогах','yandex_market',false],
+    ['селлеры Яндекс.Маркета','yandex_market',true],
+    ['поставщики для WB','wildberries',true],
+    ['интеграция с 1С:Предприятие','1c',true],
+    ['чат-бот поддержки','bots',true],
+    ['дропшиппинг из Китая','dropshipping',true],
+    ['оптовые поставки','b2b',true],
+    ['внедрение амоCRM','crm',true],
+    ['ценообразование товаров','pricing',true],
+  ])('«%s» → ниша %s: %s',(text,niche,expected)=>{
+    expect(nichesFromProjectText(text).includes(niche as never)).toBe(expected);
+  });
+
+  it('общие слова «продажи», «лиды» сами по себе чаты не заливают',()=>{
+    expect(catalogForProject({product:'B2B продажи и лиды для бизнеса'})).toEqual({niches:[],groups:[]});
+  });
+
   it('без ниш в настройках — пустой список',()=>{
     expect(catalogForProject({name:'Проект'})).toEqual({niches:[],groups:[]});
   });
@@ -89,6 +110,26 @@ describe('import_catalog',()=>{
   });
 
   it('без ниш в настройках отказывает и ничего не заливает',async()=>{
+    const res=await POST(postRequest({action:'import_catalog'}));
+    const body=await res.json() as {error:string};
+
+    expect(res.status).toBe(400);
+    expect(body.error).toContain('нет ниш продукта');
+    expect(groupUrls()).toHaveLength(0);
+  });
+
+  it('без записи настроек отказывает 400',async()=>{
+    testDb().sqlite.prepare('DELETE FROM records WHERE id=?').run(SETTINGS_ID);
+
+    const res=await POST(postRequest({action:'import_catalog'}));
+
+    expect(res.status).toBe(400);
+    expect(groupUrls()).toHaveLength(0);
+  });
+
+  it('битый JSON настроек — 400, а не 500',async()=>{
+    testDb().sqlite.prepare('UPDATE records SET data=? WHERE id=?').run('{broken',SETTINGS_ID);
+
     const res=await POST(postRequest({action:'import_catalog'}));
 
     expect(res.status).toBe(400);

@@ -2748,8 +2748,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     if(k)byUrl.set(k,String(r.id));
    }catch{/* */}
   }
-  const settingsRow=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='settings' LIMIT 1").bind(owner).first<{data:string}>();
-  const {niches,groups:ready}=catalogForProject(settingsRow?JSON.parse(String(settingsRow.data)):{});
+  const {niches,groups:ready}=catalogForProject((await loadNotifySettings(db,owner))||{});
   if(!ready.length)return reply({error:'В настройках AI нет ниш продукта — опишите продукт или выберите чаты в каталоге вручную'},400);
   let added=0;
   let skipped=0;

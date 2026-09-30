@@ -588,6 +588,7 @@ const NICHE_ALIASES: Record<string, GroupNiche[]> = {
   китай: ["china", "logistics", "dropshipping"],
   1688: ["china", "dropshipping"],
   дроп: ["dropshipping", "ecommerce", "china"],
+  дропшип: ["dropshipping", "ecommerce", "china"],
   dropshipping: ["dropshipping", "ecommerce"],
   остатк: ["inventory", "marketplaces"],
   склад: ["inventory", "logistics", "fulfillment"],
@@ -599,6 +600,7 @@ const NICHE_ALIASES: Record<string, GroupNiche[]> = {
   логистик: ["logistics", "fulfillment"],
   отзыв: ["reviews"],
   цен: ["pricing"],
+  ценообраз: ["pricing"],
   репрайс: ["pricing", "analytics", "saas"],
   аналитик: ["analytics"],
   mpstats: ["analytics", "marketplaces", "saas"],
@@ -609,6 +611,7 @@ const NICHE_ALIASES: Record<string, GroupNiche[]> = {
   автоматиз: ["marketplaces", "inventory", "pricing", "saas", "bots"],
   crm: ["crm", "saas", "b2b", "business"],
   амо: ["crm", "saas"],
+  амоcrm: ["crm", "saas"],
   amocrm: ["crm", "saas"],
   битрикс: ["crm", "saas"],
   bitrix: ["crm", "saas"],
@@ -648,6 +651,11 @@ const NICHE_ALIASES: Record<string, GroupNiche[]> = {
   доставк: ["food", "logistics"],
   horeca: ["food", "business"],
   авто: ["auto", "crm", "business"],
+  автомоб: ["auto", "crm", "business"],
+  автосалон: ["auto", "crm", "business"],
+  автодил: ["auto", "crm", "business"],
+  автосервис: ["auto", "crm", "business"],
+  автозапчаст: ["auto", "business"],
   недвижимост: ["realestate", "crm", "leadgen"],
   риелтор: ["realestate", "leadgen"],
   ваканси: ["hr"],
@@ -663,18 +671,23 @@ const NICHE_ALIASES: Record<string, GroupNiche[]> = {
   бренд: ["business", "ecommerce", "marketing", "fashion", "beauty"],
   dtc: ["ecommerce", "marketing", "business"],
   опт: ["b2b", "business", "china", "ecommerce"],
+  оптов: ["b2b", "business", "china", "ecommerce"],
   helpdesk: ["saas", "crm", "bots"],
   омниканал: ["saas", "crm", "bots"],
   телефони: ["crm", "saas", "b2b"],
   колл: ["crm", "b2b", "business"],
   блог: ["blogs", "content", "business"],
+  блогер: ["blogs", "content", "business"],
   блоги: ["blogs", "content", "business", "marketing"],
   tgstat: ["blogs", "bots", "analytics", "marketing"],
   медиа: ["blogs", "content", "marketing"],
 };
 
-/** Id тем без verified-ссылки + старые фейки. */
-export function catalogPlaceholderUsernames(): Set<string> {
+let placeholderUsernames: ReadonlySet<string> | null = null;
+
+/** Id тем без verified-ссылки + старые фейки (каталог статичен — считаем один раз). */
+export function catalogPlaceholderUsernames(): ReadonlySet<string> {
+  if (placeholderUsernames) return placeholderUsernames;
   const set = new Set<string>([
     "mp_automation",
     "wb_sellers",
@@ -690,6 +703,7 @@ export function catalogPlaceholderUsernames(): Set<string> {
   for (const item of GROUP_CATALOG) {
     if (!item.verified || !item.url) set.add(item.id.replace(/-/g, "_").toLowerCase());
   }
+  placeholderUsernames = set;
   return set;
 }
 
@@ -706,13 +720,19 @@ export function extractTelegramUsername(url: string): string | null {
 export function isCatalogPlaceholderUrl(url: string): boolean {
   const name = extractTelegramUsername(url);
   if (!name) return false;
-  const real = new Set(
+  if (verifiedCatalogUsernames().has(name)) return false;
+  return catalogPlaceholderUsernames().has(name);
+}
+
+let verifiedUsernames: ReadonlySet<string> | null = null;
+
+function verifiedCatalogUsernames(): ReadonlySet<string> {
+  verifiedUsernames ??= new Set(
     GROUP_CATALOG.filter((item) => item.verified && item.url)
       .map((item) => extractTelegramUsername(item.url))
       .filter(Boolean) as string[],
   );
-  if (real.has(name)) return false;
-  return catalogPlaceholderUsernames().has(name);
+  return verifiedUsernames;
 }
 
 function nicheWords(text: string): string[] {
@@ -724,10 +744,19 @@ function nicheWords(text: string): string[] {
     .filter(Boolean);
 }
 
-/** Word-start match, so «автоматизация» is not «авто»; a short alias (wb, ям) may only take an ending. */
+/** Case endings a short alias may take: «бота», «лидов», «оптом» — but not «авторы», «ямка». */
+const SHORT_ALIAS_ENDINGS = new Set(["а", "я", "у", "ю", "е", "и", "ы", "о", "ом", "ем", "ой", "ей", "ам", "ям", "ах", "ях", "ов", "ев", "ами", "ями"]);
+
+/**
+ * Word-start match, so «автоматизация» is not «авто». Short aliases (≤4) match whole or with a case
+ * ending only; two-letter abbreviations (wb, ям, 1с) match whole.
+ */
 function aliasMatchesWord(alias: string, word: string): boolean {
-  if (alias.length <= 4) return word === alias || (word.startsWith(alias) && word.length <= alias.length + 2);
-  return word.startsWith(alias);
+  if (word === alias) return true;
+  if (!word.startsWith(alias)) return false;
+  if (alias.length <= 2) return false;
+  if (alias.length <= 4) return SHORT_ALIAS_ENDINGS.has(word.slice(alias.length));
+  return true;
 }
 
 /** Aliases too generic to prove a chat is on-topic, whatever niche they map to. */
@@ -740,6 +769,9 @@ export const GENERIC_NICHE_ALIASES: ReadonlySet<string> = new Set([
   "бот",
   "чат-бот",
   "цен",
+  "продаж",
+  "лид",
+  "b2b",
 ]);
 
 function aliasNiches(parts: (string | undefined)[], skipAliases: ReadonlySet<string> = new Set()): Set<GroupNiche> {

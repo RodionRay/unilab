@@ -707,7 +707,8 @@ function WorkspaceHome(){
 
   const list=(kind:Kind)=>records.filter(r=>r.kind===kind);
   const settings=list('settings')[0];
-  const projectCatalogCount=catalogForProject(settings?.data||{}).groups.length;
+  const settingsData=settings?.data;
+  const projectCatalogCount=useMemo(()=>catalogForProject(settingsData||{}).groups.length,[settingsData]);
   const aiKeyReady=!!(settings?.hasSecret||aiMeta?.hasEnvKey);
   const freshLeads=list('lead').filter(r=>!r.data.viewed&&!r.data.excludeFromTraining);
   const viewedLeads=list('lead').filter(r=>!!r.data.viewed&&!r.data.excludeFromTraining);
@@ -2916,7 +2917,7 @@ function WorkspaceHome(){
             </EmptyDescription>
           </EmptyHeader>
           <div className="flex flex-wrap gap-2 justify-center">
-            <Button disabled={busy} onClick={()=>void importProjectCatalogToDb()}>
+            <Button disabled={busy||!projectCatalogCount} onClick={()=>void importProjectCatalogToDb()}>
               <Database size={16}/>Залить по нишам ({projectCatalogCount})
             </Button>
             <Button variant="outline" onClick={()=>openCatalog('all')}><Search size={16}/>Открыть каталог</Button>
@@ -3167,7 +3168,7 @@ function WorkspaceHome(){
                   <Button variant="outline" onClick={openMassGroups}><Upload size={16}/>Добавить массово</Button>
                   <Button
                     variant="outline"
-                    disabled={busy}
+                    disabled={busy||!projectCatalogCount}
                     onClick={()=>void importProjectCatalogToDb()}
                   >Залить по нишам ({projectCatalogCount})</Button>
                   <Button onClick={openCatalog}><Search size={16}/>Поиск по темам</Button>
@@ -4858,7 +4859,7 @@ function WorkspaceHome(){
                   type="button"
                   size="sm"
                   className="mt-3 w-full"
-                  disabled={busy}
+                  disabled={busy||!projectCatalogCount}
                   onClick={()=>void importProjectCatalogToDb()}
                 ><Database size={14}/>Дозалить по нишам ({projectCatalogCount})</Button>
               )}
@@ -5029,7 +5030,7 @@ function WorkspaceHome(){
                     })();
                   }}
                 >Собрать лиды со вступивших</Button>
-                <Button variant="outline" disabled={busy} onClick={()=>void importProjectCatalogToDb()}>
+                <Button variant="outline" disabled={busy||!projectCatalogCount} onClick={()=>void importProjectCatalogToDb()}>
                   Дозалить по нишам ({projectCatalogCount})
                 </Button>
                 <Button variant="ghost" onClick={()=>selectMarket('all')}>Все чаты каталога</Button>
@@ -5037,7 +5038,7 @@ function WorkspaceHome(){
             ):catalogTab==='links'?(
               <>
                 <Button
-                  disabled={busy||!catalogReadyCount}
+                  disabled={busy||(catalogMarket==='all'?!projectCatalogCount:!catalogReadyCount)}
                   variant="default"
                   onClick={()=>catalogMarket==='all'?void importProjectCatalogToDb():saveCatalogGroupsToDb(catalogLinkHits.map(g=>g.id),{join:false})}
                 >{busy?'Сохраняем…':catalogMarket==='all'?`Залить по нишам (${projectCatalogCount})`:`Залить в базу (${catalogReadyCount})`}</Button>
