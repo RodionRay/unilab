@@ -19,9 +19,11 @@ export const LEAD_TEMPERATURE_LABELS: Record<LeadTemperature, string> = {
  * Покупательский intent: человек ИЩЕТ услугу/сервис/совет «что взять»,
  * а не просто болтает про маркетплейс.
  * НЕ включать сюда темы продукта (автоматизация/интеграция) — иначе ловятся обычные реплики.
+ * «кто пользуется X» — buyer только для латинского названия инструмента (MPstats); кириллица
+ * («ипотекой», «Сбером», «мойсклад») — мягкий вопрос, warm только через совпадения с настройками.
  */
 const BUYER_INTENT_RE =
-  /(?:^|[^\p{L}])(?:(?:ищу|ищем)\s+(?:сервис|подрядчик[\p{L}\p{N}]*|интегратор[\p{L}\p{N}]*|разработчик[\p{L}\p{N}]*|агентство|инструмент[\p{L}\p{N}]*|программ[\p{L}\p{N}]*|crm|решени[\p{L}\p{N}]*|платформ[\p{L}\p{N}]*)|нуж(?:ен|на|но|ны)\s+(?:сервис|подрядчик[\p{L}\p{N}]*|интегратор[\p{L}\p{N}]*|разработчик[\p{L}\p{N}]*|агентство|инструмент[\p{L}\p{N}]*|программ[\p{L}\p{N}]*|crm|решени[\p{L}\p{N}]*)|требуется\s+(?:сервис|подрядчик[\p{L}\p{N}]*|интегратор[\p{L}\p{N}]*)|подскаж(?:ите|и)\s+(?:сервис|crm|инструмент|платформ|чем\s+вести|как\s+вести)|посоветуйте\s+(?:сервис|crm|инструмент|платформ)|у\s+кого\s+(?:брать|заказывать)\s+(?:сервис|crm)|кто\s+(?:пользовался|пользуется)\s+(?!(?:для|чем|при|на|в|во|с|со|у|по|из|как|ли|уже|сейчас|тоже|этим|таким|каким)(?![\p{L}\p{N}]))[\p{L}\p{N}]+|как\s+(?:настроить|подключить|внедрить|автоматизировать)\s+(?:остат|синхрон|цен|отзыв|1с|мойсклад|кабинет)|готовы?\s+(?:купить|оплатить|внедрить)\s+(?:сервис|решени|подписк)|(?:пришлите|нужно|нужен|скиньте|запросите)\s+(?:кп|коммерческ)|на\s+демо|нужна?\s+crm|ищу\s+crm)/iu;
+  /(?:^|[^\p{L}])(?:(?:ищу|ищем)\s+(?:сервис|подрядчик[\p{L}\p{N}]*|интегратор[\p{L}\p{N}]*|разработчик[\p{L}\p{N}]*|агентство|инструмент[\p{L}\p{N}]*|программ[\p{L}\p{N}]*|crm|решени[\p{L}\p{N}]*|платформ[\p{L}\p{N}]*)|нуж(?:ен|на|но|ны)\s+(?:сервис|подрядчик[\p{L}\p{N}]*|интегратор[\p{L}\p{N}]*|разработчик[\p{L}\p{N}]*|агентство|инструмент[\p{L}\p{N}]*|программ[\p{L}\p{N}]*|crm|решени[\p{L}\p{N}]*)|требуется\s+(?:сервис|подрядчик[\p{L}\p{N}]*|интегратор[\p{L}\p{N}]*)|подскаж(?:ите|и)\s+(?:сервис|crm|инструмент|платформ|чем\s+вести|как\s+вести)|посоветуйте\s+(?:сервис|crm|инструмент|платформ)|у\s+кого\s+(?:брать|заказывать)\s+(?:сервис|crm)|кто\s+(?:пользовался|пользуется)\s+[a-z][a-z0-9]*(?![\p{L}\p{N}])|как\s+(?:настроить|подключить|внедрить|автоматизировать)\s+(?:остат|синхрон|цен|отзыв|1с|мойсклад|кабинет)|готовы?\s+(?:купить|оплатить|внедрить)\s+(?:сервис|решени|подписк)|(?:пришлите|нужно|нужен|скиньте|запросите)\s+(?:кп|коммерческ)|на\s+демо|нужна?\s+crm|ищу\s+crm)/iu;
 
 /** Мягкий вопрос — только вместе с product-fit / сильным плюсом. */
 const SOFT_ASK_RE =
@@ -43,7 +45,7 @@ const SPAM_RE =
   /(?:нужн[ыа]\s*деньг|деньги\s+прямо\s+сейчас|займ|кредит\s+онлайн|пиши[,.]?\s*могу\s+помочь|накрутк|купл[юи]\s+аккаунт|продам\s+аккаунт|ваканси|резюме|ищу\s+работ)/iu;
 
 const SERVICE_AD_RE =
-  /(?:матриц[аыеу]\s+судьб|судьб[\p{L}\p{N}]*\s+матриц|таро|гадан[\p{L}\p{N}]*|астролог|нумеролог|эзотерик|руны(?![\p{L}\p{N}])|натальн[\p{L}\p{N}]*\s+карт|разбор\s+матриц|(?:писать|пишите|пиши|напишите)\s*@|tg\s*@|передано\s+через\s*@|есть\s+отзывы\s*[)）]|занимаюсь\s+(?:разбором|гадан|эзотери|таро)|принимаю\s+заказ|услуги\s+гадан)/iu;
+  /(?<![\p{L}\p{N}])(?:матриц[аыеу]\s+судьб|судьб[\p{L}\p{N}]*\s+матриц|таро|гадан[\p{L}\p{N}]*|астролог|нумеролог|эзотерик|руны(?![\p{L}\p{N}])|натальн[\p{L}\p{N}]*\s+карт|разбор\s+матриц|(?:писать|пишите|пиши|напишите)\s*@|tg\s*@|передано\s+через\s*@|есть\s+отзывы\s*[)）]|занимаюсь\s+(?:разбором|гадан|эзотери|таро)|принимаю\s+заказ|услуги\s+гадан)/iu;
 
 /** Слишком общие плюс-слова — не считаем совпадением. */
 export const WEAK_PLUS_TERMS = new Set([
@@ -69,16 +71,26 @@ export const WEAK_PLUS_TERMS = new Set([
   "fbo",
 ]);
 
+/** Core and worker both consider at most this many stop terms (the same ordered head of the list). */
+export const MAX_MINUS_TERMS = 120;
+
 export function splitTerms(raw: string): string[] {
   return raw
     .split(/[,;\n]+/)
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean)
-    .slice(0, 120);
+    .slice(0, MAX_MINUS_TERMS);
 }
 
 /** Minus terms shorter than this are ignored: "нал"/"бот"-class fragments are noise. */
 export const MIN_MINUS_TERM_LENGTH = 3;
+/** Longer terms are ignored: they are pasted messages, not stop-words, and cost regex time. */
+export const MAX_MINUS_TERM_LENGTH = 100;
+
+/** ё→е on both sides, so "объём" and "объем" are the same stop-word. */
+export function normalizeYo(text: string): string {
+  return text.replace(/ё/g, "е").replace(/Ё/g, "Е");
+}
 
 const minusPatternCache = new Map<string, RegExp>();
 
@@ -98,13 +110,18 @@ function minusTermPattern(term: string): RegExp {
 
 /**
  * First minus term found at a word start in `text` (phrases match as a phrase), else "".
- * Mirrors telegram-worker/src/check_account.py::find_minus_hit.
+ * Only the first MAX_MINUS_TERMS non-empty terms count; returned term is lower-cased, ё→е.
+ * Mirrors telegram-worker/src/check_account.py::find_minus_hit (shared fixture tests/fixtures/minus-match.json).
  */
 export function findMinusHit(text: string, terms: readonly string[]): string {
-  for (const raw of terms) {
-    const term = String(raw || "").trim().toLowerCase();
-    if (term.length < MIN_MINUS_TERM_LENGTH) continue;
-    if (minusTermPattern(term).test(text || "")) return term;
+  const body = normalizeYo(text || "");
+  const head = terms
+    .map((raw) => normalizeYo(String(raw || "").trim().toLowerCase()))
+    .filter(Boolean)
+    .slice(0, MAX_MINUS_TERMS);
+  for (const term of head) {
+    if (term.length < MIN_MINUS_TERM_LENGTH || term.length > MAX_MINUS_TERM_LENGTH) continue;
+    if (minusTermPattern(term).test(body)) return term;
   }
   return "";
 }

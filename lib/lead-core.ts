@@ -171,6 +171,17 @@ export function hardReject(
   return "";
 }
 
+/**
+ * Settings hits that name a topic: ask phrases themselves ("кто пользуется", "ищу сервис") do not
+ * count, and a hit contained in another hit ("склад" in "мойсклад") is the same evidence.
+ */
+export function distinctTopicHits(hits: readonly string[]): string[] {
+  const topical = [...new Set(hits.map((h) => h.toLowerCase().trim()))].filter(
+    (h) => h && !hasBuyerIntent(h) && !hasSoftAsk(h),
+  );
+  return topical.filter((h) => !topical.some((other) => other !== h && other.includes(h)));
+}
+
 export function scoreLead(text: string, settings: LeadCoreSettings): LeadScoreResult {
   const rejectReason = hardReject(text, settings);
   if (rejectReason) {
@@ -249,8 +260,8 @@ export function scoreLead(text: string, settings: LeadCoreSettings): LeadScoreRe
   }
 
   // Soft + ≥2 совпадений с настройками AI — это вопрос по теме продукта, минимум warm
-  const settingsHitCount = plusHits.length + signalHits.length + criteriaHits.length;
-  if (softAsk && !buyer && settingsHitCount >= SOFT_ASK_WARM_MIN_HITS) {
+  const topicHitCount = distinctTopicHits([...plusHits, ...signalHits, ...criteriaHits]).length;
+  if (softAsk && !buyer && topicHitCount >= SOFT_ASK_WARM_MIN_HITS) {
     score = Math.max(score, LEAD_SCORE_WARM);
   }
 

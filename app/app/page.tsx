@@ -1685,6 +1685,8 @@ function WorkspaceHome(){
       const added=Array.isArray(r.minusAdded)?r.minusAdded.filter(Boolean):[];
       if(added.length){
         toast.success(`В стоп-слова AI: ${added.slice(0,6).join(', ')}${added.length>6?'…':''}`);
+      }else if(Number(r.minusSkippedAsProduct)>0){
+        toast.message('Лид скрыт. В стоп-слова ничего не добавлено — слова пересекаются с продуктом и плюс-словами.');
       }else{
         toast.message('Лид скрыт. Новых стоп-слов не вышло (уже были в минусе).');
       }

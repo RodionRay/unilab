@@ -7,7 +7,13 @@
  * it is short, generic, marketplace context, or overlaps the positive settings of the assistant.
  */
 
-import { WEAK_PLUS_TERMS, splitTerms } from "@/lib/lead-filter";
+import {
+  MAX_MINUS_TERMS,
+  MAX_MINUS_TERM_LENGTH,
+  WEAK_PLUS_TERMS,
+  normalizeYo,
+  splitTerms,
+} from "@/lib/lead-filter";
 
 export type StopListSettings = {
   keywords?: string;
@@ -26,48 +32,45 @@ export type CleanedStopLists = {
 };
 
 const MIN_CANDIDATE_LENGTH = 4;
+const MIN_CONTENT_WORD_LENGTH = 3;
 const STEM_LENGTH = 5;
 const MIN_PROTECTED_TERM_LENGTH = 4;
 const MIN_PROTECTED_WORD_LENGTH = 4;
 const MIN_DESCRIPTION_WORD_LENGTH = 5;
 
-/** Words a real buyer uses to ask; a stop-list made only of them kills every lead. */
+/**
+ * Ask / address / question / function words. A stop-term made only of them ("кто знает",
+ * "нужна помощь", "ребят", "кто-нибудь") hits every real request, so it is never a stop signal.
+ */
 const GENERIC_WORDS = new Set([
-  "помогите",
-  "помоги",
-  "подскажите",
-  "подскажи",
-  "посоветуйте",
-  "нужен",
-  "нужна",
-  "нужно",
-  "нужны",
-  "ищу",
-  "ищем",
-  "скажите",
-  "пожалуйста",
-  "здравствуйте",
-  "привет",
-  "всем",
-  "добрый",
-  "день",
-  "вечер",
-  "кто",
-  "пользуется",
-  "пользовался",
-  "спасибо",
-  "вопрос",
-  "коллеги",
-  "ребята",
+  // ask
+  "помогите", "помоги", "помощь", "подскажите", "подскажи", "посоветуйте", "посоветуй",
+  "нужен", "нужна", "нужно", "нужны", "надо", "ищу", "ищем", "ищет", "скажите", "пожалуйста",
+  "спасибо", "вопрос", "может", "можно", "знает", "знаете", "делает", "делаете", "разбирается",
+  "пользуется", "пользовался", "пользуетесь", "работает", "есть",
+  // address / greeting
+  "здравствуйте", "привет", "всем", "добрый", "доброе", "день", "вечер", "утро", "коллеги",
+  "ребята", "ребят", "друзья", "народ", "подписчики",
+  // question words
+  "кто", "что", "как", "где", "когда", "почему", "зачем", "какой", "какая", "какое", "какие",
+  "каким", "какую", "чем", "кому", "кого", "куда", "откуда", "сколько", "нибудь", "либо",
+  // function words
+  "для", "при", "про", "без", "или", "это", "эти", "тут", "там", "уже", "еще", "все", "вот",
+  "так", "тоже", "также", "очень", "если", "чтобы", "меня", "мне", "нас", "вас", "вам", "нам",
 ]);
 
-/** Marketplace / seller context: the audience's background vocabulary, never a stop signal. */
-const MARKETPLACE_WORD_RE =
-  /^(?:wb|вб|озон|ozon|wildberries|вайлдберр|яндекс|yandex|маркет|megamarket|мегамаркет|селлер|seller|товар)/u;
+/** Marketplace / seller context: the audience's background vocabulary (closed list, whole words). */
+const CONTEXT_WORDS = new Set([
+  "wb", "вб", "озон", "озона", "озоне", "ozon", "wildberries", "вайлдберриз", "вайлдберис",
+  "вайлдбериз", "яндекс", "яндекса", "yandex", "маркет", "маркета", "маркетплейс", "маркетплейса",
+  "маркетплейсе", "маркетплейсы", "маркетплейсов", "маркетплейсам", "маркетплейсах", "мегамаркет",
+  "megamarket", "селлер", "селлера", "селлеру", "селлеры", "селлеров", "селлерам", "селлерами",
+  "seller", "sellers", "товар", "товара", "товары", "товаров", "товаре", "товарам", "склад",
+  "склада", "складе", "склады", "складов",
+]);
 
 function wordsOf(text: string): string[] {
-  return text
-    .toLowerCase()
+  return normalizeYo(text.toLowerCase())
     .split(/[^\p{L}\p{N}]+/u)
     .filter(Boolean);
 }
@@ -83,7 +86,7 @@ function protectedVocabulary(settings: StopListSettings): ProtectedVocabulary {
     ...splitTerms(settings.keywords || ""),
     ...splitTerms(settings.hotSignals || ""),
     ...splitTerms(settings.learnExamples || ""),
-  ];
+  ].map(normalizeYo);
   const words = new Set<string>();
   for (const term of terms) {
     for (const w of wordsOf(term)) {
@@ -92,47 +95,45 @@ function protectedVocabulary(settings: StopListSettings): ProtectedVocabulary {
   }
   for (const text of [settings.product || "", settings.leadCriteria || ""]) {
     for (const w of wordsOf(text)) {
-      if (w.length >= MIN_DESCRIPTION_WORD_LENGTH) words.add(w);
+      if (w.length >= MIN_DESCRIPTION_WORD_LENGTH && !GENERIC_WORDS.has(w)) words.add(w);
     }
   }
   return { terms, words, stems: new Set([...words].map(stemOf)) };
 }
 
-function isGeneric(words: string[]): boolean {
-  return words.every((w) => GENERIC_WORDS.has(w));
+function isContentWord(word: string): boolean {
+  return word.length >= MIN_CONTENT_WORD_LENGTH && !GENERIC_WORDS.has(word);
 }
 
-function isContextWord(word: string): boolean {
-  return WEAK_PLUS_TERMS.has(word) || MARKETPLACE_WORD_RE.test(word);
-}
-
-function overlapsProtected(candidate: string, words: string[], vocab: ProtectedVocabulary): boolean {
-  const termOverlap = vocab.terms.some(
-    (p) =>
-      p.includes(candidate) ||
-      (p.length >= MIN_PROTECTED_TERM_LENGTH && candidate.includes(p)),
-  );
-  if (termOverlap) return true;
-  // Word level: same 5-letter stem ("остатков" ~ "остатки") or a fragment of a protected word ("склад" in "мойсклад").
-  return words.some(
-    (w) =>
-      w.length >= MIN_PROTECTED_WORD_LENGTH &&
-      (vocab.stems.has(stemOf(w)) || [...vocab.words].some((p) => p.includes(w) || w.includes(p))),
-  );
+/** Same 5-letter stem ("остатков" ~ "остатки"), a fragment of a protected word ("склад" in "мойсклад"), or context. */
+function isProtectedWord(word: string, vocab: ProtectedVocabulary): boolean {
+  if (CONTEXT_WORDS.has(word) || WEAK_PLUS_TERMS.has(word)) return true;
+  if (word.length < MIN_PROTECTED_WORD_LENGTH) return false;
+  if (vocab.stems.has(stemOf(word))) return true;
+  for (const p of vocab.words) if (p.includes(word) || word.includes(p)) return true;
+  return false;
 }
 
 function rejectsCandidate(candidate: string, vocab: ProtectedVocabulary): boolean {
-  if (candidate.length < MIN_CANDIDATE_LENGTH) return true;
+  if (candidate.length < MIN_CANDIDATE_LENGTH || candidate.length > MAX_MINUS_TERM_LENGTH) return true;
   if (WEAK_PLUS_TERMS.has(candidate)) return true;
-  const words = wordsOf(candidate);
-  if (!words.length || isGeneric(words)) return true;
-  if (words.some(isContextWord)) return true;
-  return overlapsProtected(candidate, words, vocab);
+  const content = wordsOf(candidate).filter(isContentWord);
+  if (!content.length) return true;
+  // The whole candidate sits inside a positive term ("синхронизация остатков" ⊃ "остатков").
+  if (vocab.terms.some((p) => p.includes(candidate))) return true;
+  if (content.length === 1) {
+    const single = vocab.terms.some(
+      (p) => p.length >= MIN_PROTECTED_TERM_LENGTH && candidate.includes(p),
+    );
+    return single || isProtectedWord(content[0] as string, vocab);
+  }
+  // A phrase is only dropped when every content word is protected ("яндекс директ" stays).
+  return content.every((w) => isProtectedWord(w, vocab));
 }
 
 /**
  * Keep only minus candidates that cannot hit the product's own leads.
- * Deduplicates case-insensitively, keeps first spelling and order.
+ * Deduplicates case-insensitively (ё=е), keeps first spelling and order.
  */
 export function sanitizeMinusTerms(
   candidates: readonly string[],
@@ -143,7 +144,7 @@ export function sanitizeMinusTerms(
   const out: string[] = [];
   for (const raw of candidates) {
     const original = String(raw || "").trim();
-    const key = original.toLowerCase();
+    const key = normalizeYo(original.toLowerCase());
     if (!key || seen.has(key)) continue;
     seen.add(key);
     if (!rejectsCandidate(key, vocab)) out.push(original);
@@ -151,14 +152,18 @@ export function sanitizeMinusTerms(
   return out;
 }
 
+function csvTerms(raw: string): string[] {
+  return raw
+    .split(/[,;\n]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 /** Re-run the stored stop-lists through {@link sanitizeMinusTerms}; pure, for cleanup of polluted settings. */
 export function cleanStopLists(settings: StopListSettings): CleanedStopLists {
   const removed: string[] = [];
   const clean = (raw: string): string => {
-    const terms = raw
-      .split(/[,;\n]+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
+    const terms = csvTerms(raw);
     const kept = sanitizeMinusTerms(terms, settings);
     const keptKeys = new Set(kept.map((t) => t.toLowerCase()));
     for (const t of terms) {
@@ -172,4 +177,14 @@ export function cleanStopLists(settings: StopListSettings): CleanedStopLists {
     avoidTopics: clean(settings.avoidTopics || ""),
     removed,
   };
+}
+
+/**
+ * The one ordered stop list a scan uses, for the TS core AND the Python worker:
+ * minusKeywords (newest first, as learning prepends) then avoidTopics, sanitized at read time so
+ * polluted tenants recover without a manual cleanup, deduplicated, capped at MAX_MINUS_TERMS.
+ */
+export function scanStopTerms(settings: StopListSettings): string[] {
+  const merged = [...csvTerms(settings.minusKeywords || ""), ...csvTerms(settings.avoidTopics || "")];
+  return sanitizeMinusTerms(merged, settings).slice(0, MAX_MINUS_TERMS);
 }

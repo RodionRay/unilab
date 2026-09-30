@@ -1,7 +1,9 @@
 import {describe,expect,it} from 'vitest';
-import {explainLeadDecision,hardReject,type LeadCoreSettings} from '@/lib/lead-core';
-import {hasBuyerIntent} from '@/lib/lead-filter';
-import {cleanStopLists,sanitizeMinusTerms} from '@/lib/lead-stopwords';
+import {readFileSync} from 'node:fs';
+import path from 'node:path';
+import {distinctTopicHits,explainLeadDecision,hardReject,type LeadCoreSettings} from '@/lib/lead-core';
+import {MAX_MINUS_TERMS,findMinusHit,hasBuyerIntent,looksLikeServiceAd,splitTerms} from '@/lib/lead-filter';
+import {cleanStopLists,sanitizeMinusTerms,scanStopTerms} from '@/lib/lead-stopwords';
 
 /** Synthetic Uniseller-like settings (no real account data). */
 const baseSettings:LeadCoreSettings&{learnExamples:string}={
@@ -75,11 +77,26 @@ describe('hardReject: minus terms match at word start, not as substring',()=>{
   });
 });
 
-describe('BUYER_INTENT_RE handles Cyrillic after "кто пользуется"',()=>{
-  it('matches Cyrillic product names',()=>{
-    expect(hasBuyerIntent('кто пользуется мойсклад для автоматизации')).toBe(true);
-    expect(hasBuyerIntent('Кто пользовался МойСклад с Ozon?')).toBe(true);
+describe('"кто пользуется X": buyer only for a Latin tool name, Cyrillic stays a soft ask',()=>{
+  it('Latin tool name is buyer intent, Cyrillic object is not',()=>{
+    expect(hasBuyerIntent('Кто пользуется MPstats, какой тариф брать?')).toBe(true);
+    expect(hasBuyerIntent('кто пользуется мойсклад для автоматизации')).toBe(false);
+    expect(hasBuyerIntent('Коллеги, кто пользуется ипотекой сейчас, как ставки?')).toBe(false);
     expect(hasBuyerIntent('Подскажите кто пользуется для нескольких кабинетов учётом остатков?')).toBe(false);
+  });
+
+  it.each([
+    'Коллеги, кто пользуется ипотекой сейчас, как ставки?',
+    'Кто пользовался доставкой СДЭК в регионы?',
+    'Кто пользуется Сбером для эквайринга?',
+    'Кто пользуется телеграм ботом для учёта финансов?',
+    'Подскажите хорошего стоматолога в центре, кто пользовался?',
+    'Кто пользуется каршерингом в Москве, какой лучше?',
+    'Подскажите, кто пользуется фитнес-браслетом для сна?',
+  ])('off-topic ask is not a lead: %s',(msg)=>{
+    const d=explainLeadDecision(msg,baseSettings);
+    expect(d.pass).toBe(false);
+    expect(d.score).toBeLessThan(45);
   });
 });
 
@@ -100,6 +117,14 @@ describe('scoreLead: soft ask',()=>{
     expect(d.score).toBeLessThanOrEqual(30);
   });
 
+  it('overlapping hits count once (склад inside мойсклад)',()=>{
+    const s:LeadCoreSettings={keywords:'мойсклад',hotSignals:'склад',leadCriteria:'',product:''};
+    const d=explainLeadDecision('Подскажите, как у вас мойсклад работает с маркировкой?',s);
+    expect(d.softAsk).toBe(true);
+    expect(d.pass).toBe(false);
+    expect(distinctTopicHits(['склад','мойсклад','кто пользуется','Мойсклад'])).toEqual(['мойсклад']);
+  });
+
   it('chat without any ask stays below warm even with many hits',()=>{
     const d=explainLeadDecision('У нас остатки МойСклад синхронизация кабинетов интеграция 1С всё сломалось опять',baseSettings);
     expect(d.softAsk).toBe(false);
@@ -117,6 +142,15 @@ describe('sanitizeMinusTerms',()=>{
     expect(out).toEqual([]);
   });
 
+  it('drops phrases without a content word',()=>{
+    expect(sanitizeMinusTerms(['кто знает','нужна помощь','ребят','почему','кто делает','кто разбирается','кто-нибудь','всем привет'],baseSettings)).toEqual([]);
+  });
+
+  it('keeps phrases that only partly touch marketplace/product words',()=>{
+    expect(sanitizeMinusTerms(['услуги маркетолога','яндекс директ','товарный кредит'],baseSettings))
+      .toEqual(['услуги маркетолога','яндекс директ','товарный кредит']);
+  });
+
   it('keeps genuine noise terms',()=>{
     expect(sanitizeMinusTerms(['казино','вакансия','ищу работу','Казино','ставки на спорт'],baseSettings))
       .toEqual(['казино','вакансия','ищу работу','ставки на спорт']);
@@ -127,8 +161,8 @@ describe('cleanStopLists',()=>{
   it('removes polluted terms from both lists and reports them',()=>{
     const r=cleanStopLists({...baseSettings,minusKeywords:POLLUTED_MINUS,avoidTopics:POLLUTED_AVOID});
     expect(r.minusKeywords).toBe('вакансия, казино, накрутка');
-    expect(r.avoidTopics).toBe('');
-    expect(r.removed).toEqual(expect.arrayContaining(['остатков','озон','нал','бот','болтовня про товар']));
+    expect(r.avoidTopics).toBe('болтовня про товар');
+    expect(r.removed).toEqual(expect.arrayContaining(['остатков','озон','нал','бот','селлер']));
   });
 
   it('is idempotent',()=>{
@@ -136,5 +170,52 @@ describe('cleanStopLists',()=>{
     const twice=cleanStopLists({...baseSettings,...once});
     expect(twice.minusKeywords).toBe(once.minusKeywords);
     expect(twice.removed).toEqual([]);
+  });
+});
+
+describe('scanStopTerms: one ordered list for core and worker',()=>{
+  const many=Array.from({length:150},(_,i)=>`мусор${String.fromCharCode(1072+(i%26))}${i}`);
+  const settings={...baseSettings,minusKeywords:['остатков','казино',...many].join(', '),avoidTopics:'бот, ставки на спорт'};
+
+  it('sanitizes at read time, keeps minus-first order, caps at MAX_MINUS_TERMS',()=>{
+    const list=scanStopTerms(settings);
+    expect(list).toHaveLength(MAX_MINUS_TERMS);
+    expect(list[0]).toBe('казино');
+    expect(list).not.toContain('остатков');
+    expect(list).not.toContain('ставки на спорт');
+  });
+
+  it('core sees exactly the list the worker gets and drops the same messages',()=>{
+    const list=scanStopTerms(settings);
+    const core:LeadCoreSettings={...baseSettings,minusKeywords:list.join(', '),avoidTopics:''};
+    expect(splitTerms(core.minusKeywords||'')).toEqual(list.map((t)=>t.toLowerCase()));
+    const msgs=[
+      'Лучшее казино онлайн, заходи и выигрывай каждый день',
+      `Сообщение про ${many[118]} и прочее длинное`,
+      `Сообщение про ${many[140]} и прочее длинное`,
+      'Ищу сервис для синхронизации остатков на wildberries и ozon',
+    ];
+    for(const m of msgs){
+      expect(hardReject(m,core)!=='').toBe(findMinusHit(m.toLowerCase(),list)!=='');
+    }
+    expect(findMinusHit(msgs[1] as string,list)).not.toBe('');
+    expect(findMinusHit(msgs[2] as string,list)).toBe('');
+  });
+});
+
+type MinusCase={text:string;terms:string[];hit:string|null};
+const FIXTURE=JSON.parse(readFileSync(path.resolve(__dirname,'fixtures/minus-match.json'),'utf8')) as {cases:MinusCase[]};
+
+describe('findMinusHit: shared TS/Python fixture',()=>{
+  it.each(FIXTURE.cases.map((c)=>[c.text.slice(0,40),c] as const))('%s',(_,c)=>{
+    expect(findMinusHit(c.text,c.terms)).toBe(c.hit??'');
+  });
+});
+
+describe('service-ad markers match at word start',()=>{
+  it('"таро" inside "старой" is not an ad, a real таро offer is',()=>{
+    expect(looksLikeServiceAd('Кто пользовался старой версией МойСклад?')).toBe(false);
+    expect(looksLikeServiceAd('Расклад на Таро недорого, пишите')).toBe(true);
+    expect(looksLikeServiceAd('Занимаюсь разбором матрицы судьбы')).toBe(true);
   });
 });

@@ -13,8 +13,8 @@ import {
  workerKeywordsFromSettings,
  type LeadCoreSettings,
 } from '@/lib/lead-core';
-import {appendLearnExamples,extractTermsFromHotMessages,extractStopTermsFromMessage,mergeKeywords,mergeKeywordsPreferNew} from '@/lib/ai-keywords';
-import {sanitizeMinusTerms} from '@/lib/lead-stopwords';
+import {appendLearnExamples,extractTermsFromHotMessages,extractStopTermsFromMessage,mergeKeywords,mergeKeywordsPreferNew,parseKeywordCsv} from '@/lib/ai-keywords';
+import {sanitizeMinusTerms,scanStopTerms} from '@/lib/lead-stopwords';
 import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpChatCounters,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasInviteQuota,hasMemberInviteQuota,hasMessageQuota,isAccountUsable,isDayLimitCooldown,isOnCooldown,joinWaitSec,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
 import {bracketLabel,formatRuWhen,inviteUserFailText,inviteUserOkText,normalizeStatusFilters,normalizeTgRef,pushTaskLog,pushTaskLogs,randomPauseSec} from '@/lib/audience-invite';
 import {canonicalizeTgUrl,duplicateReason,isDuplicateKind,telegramEntityKey} from '@/lib/record-identity';
@@ -899,7 +899,7 @@ async function qualifyLeadsWithAi(
  type Picked={tgMsgId:string;reason:string;temperature:LeadTemperature};
  if(!messages.length)return [] as Picked[];
  const brief=buildProjectBrief(settings);
- const stop=mergeKeywords(settings.minusKeywords||'',settings.avoidTopics||'');
+ const stop=scanStopTerms(settings).join(', ');
  const batchSize=20;
  const out:Picked[]=[];
  for(let offset=0;offset<messages.length;offset+=batchSize){
@@ -944,11 +944,12 @@ async function qualifyLeadsWithAi(
  return out;
 }
 
-function leadCoreSettingsFrom(settings:any,keywords:string,minusKeywords:string):LeadCoreSettings{
+/** stopTerms = the exact ordered list the worker gets (avoidTopics already merged in by scanStopTerms). */
+function leadCoreSettingsFrom(settings:any,keywords:string,stopTerms:readonly string[]):LeadCoreSettings{
  return {
   keywords,
-  minusKeywords,
-  avoidTopics:String(settings.avoidTopics||''),
+  minusKeywords:stopTerms.join(', '),
+  avoidTopics:'',
   leadCriteria:String(settings.leadCriteria||''),
   hotSignals:String(settings.hotSignals||''),
   product:String(settings.product||''),
@@ -966,8 +967,9 @@ function ensureJunkMinus(minus:string){
  return mergeKeywords(minus||'',DEFAULT_JUNK_MINUS);
 }
 
-function stopWordsFromSettings(settings:any){
- return mergeKeywords(settings.minusKeywords||'',settings.avoidTopics||'');
+/** Sanitized at read time: polluted stop-lists (product words learned as minus) recover without a manual cleanup. */
+function stopWordsFromSettings(settings:any):string[]{
+ return scanStopTerms(settings);
 }
 
 function scanLimitFromDays(days:number){
@@ -2296,6 +2298,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    notifyBotToken:current.notifyBotToken||'',
    notifyChatId:current.notifyChatId||'',
   };
+  // LLM-минус проходит тот же фильтр, что и обучение: без слов продукта/плюса/контекста маркетплейсов
+  next.minusKeywords=sanitizeMinusTerms(parseKeywordCsv(next.minusKeywords),next).join(', ');
   const data=settingsSchema.parse(next);
   const id=config?.id||crypto.randomUUID();
   if(config)await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(data),owner,id,'settings').run();
@@ -2445,7 +2449,10 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    }catch{/* heuristic only */}
   }
   // Без коротких/общих слов, контекста маркетплейсов и терминов продукта (уникальные, порядок сохранён)
-  minusAdd=sanitizeMinusTerms(minusAdd.map(t=>String(t||'').trim().slice(0,60)),settings).slice(0,10);
+  const minusCandidates=minusAdd.map(t=>String(t||'').trim().slice(0,60)).filter(Boolean);
+  minusAdd=sanitizeMinusTerms(minusCandidates,settings).slice(0,10);
+  // UI: «ничего не добавлено — слова пересекаются с продуктом» vs «уже были в минусе»
+  const minusSkippedAsProduct=minusAdd.length?0:minusCandidates.length;
   // Если всё уже было в минусе — всё равно добавим короткую цитату-фразу из сообщения
   if(!minusAdd.length){
    const clip=msg.replace(/\s+/g,' ').trim().slice(0,48).toLowerCase();
@@ -2473,7 +2480,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    };
   }
   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(data),owner,config.id,'settings').run();
-  return reply({ok:true,lead:leadNext,data,minusAdded:minusAdd,minusKeywords:data.minusKeywords});
+  return reply({ok:true,lead:leadNext,data,minusAdded:minusAdd,minusSkippedAsProduct,minusKeywords:data.minusKeywords});
  }
   if(b.action==='send_lead_message'){
   const id=z.string().uuid().parse(b.id);
@@ -2841,18 +2848,16 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const config:any=await db.prepare('SELECT * FROM records WHERE owner=? AND kind=? LIMIT 1').bind(owner,'settings').first();
   const settings=config?.data?JSON.parse(config.data):{};
   const keywords=sanitizeLeadKeywords(String(b.keywords??settings.keywords??''));
-  const minusKeywords=ensureJunkMinus(stopWordsFromSettings({
+  const previewSettings={
    ...settings,
-   minusKeywords:b.minusKeywords??settings.minusKeywords,
-   avoidTopics:b.avoidTopics??settings.avoidTopics,
-  }));
-  const core=leadCoreSettingsFrom({
-   ...settings,
+   keywords,
+   minusKeywords:ensureJunkMinus(z.string().max(8000).optional().parse(b.minusKeywords)??String(settings.minusKeywords||'')),
+   avoidTopics:z.string().max(8000).optional().parse(b.avoidTopics)??settings.avoidTopics,
    leadCriteria:b.leadCriteria??settings.leadCriteria,
    hotSignals:b.hotSignals??settings.hotSignals,
    product:b.product??settings.product,
-   avoidTopics:b.avoidTopics??settings.avoidTopics,
-  },keywords,minusKeywords);
+  };
+  const core=leadCoreSettingsFrom(previewSettings,keywords,stopWordsFromSettings(previewSettings));
   const decision=explainLeadDecision(message,core);
   return reply({
    ok:true,
