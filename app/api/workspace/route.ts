@@ -1117,10 +1117,9 @@ async function listJoinFarmCandidates(owner:string):Promise<FarmJoinCandidate[]>
  return live;
 }
 
-/** Куда пересаживать группу, которой предстоит вступление: только join-кандидаты, по нагрузке. */
+/** Куда пересаживать группу, которой предстоит вступление: join-кандидаты, сначала готовые, потом по нагрузке. */
 async function listJoinTargetIds(owner:string){
- const farm=await listJoinFarmCandidates(owner);
- return [...farm].sort((a,b)=>a.load-b.load).map(x=>x.id);
+ return (await listJoinFarmCandidates(owner)).map(x=>x.id);
 }
 
 async function listMessageFarmCandidates(owner:string):Promise<{id:string;data:any}[]>{
@@ -1252,8 +1251,13 @@ function workerLooksFrozen(result:any,msg?:string){
  return result?.status==='frozen'||result?.join==='frozen'||/FROZEN|заморожен/i.test(text);
 }
 
-/** Ответ воркера на join: упала сессия/прокси/коннект аккаунта — метим аккаунт, группу не штрафуем. */
-const JOIN_ACCOUNT_FAULT_STATUSES=['unauthorized','proxy_error','disconnected'];
+/** Ответ воркера на join: упала сессия/прокси аккаунта — метим аккаунт, группу не штрафуем. */
+const JOIN_ACCOUNT_FAULT_STATUSES=['unauthorized','proxy_error'];
+/**
+ * disconnected воркер отдаёт и на свои сбои (таймаут, abort, нет JSON, spawn) — это не диагноз
+ * аккаунта: пометка выкинула бы его из фермы и скана, а падение воркера — всю ферму.
+ */
+const JOIN_WORKER_TRANSIENT_STATUSES=['disconnected'];
 
 function workerLooksDeadAccount(result:any){
  const st=String(result?.status||'');
@@ -1723,6 +1727,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const accountBlind=isAccountBlindResult(result);
    // Сессия/прокси/коннект упали — вина аккаунта, не группы (frozen обрабатывается ниже)
    const accountFault=!frozen&&!result.ok&&JOIN_ACCOUNT_FAULT_STATUSES.includes(String(result.status||''));
+   const workerTransient=!frozen&&!result.ok&&JOIN_WORKER_TRANSIENT_STATUSES.includes(String(result.status||''));
    const joinedOk=!!result.ok||result.join==='already'||result.join==='requested';
    // «already» не шлёт JoinChannel — дневной лимит и паузу не тратит
    const spentJoin=joinedOk&&result.join!=='already';
@@ -1741,7 +1746,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     joinStateAt:'',
     joinStateError:reallyJoined||result.join==='requested'?'':(result.error||'Не удалось вступить').slice(0,500),
     // FloodWait — проблема аккаунта, не группы: попытку не считаем
-    ...(joinedOk?JOIN_SUCCESS_PATCH:flood||accountBlind||accountFault?{}:joinFailurePatch(gdata)),
+    ...(joinedOk?JOIN_SUCCESS_PATCH:flood||accountBlind||accountFault?{}:workerTransient?{joinNextAt:new Date(Date.now()+JOIN_WORKER_ERROR_RETRY_MS).toISOString()}:joinFailurePatch(gdata)),
     name:result.title&&(!gdata.name||gdata.name.startsWith('http')||gdata.name==='Группа')?result.title:gdata.name,
    };
    // accessHash только от фактического join/already этой сессии
@@ -1769,11 +1774,10 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    }
    if(accountFault){
     const errMsg=String(result.error||'Аккаунт недоступен');
-    const st=String(result.status);
-    if(st==='unauthorized'){
+    if(String(result.status)==='unauthorized'){
      await putAccountUnauthorized(owner,gdata.accountId,adata,{lastError:errMsg});
     }else{
-     await putAccountConnectFailed(owner,gdata.accountId,adata,{attempts:1,lastError:errMsg,status:st==='proxy_error'?'proxy_error':'disconnected'});
+     await putAccountConnectFailed(owner,gdata.accountId,adata,{attempts:1,lastError:errMsg,status:'proxy_error'});
     }
    }
    if(accountBlind){

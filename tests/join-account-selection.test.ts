@@ -100,6 +100,30 @@ describe('выбор аккаунта для вступления',()=>{
     expect(rec(GROUP).joinAttempts||0).toBe(0);
   });
 
+  it('сбой самого воркера (disconnected) не метит аккаунт и не штрафует группу',async()=>{
+    await addAccount(ACC_A,{});
+    addGroup({});
+    workerReply={ok:false,status:'disconnected',error:'Таймаут воркера'};
+
+    await join();
+
+    expect(rec(ACC_A).status).toBe('active');
+    expect(rec(GROUP).joinAttempts||0).toBe(0);
+    expect(Date.parse(rec(GROUP).joinNextAt)).toBeGreaterThan(Date.now());
+  });
+
+  it('пересадка берёт готовый аккаунт раньше менее загруженного на паузе',async()=>{
+    await addAccount(ACC_A,{status:'frozen'});
+    await addAccount(ACC_B,{lastJoinAt:new Date().toISOString()});
+    await addAccount(ACC_C,{});
+    addRecord('f0000000-0000-4000-8000-00000000000f','group',{name:'Другая',url:'https://t.me/other_chat',membership:'joined',joinedAt:'2026-09-01T00:00:00Z',status:'active',accountId:ACC_C});
+    addGroup({membership:'joined',joinedAt:'2026-09-01T00:00:00Z',status:'active'});
+
+    await POST(postRequest({action:'heal_dead_group_accounts'}));
+
+    expect(rec(GROUP).accountId).toBe(ACC_C);
+  });
+
   it('«already» не расходует дневной лимит и паузу вступлений',async()=>{
     await addAccount(ACC_A,{});
     addGroup({});
