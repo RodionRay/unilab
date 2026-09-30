@@ -3,16 +3,25 @@ import {GROUP_CATALOG,isCatalogPlaceholderUrl} from '@/lib/group-catalog';
 import {JOIN_SUCCESS_PATCH,JOIN_WORKER_ERROR_RETRY_MS,accountBlindPatch,isAccountBlindResult,isAccountResolveBlind,joinFailurePatch,planGroupHeal,sanitizeJoinStateError} from '@/lib/processes/join-flow';
 import {database,seal,unseal} from '@/lib/server-store';
 import {aiChatText,envAiApiKey,resolveAiConfig} from '@/lib/ai-client';
-import {buildProjectBrief,leadMessageFingerprint,normalizeLeadMessage,parseLeadTemperature,ratingFromTemperatures,strongPlusTerms,type LeadTemperature} from '@/lib/lead-filter';
+import {buildProjectBrief,leadMessageFingerprint,normalizeLeadMessage,parseLeadTemperature,ratingFromTemperatures,strongPlusTerms} from '@/lib/lead-filter';
 import {
- classifyWithLeadCore,
  explainLeadDecision,
- LEAD_SCORE_WARM,
- reasonFromCore,
- scoreLead,
  workerKeywordsFromSettings,
  type LeadCoreSettings,
+ type LeadScoreResult,
 } from '@/lib/lead-core';
+import {
+ activeAiRejects,
+ addLeadTombstone,
+ aiSettingsSignature,
+ applyAiVerdicts,
+ decideScanLead,
+ evaluateScanGate,
+ keepServerOwnedFields,
+ rememberAiRejects,
+ type AiBatchOutcome,
+ type AiPick,
+} from '@/lib/processes/scan-flow';
 import {appendLearnExamples,extractTermsFromHotMessages,extractStopTermsFromMessage,mergeKeywords,mergeKeywordsPreferNew,parseKeywordCsv} from '@/lib/ai-keywords';
 import {sanitizeMinusTerms,scanStopTerms} from '@/lib/lead-stopwords';
 import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpChatCounters,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasInviteQuota,hasMemberInviteQuota,hasMessageQuota,isAccountUsable,isDayLimitCooldown,isOnCooldown,joinWaitSec,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
@@ -890,20 +899,23 @@ async function resolveApiKey(owner:string,config:any){
  return '';
 }
 
-/** Строгий AI-шлюз: подтверждает кандидатов ядра. Лучше 0, чем шум. */
+/**
+ * Строгий AI-шлюз: подтверждает кандидатов ядра. Лучше 0, чем шум.
+ * Итог по батчам (lib/processes/scan-flow.ts::applyAiVerdicts): ответ модели — вердикт, сбой — fallback на ядро.
+ */
 async function qualifyLeadsWithAi(
  apiKey:string,
  settings:any,
  messages:{tgMsgId:string;message:string;name:string;coreScore?:number;coreReasons?:string[]}[],
-){
- type Picked={tgMsgId:string;reason:string;temperature:LeadTemperature};
- if(!messages.length)return [] as Picked[];
+):Promise<AiBatchOutcome[]>{
+ if(!messages.length)return [];
  const brief=buildProjectBrief(settings);
  const stop=scanStopTerms(settings).join(', ');
  const batchSize=20;
- const out:Picked[]=[];
+ const out:AiBatchOutcome[]=[];
  for(let offset=0;offset<messages.length;offset+=batchSize){
   const batch=messages.slice(offset,offset+batchSize);
+  const ids=batch.map(m=>String(m.tgMsgId));
   const listed=batch.map((m,i)=>{
    const core=m.coreScore!=null?`Ядро: score ${m.coreScore}/100 · ${(m.coreReasons||[]).slice(0,3).join('; ')}`:'';
    return `#${i+1} id=${m.tgMsgId}\nАвтор: ${m.name}\n${core}\n${m.message.slice(0,900)}`;
@@ -929,17 +941,24 @@ async function qualifyLeadsWithAi(
     user:'Отметь ТОЛЬКО тех, кто ищет сервис/внедрение под продукт из настроек. Остальных пропусти:\n\n'+listed,
    });
    const match=text.match(/\[[\s\S]*\]/);
-   if(!match)continue;
+   if(!match)throw new Error('AI: ответ без JSON-массива');
    const arr=JSON.parse(match[0]) as {id?:string;tgMsgId?:string;reason?:string;temperature?:string}[];
-   const allowIds=new Set(batch.map(m=>String(m.tgMsgId)));
+   if(!Array.isArray(arr))throw new Error('AI: ответ не массив');
+   const allowIds=new Set(ids);
+   const picked:AiPick[]=[];
    for(const x of arr){
-    const tgMsgId=String(x.id||x.tgMsgId||'');
+    const tgMsgId=String(x?.id||x?.tgMsgId||'');
     if(!tgMsgId||!allowIds.has(tgMsgId))continue;
     const temperature=parseLeadTemperature(x.temperature);
     if(temperature!=='hot'&&temperature!=='warm')continue;
-    out.push({tgMsgId,reason:String(x.reason||'').slice(0,500),temperature});
+    picked.push({tgMsgId,reason:String(x.reason||'').slice(0,500),temperature});
    }
-  }catch{/* батч пропускаем */}
+   out.push({ids,ok:true,picked});
+  }catch(e){
+   // Сбой батча (429/таймаут/мусор) — не вердикт: его кандидаты пойдут по ядру
+   console.warn('[workspace] qualify_leads_ai batch failed:',String((e as Error)?.message||e).slice(0,200));
+   out.push({ids,ok:false,picked:[]});
+  }
  }
  return out;
 }
@@ -1302,6 +1321,89 @@ async function notifyTelegramText(token:string,chatId:string,text:string){
  }catch(e){
   return {ok:false as const,error:String((e as Error).message||e).slice(0,300)};
  }
+}
+
+/** REQ-L6: a scanned lead the user deletes is remembered on its group, so the next scan does not re-create it. */
+async function rememberDeletedLead(owner:string,leadId:string){
+ const db=database();
+ const row=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,leadId,'lead').first<{data:string}>();
+ if(!row)return;
+ let lead:{groupId?:unknown;tgMsgId?:unknown};
+ try{lead=JSON.parse(String(row.data))}catch{return}
+ const groupId=String(lead.groupId||'');
+ const tgMsgId=String(lead.tgMsgId||'');
+ if(!groupId||!tgMsgId)return;
+ const grow=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,groupId,'group').first<{data:string}>();
+ if(!grow)return;
+ let gdata:Record<string,unknown>;
+ try{gdata=JSON.parse(String(grow.data))}catch{return}
+ const next={...gdata,leadTombstones:addLeadTombstone(gdata.leadTombstones,tgMsgId)};
+ await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,groupId,'group').run();
+}
+
+/** Message of the worker /scan-group answer; `_core` is attached by scan_group after the core decision. */
+type ScanWorkerMessage={tgMsgId?:unknown;message?:string;name?:string;_core?:{score?:number;reasons?:string[]}};
+
+/** Scan of one group runs at most once at a time (cron + manual force); TTL covers worker + AI batches. */
+const SCAN_LOCK_TTL_MS=10*60_000;
+
+async function acquireGroupScanLock(owner:string,groupId:string){
+ const token=crypto.randomUUID();
+ const until=new Date(Date.now()+SCAN_LOCK_TTL_MS).toISOString();
+ const res=await database().prepare("UPDATE records SET data=json_set(data,'$.scanLockUntil',?,'$.scanLockToken',?) WHERE owner=? AND id=? AND kind='group' AND COALESCE(json_extract(data,'$.scanLockUntil'),'')<?")
+  .bind(until,token,owner,groupId,new Date().toISOString()).run();
+ return res.meta.changes===1?{token,until}:null;
+}
+
+async function releaseGroupScanLock(owner:string,groupId:string,token:string){
+ try{
+  await database().prepare("UPDATE records SET data=json_set(data,'$.scanLockUntil','','$.scanLockToken','') WHERE owner=? AND id=? AND kind='group' AND json_extract(data,'$.scanLockToken')=?")
+   .bind(owner,groupId,token).run();
+ }catch(e){
+  console.error('[workspace] release_scan_lock:',String((e as Error)?.message||e).slice(0,300));
+ }
+}
+
+const NOTIFY_MAX_ATTEMPTS=5;
+const NOTIFY_CLAIM_MS=60_000;
+const NOTIFY_BATCH=20;
+
+/**
+ * REQ-L9: leads with notifyPending are claimed (so parallel scans never send one lead twice), sent in one
+ * Telegram message, then marked notifiedAt; a failed send is logged and retried on the next scan.
+ */
+async function flushLeadNotifications(owner:string,settings:{notifyEnabled?:unknown}){
+ if(!settings?.notifyEnabled)return;
+ const db=database();
+ const rows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='lead' AND json_extract(data,'$.notifyPending')=1 ORDER BY created LIMIT ?").bind(owner,NOTIFY_BATCH).all();
+ const nowIso=new Date().toISOString();
+ const claimUntil=new Date(Date.now()+NOTIFY_CLAIM_MS).toISOString();
+ const claimed:{id:string;data:Record<string,unknown>}[]=[];
+ for(const r of rows.results){
+  const res=await db.prepare("UPDATE records SET data=json_set(data,'$.notifyClaimUntil',?) WHERE owner=? AND id=? AND kind='lead' AND json_extract(data,'$.notifyPending')=1 AND COALESCE(json_extract(data,'$.notifyClaimUntil'),'')<?")
+   .bind(claimUntil,owner,String(r.id),nowIso).run();
+  if(res.meta.changes!==1)continue;
+  try{claimed.push({id:String(r.id),data:JSON.parse(String(r.data))})}catch{/* битая запись: claim истечёт */}
+ }
+ if(!claimed.length)return;
+ const sent=await notifyNewLeadsTelegram(settings,claimed.map(c=>({
+  name:String(c.data.name||''),
+  message:String(c.data.message||''),
+  temperature:String(c.data.temperature||''),
+  source:String(c.data.source||''),
+ })));
+ if(sent.ok){
+  for(const c of claimed){
+   await db.prepare("UPDATE records SET data=json_set(data,'$.notifyPending',json('false'),'$.notifiedAt',?,'$.notifyClaimUntil','') WHERE owner=? AND id=? AND kind='lead'").bind(new Date().toISOString(),owner,c.id).run();
+  }
+  return;
+ }
+ const error='error' in sent?String(sent.error||''):'уведомления выключены';
+ for(const c of claimed){
+  await db.prepare("UPDATE records SET data=json_set(data,'$.notifyAttempts',COALESCE(json_extract(data,'$.notifyAttempts'),0)+1,'$.notifyClaimUntil','','$.notifyPending',CASE WHEN COALESCE(json_extract(data,'$.notifyAttempts'),0)+1>=? THEN json('false') ELSE json('true') END) WHERE owner=? AND id=? AND kind='lead'")
+   .bind(NOTIFY_MAX_ATTEMPTS,owner,c.id).run();
+ }
+ await appendGlobalRescanLog(owner,'warn',`Уведомление о новых лидах (${claimed.length}) не отправлено: ${error.slice(0,160)} — повтор при следующем скане`);
 }
 
 async function loadNotifySettings(db:any,owner:string){
@@ -1775,12 +1877,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     return reply({error:'Аккаунт группы не найден',accountDead:true},400);
    }
    const st=String(adata.status||'');
-   if(isDayLimitCooldown(adata)||st==='spamblock'||st==='frozen'){
+   const gate=evaluateScanGate(adata);
+   if(!gate.ok&&gate.reason==='cooldown'){
     return reply({
      ok:false,
      skipped:true,
      accountCooldown:true,
-     waitSec:Math.max(60,Math.ceil((Date.parse(String(adata.cooldownUntil||''))-Date.now())/1000)||300),
+     waitSec:gate.waitSec,
      error:'Аккаунт на отлёжке — скан позже, назначение смеси сохранено',
      group:gdata,
     },429);
@@ -1850,9 +1953,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const keywords=workerKeywordsFromSettings(coreSettings).join(', ')||String(settings.keywords||'');
   const scanDepthDays=Math.max(1,Math.min(90,Number(settings.scanDepthDays)||7));
   const scanLimit=scanLimitFromDays(scanDepthDays);
+  const lock=await acquireGroupScanLock(owner,id);
+  if(!lock)return reply({ok:true,skipped:true,locked:true,scanned:0,matched:0,added:0,message:'Скан этой группы уже идёт'});
+  gdata={...gdata,scanLockUntil:lock.until,scanLockToken:lock.token};
+  try{
   try{
    const {payload}=await loadAccountSessionPayload(owner,gdata.accountId);
-   const result=await workerPost('/scan-group',{...payload,url:gdata.url,keywords,minusKeywords,limit:scanLimit,days:scanDepthDays});
+   const result=await workerPost('/scan-group',{...payload,url:gdata.url,keywords,minusKeywords,limit:scanLimit,days:scanDepthDays,minId:String(gdata.scanCursor||'')});
     if(!result.ok){
     if(workerLooksDeadAccount(result)){
      const frozen=workerLooksFrozen(result);
@@ -1977,14 +2084,15 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    }
    const cutoff=Date.now()-scanDepthDays*24*60*60*1000;
    const workerRaw=Array.isArray(result.messages)?result.messages.length:0;
-   let candidates=(result.messages||[]).filter((msg:any)=>{
+   let candidates=(result.messages||[]).filter((msg:{tgMsgId?:unknown;date?:string;message?:string;_core?:unknown})=>{
+    if(!String(msg.tgMsgId||''))return false;
     if(msg.date){
      const t=Date.parse(msg.date);
      if(Number.isFinite(t)&&t<cutoff)return false;
     }
-    const scored=scoreLead(msg.message||'',coreSettings);
-    if(!scored||scored.score<LEAD_SCORE_WARM)return false;
-    (msg as any)._core=scored;
+    const decision=decideScanLead(msg.message||'',coreSettings);
+    if(!decision.pass)return false;
+    msg._core=decision.core;
     return true;
    });
    const existing=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='lead'").bind(owner).all();
@@ -2000,89 +2108,57 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      }
     }catch{/* */}
    }
-   if(excludedTexts.size){
-    candidates=candidates.filter((msg:any)=>{
-     const fp=normalizeLeadMessage(msg.message||'');
-     return !fp||!excludedTexts.has(fp);
-    });
-   }
+   // Удалённые пользователем лиды — как существующие (REQ-L6)
+   for(const t of Array.isArray(gdata.leadTombstones)?gdata.leadTombstones:[])seen.add(leadMessageFingerprint('',id,String(t)));
+   const isNewMessage=(msg:{tgMsgId?:unknown;message?:string})=>{
+    if(seen.has(leadMessageFingerprint(msg.message||'',id,String(msg.tgMsgId||''))))return false;
+    const fp=normalizeLeadMessage(msg.message||'');
+    return !fp||!excludedTexts.has(fp);
+   };
+   candidates=candidates.filter((msg:{message?:string})=>{
+    const fp=normalizeLeadMessage(msg.message||'');
+    return !fp||!excludedTexts.has(fp);
+   });
    const prefilterCount=candidates.length;
-   const reasons=new Map<string,string>();
-   const temps=new Map<string,LeadTemperature>();
-   let aiUsed=false;
-   let aiRequired=false;
-   const wantAi=settings.aiQualify!==false;
-   if(wantAi&&candidates.length){
-    const apiKey=await resolveApiKey(owner,config);
-    if(apiKey){
-     aiRequired=true;
-     try{
-      const forAi=candidates.map((m:any)=>({
-       tgMsgId:String(m.tgMsgId||''),
-       message:String(m.message||''),
-       name:String(m.name||''),
-       coreScore:Number(m._core?.score)||0,
-       coreReasons:Array.isArray(m._core?.reasons)?m._core.reasons:[],
-      }));
-      const picked=await qualifyLeadsWithAi(apiKey,settings,forAi);
-      aiUsed=true;
-      if(picked.length){
-       const allow=new Set(picked.map(p=>p.tgMsgId));
-       for(const p of picked){
-        const core=candidates.find((m:any)=>String(m.tgMsgId)===p.tgMsgId)?._core;
-        const decision=core?{...core,pass:true,temperature:p.temperature,summary:'',fingerprint:'',text:''}:null;
-        reasons.set(p.tgMsgId,decision?reasonFromCore(decision as any,p.reason):p.reason);
-        // AI не повышает выше ядра: если ядро warm — остаётся warm; hot только если ядро тоже hot-capable
-        const coreTemp=core?classifyWithLeadCore(String(candidates.find((m:any)=>String(m.tgMsgId)===p.tgMsgId)?.message||''),coreSettings):null;
-        let t=p.temperature;
-        if(coreTemp==='warm'&&t==='hot')t='warm';
-        if(!coreTemp)continue;
-        temps.set(p.tgMsgId,t);
-       }
-       candidates=candidates.filter((m:any)=>allow.has(String(m.tgMsgId))&&temps.has(String(m.tgMsgId)));
-      }else{
-       // Пустой ответ AI не должен обнулять ядро — иначе 0 лидов при живом скане
-       aiRequired=false;
-       aiUsed=false;
-      }
-     }catch{
-      aiRequired=false;
-      aiUsed=false;
-     }
+   // Дедуп до AI: уже известные сообщения не отправляем в модель повторно
+   candidates=candidates.filter(isNewMessage);
+   const now=Date.now();
+   const aiSig=aiSettingsSignature(settings);
+   const apiKey=settings.aiQualify!==false&&candidates.length?await resolveApiKey(owner,config):'';
+   const aiRejectsActive=activeAiRejects(gdata.aiRejected,aiSig,now);
+   let aiRemembered=0;
+   let batches:AiBatchOutcome[]|null=null;
+   if(apiKey){
+    // REQ-L11: отказ AI помним (TTL) — не шлём то же сообщение в модель на каждом переобходе
+    const fresh=candidates.filter((m:{tgMsgId?:unknown})=>!aiRejectsActive[String(m.tgMsgId)]);
+    aiRemembered=candidates.length-fresh.length;
+    candidates=fresh;
+    if(candidates.length){
+     batches=await qualifyLeadsWithAi(apiKey,settings,candidates.map((m:ScanWorkerMessage)=>({
+      tgMsgId:String(m.tgMsgId||''),
+      message:String(m.message||''),
+      name:String(m.name||''),
+      coreScore:Number(m._core?.score)||0,
+      coreReasons:Array.isArray(m._core?.reasons)?m._core.reasons:[],
+     })));
     }
    }
-   // Без AI — только температура ядра (не мягче AI)
-   if(!aiRequired){
-    const kept:any[]=[];
-    for(const m of candidates){
-     const t=classifyWithLeadCore(m.message||'',coreSettings);
-     if(!t)continue;
-     const scored=m._core||scoreLead(m.message||'',coreSettings);
-     temps.set(String(m.tgMsgId),t);
-     reasons.set(String(m.tgMsgId),reasonFromCore({
-      ...scored,
-      pass:true,
-      temperature:t,
-      summary:'',
-      fingerprint:'',
-      text:String(m.message||''),
-     }));
-     kept.push(m);
-    }
-    candidates=kept;
-   }
+   const aiUsed=!!batches?.some(b=>b.ok);
+   // REQ-L1: ответ AI по батчу — вердикт; упавший батч — по ядру
+   const verdict=applyAiVerdicts(candidates.map((m:ScanWorkerMessage)=>({tgMsgId:String(m.tgMsgId),core:m._core as LeadScoreResult})),batches);
+   const keptById=new Map(verdict.kept.map(k=>[k.tgMsgId,k]));
+   candidates=candidates.filter((m:{tgMsgId?:unknown})=>keptById.has(String(m.tgMsgId)));
+   const aiRejectedNext=apiKey?rememberAiRejects(aiRejectsActive,verdict.rejectedIds,aiSig,now):gdata.aiRejected;
    let added=0;
    const addedByTemp={hot:0,warm:0,cold:0};
-   const notifyBatch:{name:string;message:string;temperature:string;source:string}[]=[];
    for(const msg of candidates){
     const key=leadMessageFingerprint(msg.message||'',id,String(msg.tgMsgId||''));
     if(seen.has(key))continue;
-    const textFp=normalizeLeadMessage(msg.message||'');
-    if(textFp&&excludedTexts.has(textFp))continue;
     seen.add(key);
     const tgMsgId=String(msg.tgMsgId||'');
-    const temperature:LeadTemperature|null=temps.get(tgMsgId)??classifyWithLeadCore(msg.message||'',coreSettings);
-    if(!temperature||(temperature!=='hot'&&temperature!=='warm'))continue;
+    const kept=keptById.get(tgMsgId);
+    if(!kept)continue;
+    const temperature=kept.temperature;
     addedByTemp[temperature]++;
     const lead={
      name:msg.name||'Участник',
@@ -2093,7 +2169,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      draft:'',
      tgMsgId,
      groupId:id,
-     reason:reasons.get(tgMsgId)||'',
+     reason:kept.reason,
      viewed:false,
      viewedAt:'',
      excludeFromTraining:false,
@@ -2106,14 +2182,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      replies:[],
      coreScore:Number(msg._core?.score)||0,
      accountId:String(gdata.joinedAccountId||gdata.accountId||''),
+     notifyPending:!!settings.notifyEnabled,
+     notifiedAt:'',
     };
     await db.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)').bind(crypto.randomUUID(),owner,'lead',JSON.stringify(lead),null,new Date().toISOString()).run();
     added++;
-    notifyBatch.push({name:lead.name,message:lead.message,temperature,source:lead.source});
    }
-   if(notifyBatch.length){
-    try{await notifyNewLeadsTelegram(settings,notifyBatch)}catch{/* не блокируем скан */}
-   }
+   try{await flushLeadNotifications(owner,settings)}catch(e){console.error('[workspace] notify_leads:',String((e as Error)?.message||e).slice(0,300))}
    // Пересчёт метрик группы по всем лидам этой groupId
    const allLeads=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='lead'").bind(owner).all();
    const counts={hot:0,warm:0,cold:0};
@@ -2128,9 +2203,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const leadsTotal=counts.hot+counts.warm+counts.cold;
    const rating=ratingFromTemperatures(counts);
    // Успешный скан только если аккаунт в группе → чиним membership/status
+   // База — свежая запись: удаления лидов (tombstones) и правки группы во время скана не теряем
+   const freshGroup=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'group').first<{data:string}>();
+   let base=gdata;
+   try{if(freshGroup)base={...JSON.parse(String(freshGroup.data)),scanLockUntil:gdata.scanLockUntil,scanLockToken:gdata.scanLockToken}}catch{/* битая запись — берём снимок */}
    const isPending=gdata.status==='pending'||gdata.membership==='pending';
    const groupNext={
-    ...gdata,
+    ...base,
     status:isPending?'pending':'active',
     membership:isPending?'pending':'joined',
     joinedAt:isPending?(gdata.joinedAt||''):(gdata.joinedAt||new Date().toISOString()),
@@ -2147,12 +2226,14 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     scanMatched:candidates.length,
     rating,
     lastScanned:new Date().toISOString(),
+    scanCursor:String(result.cursor||base.scanCursor||''),
+    aiRejected:aiRejectedNext,
     scanLog:pushTaskLog(
-     gdata.scanLog,
+     base.scanLog,
      added?'ok':'info',
      added
-      ?`Переобход · +${added} · ${String(result.scanMode||'chat')} · worker ${workerRaw} → ядро ${prefilterCount} → AI/match ${candidates.length}${aiUsed?' · AI':''}`
-      :`Переобход · 0 · ${String(result.scanMode||'chat')} · worker ${workerRaw} → ядро ${prefilterCount} → AI/match ${candidates.length}${aiUsed?' · AI':''}`,
+      ?`Переобход · +${added} · ${String(result.scanMode||'chat')} · worker ${workerRaw} → ядро ${prefilterCount} → AI/match ${candidates.length}${aiUsed?' · AI':''}${aiRemembered?` · отказ AI помним ${aiRemembered}`:''}`
+      :`Переобход · 0 · ${String(result.scanMode||'chat')} · worker ${workerRaw} → ядро ${prefilterCount} → AI/match ${candidates.length}${aiUsed?' · AI':''}${aiRemembered?` · отказ AI помним ${aiRemembered}`:''}`,
      50,
     ),
    };
@@ -2195,6 +2276,9 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     await appendGlobalRescanLog(owner,'error',`${gdata.name||'Группа'}: ${errMsg.slice(0,160)}`);
    }catch{/* */}
    return reply({error:errMsg},503);
+  }
+  }finally{
+   await releaseGroupScanLock(owner,id,lock.token);
   }
  }
  if(b.action==='mark_lead_viewed'){
@@ -4842,6 +4926,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    await db.prepare('DELETE FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,kind).run();
    return reply({ok:true,usersRemoved:removed});
   }
+  if(kind==='lead')await rememberDeletedLead(owner,id);
   await db.prepare('DELETE FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,kind).run();
   return reply({ok:true});
  }
@@ -4891,6 +4976,10 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const reason=duplicateReason(kind,data,other);
    if(reason)return reply({error:reason,duplicate:true},409);
   }
+ }
+ // REQ-L10: поля, которыми владеет сервер (переписка, скан, уведомления), клиентский save не затирает
+ if(existing&&(kind==='lead'||kind==='group')){
+  try{Object.assign(data,keepServerOwnedFields(kind,JSON.parse(existing.data),data))}catch{/* битая запись — сохраняем как пришло */}
  }
  if(kind==='group'&&existing){
   try{
