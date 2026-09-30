@@ -14,6 +14,7 @@ import {MailingPanel,MailingTaskFields,MailingDeliveriesView} from '@/components
 import {TaskLogDialog} from '@/components/product/task-log-dialog';
 import {EmployeesPanel} from '@/components/product/employees-panel';
 import {DEFAULT_DM_SOFT_CLOSE,DEFAULT_MAILING_TASK} from '@/lib/mailing';
+import {joinGateFor} from '@/lib/join-relevance';
 import {canAccessNav,type CrmAccess,type WorkspaceInvite,type WorkspaceMember} from '@/lib/staff-types';
 import {DEFAULT_NAV} from '@/components/product/workspace-nav';
 import {Input} from '@/components/ui/input';
@@ -304,12 +305,21 @@ function groupAlreadyIn(item:RecordItem){
   return false;
 }
 
+/** Группа может вступить сама: есть аккаунт и ссылка, ещё не внутри, фильтр релевантности пропускает. */
 function groupNeedsJoin(item:RecordItem){
   const d=item.data||{};
   if(!d.accountId||!d.url||isCatalogPlaceholderUrl(d.url))return false;
   if(groupAlreadyIn(item))return false;
-  return true;
+  return joinGateFor(d).allow;
 }
+
+/** Не вступили и фильтр держит: на подтверждение / не вступать / мёртвая ссылка. */
+function groupParked(item:RecordItem){
+  if(groupAlreadyIn(item))return false;
+  return !joinGateFor(item.data||{}).allow;
+}
+
+type GroupFilter='all'|'need'|'review'|'skip'|'joined'|'pending'|'error';
 
 function groupStatusLabel(item:RecordItem){
   const d=item.data||{};
@@ -321,6 +331,10 @@ function groupStatusLabel(item:RecordItem){
   const s=String(d.status||'setup');
   if(d.membership==='pending'||s==='pending')return {label:'Заявка',tone:'warning' as const};
   if(d.membership==='joined'||(s==='active'&&d.joinedAt)||groupAlreadyIn(item))return {label:'Вступили',tone:'success' as const};
+  const gate=joinGateFor(d);
+  if(gate.state==='dead')return {label:gate.label,tone:'danger' as const};
+  if(gate.state==='review')return {label:gate.label,tone:'warning' as const};
+  if(gate.state==='skip'||gate.state==='skipped')return {label:gate.label,tone:'neutral' as const};
   if(s==='error')return {label:'Ошибка',tone:'danger' as const};
   if(s==='active')return {label:'Не вступили',tone:'warning' as const};
   return {label:'Ждёт вступления',tone:'neutral' as const};
@@ -481,7 +495,7 @@ function WorkspaceHome(){
   const [lastLeadFunnel,setLastLeadFunnel]=useState<{worker?:number;core?:number;matched?:number;added?:number}|null>(null);
   const [leadGroupFilter,setLeadGroupFilter]=useState('all');
   const [leadSelected,setLeadSelected]=useState<string[]>([]);
-  const [groupFilter,setGroupFilter]=useState<'all'|'need'|'joined'|'pending'|'error'>('all');
+  const [groupFilter,setGroupFilter]=useState<GroupFilter>('all');
   const [groupSelected,setGroupSelected]=useState<string[]>([]);
   const [bulkAccountId,setBulkAccountId]=useState('');
   const [mixAccountIds,setMixAccountIds]=useState<string[]>([]);
@@ -672,7 +686,7 @@ function WorkspaceHome(){
     setLeadGroupFilter(opts?.groupId||'all');
     setFilter(opts?.filter||'all');
   };
-  const goChats=(filter:'all'|'need'|'joined'|'pending'|'error'='all')=>{
+  const goChats=(filter:GroupFilter='all')=>{
     setView('Группы и каналы');
     setQuery('');
     setGroupFilter(filter);
@@ -1023,7 +1037,11 @@ function WorkspaceHome(){
   }
 
   /** Фоновая очередь: вступление → холд → скан. Состояние в БД (переживает F5). */
-  async function startBackgroundJoins(items:{id:string;name:string}[],opts?:{resume?:boolean}){
+  /**
+   * manual — владелец сам выбрал группы (кнопка «Вступить», импорт, каталог): это одобрение,
+   * фильтр релевантности их не держит. Автоочередь (автопочинка, переобход) — только «авто».
+   */
+  async function startBackgroundJoins(items:{id:string;name:string}[],opts?:{resume?:boolean;manual?:boolean}){
     if(!items.length)return;
     try{await api({action:'heal_group_join_state'})}catch{/* */}
     if(!telegramConnected){
@@ -1048,7 +1066,7 @@ function WorkspaceHome(){
     }
     if(!opts?.resume){
       try{
-        const enq=await api({action:'enqueue_joins',groupIds:toAdd.map(i=>i.id)});
+        const enq=await api({action:'enqueue_joins',groupIds:toAdd.map(i=>i.id),manual:!!opts?.manual});
         if(Array.isArray(enq.items)){
           toAdd=enq.items.map((i:{id:string;name:string})=>({id:i.id,name:i.name||'Группа'}));
           if(!toAdd.length){
@@ -1087,7 +1105,7 @@ function WorkspaceHome(){
       return;
     }
     joinRunnerLock.current=true;
-    if(!opts?.resume)toast.message(`Вступаем: ${fresh.length} · пауза ~${Math.round(JOIN_GAP_DEFAULT_SEC/60)} мин между чатами одного аккаунта`);
+    if(!opts?.resume)toast.message(`Вступаем: ${fresh.length} · аккаунты по очереди, каждый раз в 6–15 мин`);
     else toast.message(`Продолжаем вступление: ${fresh.length} в очереди`);
     let onboarded=0,leads=0,failed=0;
     try{
@@ -1189,6 +1207,13 @@ function WorkspaceHome(){
           }
         }catch(err){
           const data=(err as Error & {data?:any}).data;
+          if(data?.parked){
+            // Фильтр релевантности: не ошибка — группа ждёт решения владельца.
+            setJoinQueueSync(prev=>prev.map(q=>q.id===g.id?{...q,status:'done',error:String(data.error||'На подтверждение').slice(0,120)}:q));
+            patchGroupLocal(g.id,{...(data.group||{}),joinState:'',joinStateAt:''});
+            void persistJoinState(g.id,'');
+            continue;
+          }
           failed++;
           const msg=(err as Error).message;
           setJoinQueueSync(prev=>prev.map(q=>q.id===g.id?{...q,status:'error',error:msg}:q));
@@ -1207,18 +1232,10 @@ function WorkspaceHome(){
           }
         }
         if(joinWorkRef.current.length){
+          // Темп держит сервер: следующую группу он отдаст готовому аккаунту фермы (у каждого своя
+          // пауза 6–15 мин, один join на прокси). Если готовых нет — join_group вернёт waitSec.
           const next=joinWorkRef.current[0];
-          const prevAcc=list('group').find(x=>x.id===g.id)?.data.accountId
-            || records.find(x=>x.id===g.id)?.data.accountId;
-          const nextAcc=list('group').find(x=>x.id===next.id)?.data.accountId
-            || records.find(x=>x.id===next.id)?.data.accountId;
-          if(prevAcc&&nextAcc&&prevAcc===nextAcc){
-            await holdJoin(JOIN_GAP_DEFAULT_SEC,next.id,next.name);
-          }else if(prevAcc&&nextAcc&&prevAcc!==nextAcc){
-            await holdJoin(8,next.id,next.name);
-          }else{
-            await holdJoin(JOIN_GAP_DEFAULT_SEC,next.id,next.name);
-          }
+          await holdJoin(8,next.id,next.name);
         }
       }
       if(onboarded)toast.success(`Готово: ${onboarded} групп, +${leads} лидов${failed?` · ошибок ${failed}`:''}`);
@@ -1438,7 +1455,7 @@ function WorkspaceHome(){
       if(shouldOnboard&&groupId){
         await refresh();
         toast.success('Группа сохранена — подключение в фоне');
-        void startBackgroundJoins([{id:groupId,name:form.name||'Группа'}]);
+        void startBackgroundJoins([{id:groupId,name:form.name||'Группа'}],{manual:true});
       }else if(rescanAfter){
         await refresh();
         toast.success('Настройки сохранены — запускаем обход');
@@ -2335,7 +2352,23 @@ function WorkspaceHome(){
       return;
     }
     if(!telegramConnected){toast.error('Запустите: npm run dev');return}
-    void startBackgroundJoins([{id:item.id,name:item.data.name||'Группа'}]);
+    void startBackgroundJoins([{id:item.id,name:item.data.name||'Группа'}],{manual:true});
+  }
+
+  /** Решение владельца по вступлению: одобрить (и сразу в очередь) / не вступать / вернуть на оценку. */
+  async function setGroupJoinDecision(ids:string[],decision:'approved'|'skipped'|''){
+    if(!ids.length)return;
+    try{
+      const r=await api({action:'set_group_join_decision',groupIds:ids,decision});
+      await refresh();
+      if(decision==='approved'){
+        const items=Array.isArray(r.items)?r.items:[];
+        toast.success(`Одобрено ${r.updated||ids.length}${items.length?' · вступаем по очереди':''}`);
+        if(items.length&&telegramConnected)void startBackgroundJoins(items);
+      }else if(decision==='skipped'){
+        toast.message(`Не вступать: ${r.updated||ids.length} — можно вернуть кнопкой «Одобрить»`);
+      }
+    }catch(e){toast.error((e as Error).message)}
   }
 
   async function scanGroup(item:RecordItem){
@@ -2486,7 +2519,7 @@ function WorkspaceHome(){
       setGroupImportText('');
       await refresh();
       if(toJoin.length){
-        void startBackgroundJoins(toJoin);
+        void startBackgroundJoins(toJoin,{manual:true});
         toast.success(`Добавлено ${added} · вступаем ${toJoin.length}${skipped?` · уже были ${skipped}`:''}`);
       }else{
         toast.success(`Добавлено ${added}${skipped?` · пропущено (уже есть) ${skipped}`:''}`);
@@ -2592,7 +2625,7 @@ function WorkspaceHome(){
       await refresh();
       if(doJoin&&toJoin.length){
         setCatalogOpen(false);
-        void startBackgroundJoins(toJoin);
+        void startBackgroundJoins(toJoin,{manual:true});
         toast.message(`Сразу вступаем: ${toJoin.length} чат(ов) в фоне`);
       }else if(doJoin&&ready.length&&!needLink.length){
         toast.message('Выбранные чаты уже подключены');
@@ -2664,6 +2697,8 @@ function WorkspaceHome(){
     if(currentKind==='group'){
       return displayed.filter(r=>{
         if(groupFilter==='need')return groupNeedsJoin(r);
+        if(groupFilter==='review')return groupParked(r)&&joinGateFor(r.data).state==='review';
+        if(groupFilter==='skip')return groupParked(r)&&joinGateFor(r.data).state!=='review';
         if(groupFilter==='joined')return groupAlreadyIn(r);
         if(groupFilter==='pending')return r.data.status==='pending';
         if(groupFilter==='error')return r.data.status==='error';
@@ -2950,6 +2985,8 @@ function WorkspaceHome(){
           const joined=r.data.membership==='joined'||!!r.data.joinedAt;
           const syncAt=formatGroupSyncAt(String(r.data.lastScanned||''));
           const err=r.data.status==='error'?shortErr(r.data.error||r.data.joinStateError||''):'';
+          const gate=joined?null:joinGateFor(r.data);
+          const parked=!!gate&&!gate.allow&&!groupAlreadyIn(r);
           return (
             <div className={`groups-row ${queued?'is-queue':''} ${groupSelected.includes(r.id)?'is-selected':''}`} key={r.id}>
               <label className="groups-check">
@@ -2966,6 +3003,11 @@ function WorkspaceHome(){
                   )}
                 </div>
                 {err&&<div className="groups-err" title={r.data.error||r.data.joinStateError}>{err}{(r.data.error||r.data.joinStateError||'').length>90?'…':''}</div>}
+                {gate&&gate.state!=='joined'&&(gate.reason||gate.score!=null)&&(
+                  <div className="groups-why" title={gate.reason}>
+                    {gate.score!=null?`Релевантность ${gate.score} · `:''}{gate.reason}
+                  </div>
+                )}
               </div>
               <button type="button" className="groups-acc" disabled={busy} onClick={()=>openAccountPicker('row',r.id)} title={accountName||'Назначить аккаунт'}>
                 <span className="truncate">{accountName||'Назначить'}</span>
@@ -2982,6 +3024,16 @@ function WorkspaceHome(){
                 {canJoin&&(
                   <Button size="sm" disabled={busy||!telegramConnected||!r.data.accountId} onClick={()=>joinGroup(r)}>
                     <Plug size={14}/>Вступить
+                  </Button>
+                )}
+                {parked&&(
+                  <Button size="sm" variant="outline" disabled={busy} onClick={()=>void setGroupJoinDecision([r.id],'approved')} title="Вступить в эту группу несмотря на оценку">
+                    <Check size={14}/>Одобрить
+                  </Button>
+                )}
+                {parked&&gate?.state==='review'&&(
+                  <Button size="sm" variant="ghost" disabled={busy} onClick={()=>void setGroupJoinDecision([r.id],'skipped')}>
+                    Не вступать
                   </Button>
                 )}
                 {r.data.status==='pending'&&(
@@ -3478,7 +3530,7 @@ function WorkspaceHome(){
                 <div className="join-queue-head">
                   <div>
                     <h3>Очередь вступлений</h3>
-                    <p className="small-note mt-1">Антиспам ~{Math.round(JOIN_GAP_DEFAULT_SEC/60)} мин между чатами. Очередь сохраняется на сервере — можно обновлять страницу.</p>
+                    <p className="small-note mt-1">Антиспам: каждый аккаунт вступает раз в 6–15 мин, новые — реже. Очередь сохраняется на сервере — можно обновлять страницу.</p>
                   </div>
                   <div className="flex gap-2 flex-wrap items-center">
                     <span className="badge neutral">{joinQueue.filter(q=>q.status==='done').length}/{joinQueue.length}</span>
@@ -3640,7 +3692,7 @@ function WorkspaceHome(){
                       )}
                     </div>
                     <p className="groups-hint">
-                      Отметьте группы → назначьте аккаунт → «Вступить». Пауза одного аккаунта ~{Math.round(JOIN_GAP_DEFAULT_SEC/60)} мин.
+                      Сами вступаем только в группы по теме продукта; остальные — «На подтверждение» или «Не вступать». Аккаунты вступают параллельно, каждый — раз в 6–15 мин.
                       {settings?.data?.lastAutoRescanAt?` · автообход ${new Date(settings.data.lastAutoRescanAt).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}`:''}
                       {autoRescanRunning?' · идёт сейчас…':''}
                     </p>
@@ -3650,6 +3702,8 @@ function WorkspaceHome(){
                     {([
                       ['all',`Все ${list('group').length}`],
                       ['need',`Ждут ${list('group').filter(groupNeedsJoin).length}`],
+                      ['review',`На подтверждение ${list('group').filter(g=>groupParked(g)&&joinGateFor(g.data).state==='review').length}`],
+                      ['skip',`Не вступать ${list('group').filter(g=>groupParked(g)&&joinGateFor(g.data).state!=='review').length}`],
                       ['joined',`Вступили ${list('group').filter(groupAlreadyIn).length}`],
                       ['pending',`Заявки ${list('group').filter(g=>g.data.status==='pending').length}`],
                       ['error',`Ошибки ${list('group').filter(g=>g.data.status==='error').length}`],
@@ -3723,11 +3777,22 @@ function WorkspaceHome(){
                       {groupSelected.length>0&&(
                         <Button
                           size="sm"
+                          variant="outline"
+                          disabled={busy}
+                          onClick={()=>void setGroupJoinDecision(list('group').filter(g=>groupSelected.includes(g.id)&&!groupAlreadyIn(g)).map(g=>g.id),'skipped')}
+                        >
+                          Не вступать
+                        </Button>
+                      )}
+                      {groupSelected.length>0&&(
+                        <Button
+                          size="sm"
                           disabled={!telegramConnected||busy}
                           onClick={()=>{
-                            const items=list('group').filter(g=>groupSelected.includes(g.id)&&groupNeedsJoin(g));
+                            const items=list('group').filter(g=>groupSelected.includes(g.id)&&!groupAlreadyIn(g)&&!!g.data.accountId&&!isCatalogPlaceholderUrl(g.data.url||''));
                             if(!items.length){toast.message('Нет групп, ждущих вступления');return}
-                            void startBackgroundJoins(items.map(g=>({id:g.id,name:g.data.name||'Группа'})));
+                            // Выбранные вручную = одобренные: вступаем, даже если фильтр держал их.
+                            void startBackgroundJoins(items.map(g=>({id:g.id,name:g.data.name||'Группа'})),{manual:true});
                           }}
                         >
                           <Plug size={14}/>Вступить

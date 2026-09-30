@@ -2901,6 +2901,16 @@ textarea:focus-visible,
   max-width: 100%;
 }
 
+.groups-why {
+  margin-top: 2px;
+  font-size: 0.72rem;
+  color: var(--spike-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
 .groups-acc {
   display: inline-flex;
   align-items: center;
