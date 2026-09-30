@@ -87,6 +87,7 @@ import {
 } from '@/lib/audience-invite';
 import {useTableSort} from '@/hooks/useTableSort';
 import type {SortValueType} from '@/lib/table-sort';
+import {leadVisibleInTab} from '@/lib/lead-search';
 
 type Kind='account'|'proxy'|'group'|'lead'|'settings'|'audience_task'|'invite_task'|'mailing_task';
 type RecordItem={id:string;kind:Kind;data:any;hasSecret:boolean;created:string};
@@ -2635,19 +2636,11 @@ function WorkspaceHome(){
   const displayed=records.filter(r=>{
     if(r.kind!==(currentKind||'lead'))return false;
     if(view==='Переписки'&&!r.data.draft&&!r.data.conversationOpen)return false;
-    if(currentKind==='lead'&&(view==='Лиды'||view==='Переписки')){
-      if(filter==='ignored'){
-        if(!r.data.excludeFromTraining)return false;
-      }else if(r.data.excludeFromTraining){
-        return false;
-      }else if(filter==='viewed'){
-        if(!r.data.viewed)return false;
-      }else if(r.data.viewed){
-        return false;
-      }
+    const leadTabs=currentKind==='lead'&&(view==='Лиды'||view==='Переписки');
+    if(leadTabs){
+      if(!leadVisibleInTab(r.data,filter))return false;
       if(view==='Лиды'&&leadGroupFilter!=='all'&&r.data.groupId!==leadGroupFilter)return false;
-    }
-    if(filter!=='all'&&filter!=='viewed'&&filter!=='ignored'){
+    }else if(filter!=='all'&&filter!=='viewed'&&filter!=='ignored'){
       if(currentKind==='lead'){
         if(filter==='hot'||filter==='warm'||filter==='cold'){
           if((r.data.temperature||'warm')!==filter)return false;

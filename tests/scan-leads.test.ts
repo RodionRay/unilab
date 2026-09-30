@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { decideScanLead, evaluateScanGate } from "@/lib/processes/scan-flow";
+import {
+  AI_REJECT_TTL_MS,
+  MAX_AI_REJECTS,
+  MAX_LEAD_TOMBSTONES,
+  activeAiRejects,
+  addLeadTombstone,
+  aiSettingsSignature,
+  decideScanLead,
+  evaluateScanGate,
+  keepServerOwnedFields,
+  rememberAiRejects,
+} from "@/lib/processes/scan-flow";
 import type { LeadCoreSettings } from "@/lib/lead-core";
 import { withDayLimitCooldown, withSpamblockStatus } from "@/lib/telegram-accounts";
 
@@ -60,5 +71,44 @@ describe("скан · отбор лидов (lead-core)", () => {
     expect(
       decideScanLead("Селлерам отсрочка смертной казни на год 😅", settings).pass,
     ).toBe(false);
+  });
+});
+
+describe("скан · память отказов AI (REQ-L11)", () => {
+  const now = Date.parse("2026-09-30T12:00:00.000Z");
+
+  it("помнит отказ до истечения TTL и забывает после", () => {
+    const mem = rememberAiRejects({}, ["10"], "sig", now);
+    expect(activeAiRejects(mem, "sig", now + AI_REJECT_TTL_MS - 1)).toHaveProperty("10");
+    expect(activeAiRejects(mem, "sig", now + AI_REJECT_TTL_MS + 1)).toEqual({});
+  });
+
+  it("сбрасывает память при смене настроек и держит потолок записей", () => {
+    const mem = rememberAiRejects({}, ["10"], "sig", now);
+    expect(activeAiRejects(mem, "other", now)).toEqual({});
+    expect(aiSettingsSignature({ product: "a" })).not.toBe(aiSettingsSignature({ product: "b" }));
+    const many = Array.from({ length: MAX_AI_REJECTS + 5 }, (_, i) => String(i));
+    expect(Object.keys(rememberAiRejects({}, many, "sig", now).until)).toHaveLength(MAX_AI_REJECTS);
+  });
+});
+
+describe("скан · tombstones и серверные поля (REQ-L6, REQ-L10)", () => {
+  it("tombstone без дублей и с потолком", () => {
+    expect(addLeadTombstone(["1"], "1")).toEqual(["1"]);
+    expect(addLeadTombstone(undefined, "2")).toEqual(["2"]);
+    const full = Array.from({ length: MAX_LEAD_TOMBSTONES }, (_, i) => String(i));
+    const next = addLeadTombstone(full, "new");
+    expect(next).toHaveLength(MAX_LEAD_TOMBSTONES);
+    expect(next.at(-1)).toBe("new");
+  });
+
+  it("save лида берёт клиентские поля, но не серверные", () => {
+    const merged = keepServerOwnedFields(
+      "lead",
+      { replies: [{ text: "a" }], coreScore: 70, status: "new" },
+      { replies: [], status: "working", draft: "x" },
+    );
+    expect(merged).toEqual({ replies: [{ text: "a" }], coreScore: 70, status: "working", draft: "x" });
+    expect(keepServerOwnedFields("account", { status: "a" }, { status: "b" })).toEqual({ status: "b" });
   });
 });

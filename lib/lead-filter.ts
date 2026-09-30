@@ -126,6 +126,53 @@ export function findMinusHit(text: string, terms: readonly string[]): string {
   return "";
 }
 
+/** Russian noun/adjective endings stripped from plus-word words (longest first). */
+const WORD_ENDINGS = [
+  "иями", "ями", "ами", "ией", "иям", "иях", "ого", "его", "ему", "ому", "ыми", "ими",
+  "ах", "ях", "ия", "ие", "ий", "ии", "ию", "ью", "ов", "ев", "ей", "ом", "ем", "ам", "ям",
+  "ой", "ый", "ая", "яя", "ое", "ее", "ые", "ую", "юю", "ых", "их",
+  "а", "я", "о", "е", "ы", "и", "у", "ю", "ь", "й",
+];
+/** A stem never gets shorter than this ("цены" → "цен", not "це"). */
+const MIN_STEM_LENGTH = 3;
+const CYRILLIC_WORD_RE = /^[а-я]+$/;
+
+/** Stem of one lower-cased word: Cyrillic words lose one inflection ending, others stay as is. */
+export function stemWord(word: string): string {
+  if (!CYRILLIC_WORD_RE.test(word)) return word;
+  for (const end of WORD_ENDINGS) {
+    if (word.endsWith(end) && word.length - end.length >= MIN_STEM_LENGTH) {
+      return word.slice(0, -end.length);
+    }
+  }
+  return word;
+}
+
+const plusPatternCache = new Map<string, RegExp>();
+
+function plusTermPattern(term: string): RegExp {
+  const cached = plusPatternCache.get(term);
+  if (cached) return cached;
+  const words = normalizeYo(term.toLowerCase()).trim().split(/\s+/).filter(Boolean);
+  const phrase = words
+    .map((w) => stemWord(w).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("[\\p{L}\\p{N}]*\\s+");
+  // Every word matches at a word start by its stem: "остатки" hits "остатков", "склад" misses "мойсклад".
+  const re = new RegExp(`(?<![\\p{L}\\p{N}])${phrase}`, "iu");
+  if (plusPatternCache.size > 2000) plusPatternCache.clear();
+  plusPatternCache.set(term, re);
+  return re;
+}
+
+/**
+ * Plus-word / signal / criteria hit in a lower-cased body: word-start stem match, ё→е on both sides.
+ * Mirrors telegram-worker/src/check_account.py::plus_term_hit (shared fixture tests/fixtures/lead-match.json).
+ */
+export function plusTermHit(body: string, term: string): boolean {
+  if (!term.trim()) return false;
+  return plusTermPattern(term).test(normalizeYo(body));
+}
+
 export function strongPlusTerms(raw: string): string[] {
   return splitTerms(raw).filter((t) => t.length >= 3 && !WEAK_PLUS_TERMS.has(t));
 }
@@ -134,16 +181,17 @@ export function normalizeLeadMessage(text: string, max = 120): string {
   return (text || "").replace(/\s+/g, " ").trim().slice(0, max).toLowerCase();
 }
 
+/**
+ * Dedupe key of a scanned message: `groupId:tgMsgId` when Telegram gave an id, so an edited
+ * message keeps its key; text-based only for messages without an id (manual leads).
+ */
 export function leadMessageFingerprint(
   message: string,
   groupId = "",
   tgMsgId = "",
 ): string {
-  return `${groupId || ""}:${tgMsgId || ""}:${normalizeLeadMessage(message)}`;
-}
-
-export function hasLeadIntent(text: string): boolean {
-  return BUYER_INTENT_RE.test(text || "") || SOFT_ASK_RE.test(text || "");
+  if (tgMsgId) return `${groupId || ""}:${tgMsgId}`;
+  return `${groupId || ""}::${normalizeLeadMessage(message)}`;
 }
 
 /** Жёсткий покупательский запрос услуги/инструмента. */
@@ -169,70 +217,6 @@ export function looksLikeServiceAd(text: string): boolean {
     SPAM_RE.test(text || "") ||
     BROADCAST_AD_RE.test(text || "")
   );
-}
-
-/**
- * Кандидат в лиды только если ищет сервис/инструмент.
- * Делегирует в ядро (lib/lead-core) для единого порога score.
- */
-export function messageMatchesLeadFilter(
-  text: string,
-  settings: LeadFilterSettings & {
-    avoidTopics?: string;
-    leadCriteria?: string;
-    hotSignals?: string;
-    product?: string;
-  },
-): boolean {
-  // lazy import avoided — re-export thin wrappers below after core exists
-  const body = (text || "").toLowerCase();
-  if (body.length < 16) return false;
-  if (looksLikeServiceAd(text || "")) return false;
-  if (findMinusHit(body, splitTerms(settings.minusKeywords || ""))) return false;
-
-  const strong = strongPlusTerms(settings.keywords || "");
-  const strongHits = strong.filter((p) => body.includes(p)).length;
-  const buyer = hasBuyerIntent(text);
-  const soft = hasSoftAsk(text);
-  const fit = hasProductFit(text);
-  const criteriaHits = splitTerms(settings.leadCriteria || "")
-    .concat(splitTerms(settings.hotSignals || ""))
-    .filter((t) => t.length >= 4 && body.includes(t) && !WEAK_PLUS_TERMS.has(t)).length;
-
-  if (buyer && (fit || strongHits >= 1 || criteriaHits >= 1)) return true;
-  if (buyer && /сервис|crm|инструмент|платформ|подряд|демо|внедр/i.test(text)) return true;
-  if (soft && (fit || strongHits >= 1 || criteriaHits >= 1)) return true;
-  return false;
-}
-
-/**
- * Без AI — через те же сигналы, что ядро (buyer/soft + fit).
- */
-export function classifyLeadTemperature(
-  text: string,
-  settings: LeadFilterSettings & {
-    leadCriteria?: string;
-    hotSignals?: string;
-    product?: string;
-    avoidTopics?: string;
-  },
-): LeadTemperature | null {
-  if (!messageMatchesLeadFilter(text, settings)) return null;
-
-  const body = (text || "").toLowerCase();
-  const strong = strongPlusTerms(settings.keywords || "");
-  const hits = strong.filter((p) => body.includes(p)).length;
-  const buyer = hasBuyerIntent(text);
-  const fit = hasProductFit(text);
-  const soft = hasSoftAsk(text);
-  const criteriaHits = splitTerms(settings.leadCriteria || "")
-    .concat(splitTerms(settings.hotSignals || ""))
-    .filter((t) => t.length >= 4 && body.includes(t) && !WEAK_PLUS_TERMS.has(t)).length;
-
-  if (buyer && (fit || hits >= 1 || criteriaHits >= 1)) return "hot";
-  if (buyer) return "warm";
-  if (soft && (fit || hits >= 1 || criteriaHits >= 1)) return "warm";
-  return null;
 }
 
 export function parseLeadTemperature(raw: unknown): LeadTemperature {

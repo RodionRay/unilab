@@ -925,6 +925,111 @@ AD_MARKERS = compile_minus_terms([
     "гайд для продавцов", "подписывайтесь",
 ])
 
+# Ported from lib/lead-filter.ts BUYER_INTENT_RE / SOFT_ASK_RE (\p{L} → [^\W\d_], [\p{L}\p{N}] → [^\W_]);
+# shared fixture tests/fixtures/lead-match.json keeps both sides equal.
+BUYER_INTENT_RE = re.compile(
+    r"(?:^|[\W\d_])(?:(?:ищу|ищем)\s+(?:сервис|подрядчик[^\W_]*|интегратор[^\W_]*|разработчик[^\W_]*"
+    r"|агентство|инструмент[^\W_]*|программ[^\W_]*|crm|решени[^\W_]*|платформ[^\W_]*)"
+    r"|нуж(?:ен|на|но|ны)\s+(?:сервис|подрядчик[^\W_]*|интегратор[^\W_]*|разработчик[^\W_]*|агентство"
+    r"|инструмент[^\W_]*|программ[^\W_]*|crm|решени[^\W_]*)"
+    r"|требуется\s+(?:сервис|подрядчик[^\W_]*|интегратор[^\W_]*)"
+    r"|подскаж(?:ите|и)\s+(?:сервис|crm|инструмент|платформ|чем\s+вести|как\s+вести)"
+    r"|посоветуйте\s+(?:сервис|crm|инструмент|платформ)"
+    r"|у\s+кого\s+(?:брать|заказывать)\s+(?:сервис|crm)"
+    r"|кто\s+(?:пользовался|пользуется)\s+[a-z][a-z0-9]*(?![^\W_])"
+    r"|как\s+(?:настроить|подключить|внедрить|автоматизировать)\s+(?:остат|синхрон|цен|отзыв|1с|мойсклад|кабинет)"
+    r"|готовы?\s+(?:купить|оплатить|внедрить)\s+(?:сервис|решени|подписк)"
+    r"|(?:пришлите|нужно|нужен|скиньте|запросите)\s+(?:кп|коммерческ)"
+    r"|на\s+демо|нужна?\s+crm|ищу\s+crm)",
+    re.IGNORECASE,
+)
+SOFT_ASK_RE = re.compile(
+    r"(?:^|[\W\d_])(?:подскаж(?:ите|и)|посоветуйте|помогите\s+настроить|скажите\s+пожалуйста"
+    r"|кто\s+пользуется|кто\s+пользовался)",
+    re.IGNORECASE,
+)
+
+
+def has_buyer_intent(text: str) -> bool:
+    return bool(BUYER_INTENT_RE.search(text or ""))
+
+
+def has_soft_ask(text: str) -> bool:
+    return bool(SOFT_ASK_RE.search(text or ""))
+
+
+# Mirrors lib/lead-filter.ts::stemWord (same endings, same order).
+WORD_ENDINGS = (
+    "иями", "ями", "ами", "ией", "иям", "иях", "ого", "его", "ему", "ому", "ыми", "ими",
+    "ах", "ях", "ия", "ие", "ий", "ии", "ию", "ью", "ов", "ев", "ей", "ом", "ем", "ам", "ям",
+    "ой", "ый", "ая", "яя", "ое", "ее", "ые", "ую", "юю", "ых", "их",
+    "а", "я", "о", "е", "ы", "и", "у", "ю", "ь", "й",
+)
+MIN_STEM_LENGTH = 3
+_CYRILLIC_WORD_RE = re.compile(r"^[а-я]+$")
+_plus_pattern_cache: dict[str, re.Pattern[str]] = {}
+
+
+def stem_word(word: str) -> str:
+    if not _CYRILLIC_WORD_RE.match(word):
+        return word
+    for end in WORD_ENDINGS:
+        if word.endswith(end) and len(word) - len(end) >= MIN_STEM_LENGTH:
+            return word[: -len(end)]
+    return word
+
+
+def _plus_term_pattern(term: str) -> re.Pattern[str]:
+    cached = _plus_pattern_cache.get(term)
+    if cached is not None:
+        return cached
+    words = _normalize_minus_text(term).split()
+    phrase = r"[^\W_]*\s+".join(re.escape(stem_word(w)) for w in words)
+    pattern = re.compile(r"(?<![^\W_])" + phrase, re.IGNORECASE)
+    if len(_plus_pattern_cache) > 2000:
+        _plus_pattern_cache.clear()
+    _plus_pattern_cache[term] = pattern
+    return pattern
+
+
+def plus_term_hit(body: str, term: str) -> bool:
+    """Word-start stem match of a plus-word/signal, ё→е on both sides.
+
+    Mirrors lib/lead-filter.ts::plusTermHit (shared fixture tests/fixtures/lead-match.json).
+    """
+    if not (term or "").strip():
+        return False
+    return bool(_plus_term_pattern(term).search(_normalize_minus_text(body)))
+
+
+def passes_lead_prefilter(text: str, keywords: list[str]) -> bool:
+    """Worker prefilter: never drops a message the lead core could accept.
+
+    The core needs buyer intent or a soft ask to reach the warm threshold, so both always pass;
+    a settings keyword hit (word forms) passes too, as before.
+    """
+    if has_buyer_intent(text) or has_soft_ask(text):
+        return True
+    low = (text or "").lower()
+    return any(plus_term_hit(low, k) for k in keywords if len(k) >= 2)
+
+
+# Raw messages read per scan when paging forward from the cursor / depth cutoff.
+SCAN_FETCH_CAP = 1000
+# Without cursor and depth only the newest messages are read.
+SCAN_NEWEST_LIMIT = 200
+
+
+def history_window(cursor: str, cutoff: Any) -> dict[str, Any]:
+    """iter_messages kwargs for scan_group: oldest-first from the per-group cursor (last seen id) or,
+    on the first scan, from the depth cutoff, so paging across scans never skips a message."""
+    raw = str(cursor or "").strip()
+    if raw.isdigit() and int(raw) > 0:
+        return {"reverse": True, "offset_id": int(raw), "limit": SCAN_FETCH_CAP}
+    if cutoff is not None:
+        return {"reverse": True, "offset_date": cutoff, "limit": SCAN_FETCH_CAP}
+    return {"limit": SCAN_NEWEST_LIMIT}
+
 
 async def scan_group(
     client,
@@ -933,10 +1038,13 @@ async def scan_group(
     minus_keywords: list[str],
     limit: int = 40,
     days: int = 0,
+    cursor: str = "",
 ) -> dict[str, Any]:
     """Скан лидов в переписках: группы + обсуждения/комментарии к каналам.
 
     Посты канала и авторы-каналы НЕ считаются лидами.
+    Лента читается вперёд от `cursor` (последний просмотренный id) или от глубины `days`;
+    в ответе `cursor` — последний обработанный id, приложение хранит его на группе.
     """
     from datetime import datetime, timedelta, timezone
     from telethon.tl.functions.messages import CheckChatInviteRequest
@@ -955,14 +1063,6 @@ async def scan_group(
 
     kws = [k.strip().lower() for k in keywords if k and k.strip()]
     minus = compile_minus_terms(minus_keywords)
-    # Только общий intent; нишевые алиасы не хардкодим — приходят в keywords из настроек AI
-    intent_markers = (
-        "ищу сервис", "ищу crm", "ищем сервис", "нужен сервис", "нужна crm",
-        "подскажите сервис", "кто пользуется", "кто пользовался",
-        "кто может", "кто делает", "как настроить", "как подключить",
-        "помогите настроить", "нужен инструмент", "ищу инструмент",
-        "нужен подрядчик", "ищу подрядчика",
-    )
     cutoff = None
     if days and days > 0:
         cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, min(90, days)))
@@ -977,22 +1077,24 @@ async def scan_group(
     scan_mode = "group"
     discussion_id = ""
     discussion_title = ""
+    window = history_window(cursor, cutoff)
+    last_id = int(cursor) if str(cursor or "").isdigit() else 0
 
     def passes_kw(text: str) -> bool:
         nonlocal skipped_kw
-        low = text.lower()
-        if kws:
-            hit = any(k in low for k in kws if len(k) >= 2)
-            intentish = any(x in low for x in intent_markers)
-            if not hit and not intentish:
-                skipped_kw += 1
-                return False
-        else:
-            # без плюс-слов из настроек — только явный intent
-            if not any(x in low for x in intent_markers):
-                skipped_kw += 1
-                return False
-        return True
+        if passes_lead_prefilter(text, kws):
+            return True
+        skipped_kw += 1
+        return False
+
+    async def read_feed(peer, kind: str) -> None:
+        """Лента чата/обсуждения по окну курсора; курсор двигается только по обработанным id."""
+        nonlocal last_id
+        async for m in client.iter_messages(peer, **window):
+            await add_msg(m, kind=kind, peer_entity=peer)
+            last_id = max(last_id, int(getattr(m, "id", 0) or 0))
+            if len(out) >= max(limit, 40):
+                break
 
     async def add_msg(m, *, kind: str, peer_entity) -> None:
         nonlocal fetched, skipped_minus, skipped_not_user
@@ -1151,10 +1253,7 @@ async def scan_group(
                             "scanMode": scan_mode,
                             "needDiscussionJoin": True,
                         }
-                async for m in client.iter_messages(linked, limit=fetch_limit):
-                    await add_msg(m, kind="discussion", peer_entity=linked)
-                    if len(out) >= max(limit, 40):
-                        break
+                await read_feed(linked, "discussion")
                 scan_mode = "discussion_messages"
 
             # Fallback: комментарии к постам (reply_to), сами посты не берём
@@ -1180,10 +1279,7 @@ async def scan_group(
         else:
             # Группа / супергруппа / чат — лента переписки
             scan_mode = "group_messages"
-            async for m in client.iter_messages(entity, limit=fetch_limit):
-                await add_msg(m, kind="group", peer_entity=entity)
-                if len(out) >= max(limit, 40):
-                    break
+            await read_feed(entity, "group")
 
         # Без keyword-less fallback: пустой out — нормально (лучше 0, чем шум)
 
@@ -1206,6 +1302,7 @@ async def scan_group(
         "scanMode": scan_mode,
         "discussionId": discussion_id,
         "discussionTitle": discussion_title,
+        "cursor": str(last_id) if last_id else "",
     }
 
 
@@ -2780,7 +2877,8 @@ async def run_action(payload: dict[str, Any]) -> dict[str, Any]:
                     minus = [x.strip() for x in minus.replace(";", ",").split(",")]
                 limit = int(payload.get("limit") or 40)
                 days = int(payload.get("days") or 0)
-                return await scan_group(client, url, keywords, minus, limit, days=days)
+                cursor = str(payload.get("minId") or "")
+                return await scan_group(client, url, keywords, minus, limit, days=days, cursor=cursor)
             if action == "collect":
                 return await collect_audience(client, payload)
             if action == "invite":
