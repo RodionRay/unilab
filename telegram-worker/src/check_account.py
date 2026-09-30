@@ -2415,62 +2415,133 @@ async def send_message(
         return {"ok": False, "error": msg[:400]}
 
 
-async def poll_dm_inbox(client, *, since_ts: int = 0, limit_dialogs: int = 20) -> dict[str, Any]:
-    """Входящие ЛС после since_ts (unix). Без ботов и Saved Messages."""
-    import time as _time
+INBOX_DEFAULT_LOOKBACK_SEC = 36 * 3600
+INBOX_MAX_USER_DIALOGS = 30
+INBOX_MAX_DIALOGS_SCANNED = 400
+INBOX_MESSAGES_PER_DIALOG = 100
 
-    now = int(_time.time())
-    floor = int(since_ts) if int(since_ts or 0) > 0 else now - 36 * 3600
+
+def _unix_ts(date: Any) -> int:
+    return int(date.timestamp()) if date is not None else 0
+
+
+def _is_dm_dialog(dialog: Any) -> bool:
+    if not getattr(dialog, "is_user", False):
+        return False
+    entity = dialog.entity
+    return not (getattr(entity, "bot", False) or getattr(entity, "is_self", False))
+
+
+async def _incoming_after(client: Any, dialog: Any, floor: int) -> list[dict[str, Any]]:
+    """Incoming messages of one private dialog newer than floor (newest first until the floor)."""
+    entity = dialog.entity
+    user_id = str(getattr(entity, "id", "") or "")
+    username = str(getattr(entity, "username", None) or "").strip()
+    name = " ".join(
+        x
+        for x in (
+            str(getattr(entity, "first_name", None) or "").strip(),
+            str(getattr(entity, "last_name", None) or "").strip(),
+        )
+        if x
+    ).strip()
+    out: list[dict[str, Any]] = []
+    async for m in client.iter_messages(entity, limit=INBOX_MESSAGES_PER_DIALOG):
+        if not m:
+            continue
+        date = getattr(m, "date", None)
+        ts = _unix_ts(date)
+        if ts and ts <= floor:
+            break
+        if getattr(m, "out", False):
+            continue
+        text = str(getattr(m, "message", None) or getattr(m, "raw_text", None) or "").strip()
+        has_media = bool(getattr(m, "media", None))
+        if not text and not has_media:
+            continue
+        out.append(
+            {
+                "userId": user_id,
+                "username": username,
+                "name": name or username or user_id,
+                "text": (text or "[медиа]")[:4000],
+                "messageId": str(getattr(m, "id", "") or ""),
+                "at": date.isoformat() if date is not None else "",
+                "ts": ts,
+                "hasMedia": has_media,
+            }
+        )
+    return out
+
+
+async def poll_dm_inbox(
+    client: Any,
+    *,
+    since_ts: int = 0,
+    offset_date: int = 0,
+    max_user_dialogs: int = INBOX_MAX_USER_DIALOGS,
+    now: int | None = None,
+) -> dict[str, Any]:
+    """Incoming DMs newer than since_ts (unix), bots and Saved Messages excluded.
+
+    Dialogs come newest first; every private dialog above the floor is read down to the floor. The pass is
+    complete at the first non-pinned dialog at/below the floor. When the dialog budget or a FloodWait stops it
+    earlier, complete=False and nextOffsetDate lets the next call resume from the first unscanned dialog, so
+    the caller's cursor never jumps over unscanned dialogs.
+    """
+    import time as _time
+    from datetime import datetime, timezone
+
+    started = int(now if now is not None else _time.time())
+    floor = int(since_ts) if int(since_ts or 0) > 0 else started - INBOX_DEFAULT_LOOKBACK_SEC
+    offset = max(0, int(offset_date or 0))
+    budget = max(1, min(60, int(max_user_dialogs or INBOX_MAX_USER_DIALOGS)))
     messages: list[dict[str, Any]] = []
-    try:
-        async for dialog in client.iter_dialogs(limit=max(8, min(40, int(limit_dialogs or 20)))):
-            if not getattr(dialog, "is_user", False):
-                continue
-            entity = dialog.entity
-            if getattr(entity, "bot", False) or getattr(entity, "is_self", False):
-                continue
-            user_id = str(getattr(entity, "id", "") or "")
-            username = str(getattr(entity, "username", None) or "").strip()
-            name = " ".join(
-                x
-                for x in (
-                    str(getattr(entity, "first_name", None) or "").strip(),
-                    str(getattr(entity, "last_name", None) or "").strip(),
-                )
-                if x
-            ).strip()
-            try:
-                hist = await client.get_messages(entity, limit=8)
-            except Exception:
-                continue
-            for m in hist or []:
-                if not m or getattr(m, "out", False):
-                    continue
-                date = getattr(m, "date", None)
-                ts = int(date.timestamp()) if date is not None else 0
-                if ts and ts <= floor:
-                    continue
-                text = str(getattr(m, "message", None) or getattr(m, "raw_text", None) or "").strip()
-                has_media = bool(getattr(m, "media", None))
-                if not text and not has_media:
-                    continue
-                if not text and has_media:
-                    text = "[медиа]"
-                messages.append(
-                    {
-                        "userId": user_id,
-                        "username": username,
-                        "name": name or username or user_id,
-                        "text": text[:4000],
-                        "messageId": str(getattr(m, "id", "") or ""),
-                        "at": date.isoformat() if date is not None else "",
-                        "ts": ts,
-                        "hasMedia": has_media,
-                    }
-                )
+
+    def result(complete: bool, resume_ts: int = 0) -> dict[str, Any]:
+        next_offset = 0
+        if not complete:
+            next_offset = resume_ts + 1 if resume_ts else offset
+            if offset and next_offset >= offset:
+                next_offset = offset - 1
         messages.sort(key=lambda x: int(x.get("ts") or 0))
-        return {"ok": True, "messages": messages[-80:], "error": ""}
-    except Exception as e:
+        return {
+            "ok": True,
+            "messages": messages,
+            "complete": complete,
+            "nextOffsetDate": next_offset,
+            "scanStartedTs": started,
+            "error": "",
+        }
+
+    kwargs: dict[str, Any] = {"limit": None}
+    if offset:
+        kwargs["offset_date"] = datetime.fromtimestamp(offset, tz=timezone.utc)
+    scanned = 0
+    user_dialogs = 0
+    try:
+        async for dialog in client.iter_dialogs(**kwargs):
+            d_ts = _unix_ts(getattr(dialog, "date", None))
+            if d_ts and d_ts <= floor:
+                if getattr(dialog, "pinned", False):
+                    continue
+                return result(True)
+            if scanned >= INBOX_MAX_DIALOGS_SCANNED:
+                return result(False, d_ts)
+            scanned += 1
+            if not _is_dm_dialog(dialog):
+                continue
+            if user_dialogs >= budget:
+                return result(False, d_ts)
+            user_dialogs += 1
+            try:
+                messages.extend(await _incoming_after(client, dialog, floor))
+            except Exception as e:  # noqa: BLE001 — one broken peer must not stop the inbox
+                if type(e).__name__ == "FloodWaitError":
+                    return result(False, d_ts)
+                print(f"inbox: dialog {getattr(dialog.entity, 'id', '?')} skipped: {str(e)[:200]}", file=sys.stderr)
+        return result(True)
+    except Exception as e:  # noqa: BLE001 — reported to the app, which keeps its cursor
         return {"ok": False, "error": str(e)[:400], "messages": []}
 
 
@@ -2810,7 +2881,12 @@ async def run_action(payload: dict[str, Any]) -> dict[str, Any]:
                 return await poll_dm_inbox(
                     client,
                     since_ts=int(payload.get("sinceTs") or payload.get("since_ts") or 0),
-                    limit_dialogs=int(payload.get("limitDialogs") or 20),
+                    offset_date=int(payload.get("offsetDate") or 0),
+                    max_user_dialogs=int(
+                        payload.get("maxUserDialogs")
+                        or payload.get("limitDialogs")
+                        or INBOX_MAX_USER_DIALOGS
+                    ),
                 )
             if action == "update_profile":
                 return await update_profile(client, payload)
