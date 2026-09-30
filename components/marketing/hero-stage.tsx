@@ -7,9 +7,7 @@ export function HeroStage() {
           <span>Лиды</span>
           <span>Переписки</span>
           <span>Группы</span>
-          <span>Аудитория</span>
-          <span>Инвайтинг</span>
-          <span>Рассылка</span>
+          <span>Аккаунты</span>
         </aside>
         <div className="us-stage-main">
           <div className="us-stage-kpis">
@@ -22,7 +20,7 @@ export function HeroStage() {
               <strong>61</strong>
             </div>
             <div>
-              <small>В очереди</small>
+              <small>Ждут вступления</small>
               <strong>8</strong>
             </div>
           </div>
@@ -32,7 +30,7 @@ export function HeroStage() {
               <em>горячий</em>
             </div>
             <div>
-              <b>Кто делает рассылку под ключ?</b>
+              <b>Посоветуйте CRM для отдела продаж</b>
               <em>тёплый</em>
             </div>
             <div>
