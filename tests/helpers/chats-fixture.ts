@@ -1,5 +1,6 @@
 import {vi} from 'vitest';
 import {seal} from '@/lib/server-store';
+import type {ReplyEntry} from '@/lib/lead-conversation';
 import {ACCOUNT_ID,OWNER,SETTINGS_ID,addRecord,testDb} from './workspace-harness';
 
 /** Conversation fixtures shared by tests/chats-*.test.ts (send_lead_message, poll_dm_replies, mark_lead_viewed). */
@@ -36,7 +37,9 @@ export function addChatLead(data:Record<string,unknown>={}){
  });
 }
 
-export function readRecord(id:string):Record<string,any>{
+export type StoredRecord=Record<string,unknown>&{replies:ReplyEntry[]};
+
+export function readRecord(id:string):StoredRecord{
  const row=testDb().sqlite.prepare('SELECT data FROM records WHERE id=?').get(id) as {data:string}|undefined;
  if(!row)throw new Error(`record ${id} not found`);
  return JSON.parse(row.data);

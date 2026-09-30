@@ -54,7 +54,7 @@ describe('UniLab assistant · ключ и провайдер в паре (REQ-C1
   it('OpenAI-ключ уходит только на OpenAI, не на DeepSeek',async()=>{
     clearKeys();
     vi.stubEnv('OPENAI_API_KEY','sk-openai-test');
-    const fetchImpl=vi.fn(async()=>okReply());
+    const fetchImpl=vi.fn<typeof fetch>(async()=>okReply());
 
     const r=await generateAssistantReply(input,{fetchImpl});
 
@@ -69,7 +69,7 @@ describe('UniLab assistant · ключ и провайдер в паре (REQ-C1
     clearKeys();
     vi.stubEnv('ASSISTANT_OPENAI_KEY','sk-assistant-test');
     vi.stubEnv('AI_API_BASE','https://api.deepseek.com');
-    const fetchImpl=vi.fn(async()=>okReply());
+    const fetchImpl=vi.fn<typeof fetch>(async()=>okReply());
 
     await generateAssistantReply(input,{fetchImpl});
 
@@ -79,7 +79,7 @@ describe('UniLab assistant · ключ и провайдер в паре (REQ-C1
   it('DeepSeek-ключ из окружения идёт на DeepSeek',async()=>{
     clearKeys();
     vi.stubEnv('DEEPSEEK_API_KEY','sk-deepseek-test');
-    const fetchImpl=vi.fn(async()=>okReply());
+    const fetchImpl=vi.fn<typeof fetch>(async()=>okReply());
 
     await generateAssistantReply(input,{fetchImpl});
 
@@ -89,7 +89,7 @@ describe('UniLab assistant · ключ и провайдер в паре (REQ-C1
   it('явный ключ проекта (DeepSeek) идёт на DeepSeek, даже если есть OpenAI-ключ',async()=>{
     clearKeys();
     vi.stubEnv('OPENAI_API_KEY','sk-openai-test');
-    const fetchImpl=vi.fn(async()=>okReply());
+    const fetchImpl=vi.fn<typeof fetch>(async()=>okReply());
 
     await generateAssistantReply(input,{apiKey:'sk-project-deepseek',fetchImpl});
 
@@ -102,7 +102,7 @@ describe('UniLab assistant · ключ и провайдер в паре (REQ-C1
     clearKeys();
     vi.stubEnv('DEEPSEEK_API_KEY','sk-deepseek-test');
     const warn=vi.spyOn(console,'warn').mockImplementation(()=>{});
-    const fetchImpl=vi.fn(async()=>new Response('invalid api key',{status:401}));
+    const fetchImpl=vi.fn<typeof fetch>(async()=>new Response('invalid api key',{status:401}));
 
     const r=await generateAssistantReply(input,{fetchImpl});
 
@@ -117,7 +117,7 @@ describe('UniLab assistant · ключ и провайдер в паре (REQ-C1
     clearKeys();
     vi.stubEnv('DEEPSEEK_API_KEY','sk-deepseek-test');
     const warn=vi.spyOn(console,'warn').mockImplementation(()=>{});
-    const fetchImpl=vi.fn(async()=>{throw new Error('ECONNRESET')});
+    const fetchImpl=vi.fn<typeof fetch>(async()=>{throw new Error('ECONNRESET')});
 
     const r=await generateAssistantReply(input,{fetchImpl});
 

@@ -38,7 +38,7 @@ function str(v: unknown): string {
 
 /** Patch applied when a manager opens the chat; null when there is nothing to change. */
 export function markLeadOpened(
-  lead: { viewed?: unknown; viewedAt?: unknown; needsManager?: unknown },
+  lead: LeadData,
   nowIso: string,
 ): { viewed: true; viewedAt: string; needsManager: false } | null {
   if (lead.viewed && !lead.needsManager) return null;

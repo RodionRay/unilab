@@ -159,7 +159,7 @@ describe('переписки · ответ лиду (send_lead_message)',()=>{
     expect(second.status).toBe(409);
     expect(third.status).toBe(409);
     expect(n).toBe(1);
-    const entries=readRecord(CHAT_LEAD).replies.filter((x:any)=>x.text==='Привет');
+    const entries=readRecord(CHAT_LEAD).replies.filter(x=>x.text==='Привет');
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({status:'unknown',ok:false});
   });
@@ -188,7 +188,7 @@ describe('переписки · ответ лиду (send_lead_message)',()=>{
     const forced=await send({mode:'dm',text:'Привет',clientMsgId:'k-4',force:true});
 
     expect(forced.status).toBe(200);
-    const entries=readRecord(CHAT_LEAD).replies.filter((x:any)=>x.text==='Привет');
+    const entries=readRecord(CHAT_LEAD).replies.filter(x=>x.text==='Привет');
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({status:'sent',ok:true});
   });

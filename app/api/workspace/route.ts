@@ -44,7 +44,8 @@ import {checkProxyTarget} from '@/lib/security/net-guard';
 import {proxyCheckTimeoutMs,workerSlots} from '@/lib/worker-timeouts';
 import {authorizeWorkspaceAction,keepOwnerSecretsOnSave,visibleRecordsFor,type WorkspaceActor} from '@/lib/security/workspace-authz';
 import {ALL_CRM_ACCESS} from '@/lib/staff-types';
-import {INBOX_CURSOR_MARGIN_SEC,applySendOutcome,findSendBlock,markLeadOpened,mergeIncomingDm,nextInboxCursor,withPendingSend,type LeadData,type ReplyEntry,type SendOutcome} from '@/lib/lead-conversation';
+import {INBOX_CURSOR_MARGIN_SEC,applySendOutcome,findSendBlock,leadReplies,markLeadOpened,mergeIncomingDm,nextInboxCursor,withPendingSend,type LeadData,type ReplyEntry,type SendOutcome} from '@/lib/lead-conversation';
+import type {D1LikeDatabase} from '@/lib/db';
 import {env} from 'cloudflare:workers';
 import {z} from 'zod';
 export const dynamic='force-dynamic';
@@ -1362,13 +1363,14 @@ const INBOX_DMS_TIMEOUT_MS=150_000;
 /** One poll_dm_replies per owner; covers the worst case of up to 4 accounts × INBOX_DMS_TIMEOUT_MS. */
 const DM_POLL_LEASE_MS=11*60_000;
 
-type LiveAccount={id:string;data:any};
+type LiveAccount={id:string;data:Record<string,unknown>};
+type InboxMessage=Record<string,unknown>;
 type DmOutreach={taskId:string;leadId:string;userId:string;username:string;preview:string;groupId:string;accountId:string};
 
 const dmPollLeaseId=(owner:string)=>`dm-poll-lease:${owner}`;
 
 /** Lease row lives with the AI guard rows (kind ai_guard is hidden from GET); returns the stamp to release with. */
-async function acquireDmPollLease(db:any,owner:string):Promise<string|null>{
+async function acquireDmPollLease(db:D1LikeDatabase,owner:string):Promise<string|null>{
  const now=Date.now();
  const stamp=new Date(now).toISOString();
  const r=await db.prepare('INSERT INTO records(id,owner,kind,data,created) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET created=excluded.created WHERE records.created < ?')
@@ -1377,12 +1379,12 @@ async function acquireDmPollLease(db:any,owner:string):Promise<string|null>{
 }
 
 /** Releases only our own lease (an expired one may already belong to another poll). */
-async function releaseDmPollLease(db:any,owner:string,stamp:string){
+async function releaseDmPollLease(db:D1LikeDatabase,owner:string,stamp:string){
  await db.prepare('UPDATE records SET created=? WHERE id=? AND owner=? AND created=?').bind(new Date(0).toISOString(),dmPollLeaseId(owner),owner,stamp).run();
 }
 
 /** Outreach targets: DM deliveries of mailings plus leads we already wrote to. */
-async function loadDmOutreach(db:any,owner:string){
+async function loadDmOutreach(db:D1LikeDatabase,owner:string){
  const mailingRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='mailing_task'").bind(owner).all();
  const hits:DmOutreach[]=[];
  const mailingAccountIds=new Set<string>();
@@ -1399,17 +1401,17 @@ async function loadDmOutreach(db:any,owner:string){
   }catch{/* */}
  }
  const leadRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='lead'").bind(owner).all();
- const leads=leadRows.results.map((r:any)=>{
-  try{return {id:String(r.id),data:JSON.parse(String(r.data))}}catch{return null}
- }).filter(Boolean) as {id:string;data:any}[];
- const match=(msg:any):DmOutreach|null=>{
+ const leads=leadRows.results.map(r=>{
+  try{return {id:String(r.id),data:JSON.parse(String(r.data)) as LeadData}}catch{return null}
+ }).filter(Boolean) as {id:string;data:LeadData}[];
+ const match=(msg:InboxMessage):DmOutreach|null=>{
   const byDelivery=hits.find(h=>sameMailingPeer(h,msg));
   if(byDelivery)return byDelivery;
   const byLead=leads.find(L=>{
    if(!sameMailingPeer(L.data,msg))return false;
    const d=L.data||{};
    if(d.conversationOpen||d.mailingTaskId)return true;
-   return Array.isArray(d.replies)&&d.replies.some((x:any)=>x&&(x.from==='us'||x.mode==='dm'));
+   return leadReplies(d).some(x=>x.from==='us'||x.mode==='dm');
   });
   if(!byLead)return null;
   return {taskId:String(byLead.data.mailingTaskId||''),leadId:byLead.id,userId:String(byLead.data.senderId||''),username:String(byLead.data.senderUsername||''),preview:String(byLead.data.message||''),groupId:String(byLead.data.groupId||''),accountId:String(byLead.data.accountId||'')};
@@ -1421,7 +1423,7 @@ async function loadDmOutreach(db:any,owner:string){
  * Records one incoming DM: merged into the freshly re-read lead (CAS) or a new «Рассылка · ответ» lead.
  * Returns the client name when something new was recorded (and notified), null for an already known message.
  */
-async function recordIncomingDm(db:any,owner:string,accountId:string,msg:any,outreach:DmOutreach,leads:{id:string;data:any}[]):Promise<string|null>{
+async function recordIncomingDm(db:D1LikeDatabase,owner:string,accountId:string,msg:InboxMessage,outreach:DmOutreach,leads:{id:string;data:LeadData}[]):Promise<string|null>{
  const text=String(msg.text||'').trim()||(msg.hasMedia?'[медиа]':'');
  if(!text)return null;
  const nowIso=new Date().toISOString();
@@ -1485,9 +1487,9 @@ async function recordIncomingDm(db:any,owner:string,accountId:string,msg:any,out
 }
 
 /** One inbox pass over a rotating slice of live accounts (caller holds the per-owner lease). */
-async function pollDmReplies(db:any,owner:string,live:LiveAccount[]){
+async function pollDmReplies(db:D1LikeDatabase,owner:string,live:LiveAccount[]){
  const {leads,match,mailingAccountIds}=await loadDmOutreach(db,owner);
- const settingsRow:any=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='settings' LIMIT 1").bind(owner).first();
+ const settingsRow=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='settings' LIMIT 1").bind(owner).first<{id:string;data:string}>();
  let cursor=0;
  if(settingsRow){
   try{cursor=Math.max(0,Number(JSON.parse(String(settingsRow.data)).inboxPollCursor)||0)}catch{/* */}
@@ -1502,7 +1504,7 @@ async function pollDmReplies(db:any,owner:string,live:LiveAccount[]){
  let opened=0;
  const names:string[]=[];
  for(const acc of slice){
-  let result:any;
+  let result:{ok?:unknown;messages?:unknown;complete?:unknown;nextOffsetDate?:unknown;scanStartedTs?:unknown};
   try{
    const {payload}=await loadAccountSessionPayload(owner,acc.id);
    result=await workerPost('/inbox-dms',{
@@ -1515,7 +1517,7 @@ async function pollDmReplies(db:any,owner:string,live:LiveAccount[]){
    continue;
   }
   if(!result?.ok)continue;
-  const msgs:any[]=Array.isArray(result.messages)?result.messages:[];
+  const msgs:InboxMessage[]=Array.isArray(result.messages)?result.messages:[];
   let persisted=true;
   let maxTs=0;
   for(const msg of msgs){
@@ -1560,9 +1562,9 @@ function sendFailureOutcome(e:unknown):{outcome:SendOutcome;httpStatus:number}{
  * Re-reads the lead, applies `fn` and writes only if the row is unchanged since the read (retries on a race).
  * `fn` returns `next` to write (or none to skip the write) and a result; null when the lead is gone.
  */
-async function mutateLead<T>(db:any,owner:string,id:string,fn:(lead:LeadData)=>{next?:LeadData;result:T}):Promise<{result:T;lead:LeadData}|null>{
+async function mutateLead<T>(db:D1LikeDatabase,owner:string,id:string,fn:(lead:LeadData)=>{next?:LeadData;result:T}):Promise<{result:T;lead:LeadData}|null>{
  for(let attempt=0;attempt<5;attempt++){
-  const row:any=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'lead').first();
+  const row=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'lead').first<{data:string}>();
   if(!row)return null;
   const lead=JSON.parse(String(row.data)) as LeadData;
   const {next,result}=fn(lead);
@@ -2765,7 +2767,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     farmExhausted:mode==='dm'&&!keepAccount,
    },429);
   }
-  let payload:any;
+  let payload:Record<string,unknown>;
   try{
    ({payload}=await loadAccountSessionPayload(owner,sendAccountId));
   }catch(e){
@@ -2818,7 +2820,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    silent,
    deleteDialog:false,
   };
-  let finalResult:any={};
+  let finalResult:Record<string,unknown>={};
   let usedHash=accessHash;
   let outcome:SendOutcome;
   let failStatus=502;
@@ -2832,11 +2834,11 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    outcome={
     status:finalResult.ok?'sent':'failed',
     error:String(finalResult.error||(finalResult.ok?'':'Не удалось отправить')),
-    messageId:finalResult.messageId,
-    link:finalResult.link,
-    chatId:finalResult.chatId,
-    chatUsername:finalResult.chatUsername,
-    senderAccessHash:finalResult.senderAccessHash,
+    messageId:String(finalResult.messageId||''),
+    link:String(finalResult.link||''),
+    chatId:String(finalResult.chatId||''),
+    chatUsername:String(finalResult.chatUsername||''),
+    senderAccessHash:String(finalResult.senderAccessHash||''),
    };
   }catch(e){
    ({outcome,httpStatus:failStatus}=sendFailureOutcome(e));

@@ -2,7 +2,7 @@ import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {OWNER,login,postRequest,resetWorkspace} from './helpers/workspace-harness';
 import {
   ACC_A,ACC_B,API_ID,CHAT_LEAD,type WorkerCall,
-  addChatLead,addSealedAccount,dropHarnessAccount,enableNotifications,readRecord,stubWorker,writeRecord,
+  type StoredRecord,addChatLead,addSealedAccount,dropHarnessAccount,enableNotifications,readRecord,stubWorker,writeRecord,
 } from './helpers/chats-fixture';
 
 vi.mock('cloudflare:workers',async()=>(await import('./helpers/workspace-harness')).cfModule);
@@ -23,7 +23,7 @@ const inbox=(messages:unknown[],extra:Record<string,unknown>={})=>({ok:true,mess
 /** Answers /inbox-dms only for one fixture account, empty inbox for the others. */
 const onlyFor=(accountId:string,answer:()=>unknown)=>(call:WorkerCall)=>
   call.body.apiId===API_ID[accountId]?answer():inbox([]);
-const clientEntries=(lead:Record<string,any>)=>lead.replies.filter((x:any)=>x.from==='client');
+const clientEntries=(lead:StoredRecord)=>lead.replies.filter(x=>x.from==='client');
 
 describe('переписки · входящие ЛС (poll_dm_replies)',()=>{
   beforeEach(async()=>{
@@ -49,7 +49,7 @@ describe('переписки · входящие ЛС (poll_dm_replies)',()=>{
 
     await poll();
 
-    const texts=readRecord(CHAT_LEAD).replies.map((x:any)=>x.text);
+    const texts=readRecord(CHAT_LEAD).replies.map(x=>x.text);
     expect(texts).toContain('Менеджер: ловите прайс');
     expect(texts).toContain('Да, интересно');
   });
@@ -82,7 +82,7 @@ describe('переписки · входящие ЛС (poll_dm_replies)',()=>{
     await poll();
     await poll();
 
-    const texts=clientEntries(readRecord(CHAT_LEAD)).map((x:any)=>x.text);
+    const texts=clientEntries(readRecord(CHAT_LEAD)).map(x=>x.text);
     expect(texts).toEqual(['старое','новое']);
   });
 
