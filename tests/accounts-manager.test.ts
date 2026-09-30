@@ -6,6 +6,7 @@ import {
   applyQuotaCooldownIfExhausted,
   canPollDmInbox,
   cooldownRemainingShort,
+  isAccountFlooded,
   isAccountUsable,
   isDayLimitCooldown,
   relativeTimeRu,
@@ -173,5 +174,44 @@ describe("менеджер аккаунтов · helpers", () => {
     expect(isDayLimitCooldown({ status: "active", cooldownUntil: future })).toBe(false);
     expect(isDayLimitCooldown({ status: "cooldown", cooldownUntil: past })).toBe(false);
     expect(isDayLimitCooldown({ status: "cooldown", cooldownUntil: "" })).toBe(false);
+  });
+
+  it("REQ-M8: спамблок с истёкшим cooldownUntil снова рабочий, без таймера — нет", () => {
+    const future = new Date(Date.now() + 3600_000).toISOString();
+    const past = new Date(Date.now() - 3600_000).toISOString();
+    expect(isAccountUsable({ status: "spamblock", cooldownUntil: future })).toBe(false);
+    expect(isAccountUsable({ status: "spamblock", cooldownUntil: past })).toBe(true);
+    // Спамблок по проверке @SpamBot (без таймера) снимается только новой проверкой
+    expect(isAccountUsable({ status: "spamblock", cooldownUntil: "" })).toBe(false);
+  });
+
+  it("REQ-M7: отлёжка только по виду квоты, которую только что потратили", () => {
+    const day = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Europe/Moscow",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+    const joinsSpent = {
+      status: "active",
+      limits: { invite: 2, message: 40, chat: 40, memberInvite: 40 },
+      joinsToday: 2,
+      joinsDay: day,
+      messagesToday: 1,
+      messagesDay: day,
+    };
+    expect(applyQuotaCooldownIfExhausted(joinsSpent, "message").status).toBe("active");
+    expect(applyQuotaCooldownIfExhausted(joinsSpent, "invite").status).toBe("cooldown");
+    // Без вида — прежнее поведение (любой исчерпанный лимит)
+    expect(applyQuotaCooldownIfExhausted(joinsSpent).status).toBe("cooldown");
+
+    const dmSpent = { ...joinsSpent, limits: { ...joinsSpent.limits, message: 1 } };
+    expect(applyQuotaCooldownIfExhausted(dmSpent, "message").cooldownReason).toBe("day_message");
+  });
+
+  it("REQ-M4: isAccountFlooded — только живой floodUntil", () => {
+    expect(isAccountFlooded({ floodUntil: new Date(Date.now() + 60_000).toISOString() })).toBe(true);
+    expect(isAccountFlooded({ floodUntil: new Date(Date.now() - 60_000).toISOString() })).toBe(false);
+    expect(isAccountFlooded({})).toBe(false);
   });
 });
