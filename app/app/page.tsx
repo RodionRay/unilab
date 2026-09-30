@@ -160,7 +160,8 @@ async function api(body?:unknown){
 }
 
 /** Чистый payload группы: не тащим битый joinStateError из records в save. */
-function cleanGroupSaveData(data:Record<string,unknown>){
+type GroupJoinStateFields={joinState:string;joinStateAt:string;joinStateError:string};
+function cleanGroupSaveData<T extends Record<string,unknown>>(data:T):Omit<T,keyof GroupJoinStateFields>&GroupJoinStateFields{
   const err=data.joinStateError;
   const joinStateError=
     err==null||typeof err==='object'?'':String(err).slice(0,500);
@@ -511,7 +512,7 @@ function WorkspaceHome(){
   const [bulkProxyMix,setBulkProxyMix]=useState(false);
   const [bulkDeleteOpen,setBulkDeleteOpen]=useState(false);
   const [bulkLimitsOpen,setBulkLimitsOpen]=useState(false);
-  const [bulkLimits,setBulkLimits]=useState({
+  const [bulkLimits,setBulkLimits]=useState<Record<keyof typeof TELEGRAM_RECOMMENDED_LIMITS,number>>({
     invite:TELEGRAM_RECOMMENDED_LIMITS.invite,
     message:TELEGRAM_RECOMMENDED_LIMITS.message,
     chat:TELEGRAM_RECOMMENDED_LIMITS.chat,
