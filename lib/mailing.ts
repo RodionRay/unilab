@@ -151,6 +151,8 @@ export const DEFAULT_MAILING_TASK = {
   aiPoolUsed: 0,
   deliveredKeys: [] as string[],
   deferredUntil: {} as Record<string, string>,
+  /** Промахи «нет access_hash» по получателю: попытки и аккаунты (REQ-M5) */
+  peerMisses: {} as Record<string, { n: number; accounts: string[] }>,
   deliveries: [] as MailingDelivery[],
   error: "",
   log: [] as TaskLogEntry[],

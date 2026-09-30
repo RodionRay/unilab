@@ -102,9 +102,14 @@ export function isAccountUsable(data: {
 } | null | undefined): boolean {
   if (!data) return false;
   const st = String(data.status || "");
+  // Спамблок от PEER_FLOOD ставит таймер (withSpamblockStatus) — после него аккаунт снова пробуем.
+  // Спамблок без таймера (проверка @SpamBot) снимается только новой проверкой.
+  if (st === "spamblock") {
+    const until = Date.parse(String(data.cooldownUntil || ""));
+    return Number.isFinite(until) && until <= Date.now();
+  }
   if (
     [
-      "spamblock",
       "frozen",
       "unauthorized",
       "disconnected",
@@ -123,6 +128,15 @@ export function isAccountUsable(data: {
   }
   // active / пустой / legacy — cooldownUntil без статуса cooldown игнорируем (старые фейлы коннекта).
   return !st || st === "active" || st === "ok" || st === "connected";
+}
+
+/** FloodWait аккаунта ещё идёт — не слать с него (статус не меняется, это не отлёжка). */
+export function isAccountFlooded(
+  data: { floodUntil?: unknown } | null | undefined,
+  now = Date.now(),
+): boolean {
+  const t = Date.parse(String(data?.floodUntil || ""));
+  return Number.isFinite(t) && t > now;
 }
 
 /**
@@ -267,9 +281,21 @@ export function bumpChatCounters<T extends Record<string, unknown>>(
   };
 }
 
-/** Если после операции дневной лимит кончился — увести в отлёжку до полуночи. */
+const QUOTA_CHECKS: ReadonlyArray<[DayLimitKind, (data: Record<string, unknown>) => boolean]> = [
+  ["invite", (d) => hasInviteQuota(d as Parameters<typeof hasInviteQuota>[0])],
+  ["message", (d) => hasMessageQuota(d as Parameters<typeof hasMessageQuota>[0])],
+  ["memberInvite", (d) => hasMemberInviteQuota(d as Parameters<typeof hasMemberInviteQuota>[0])],
+  ["chat", (d) => hasChatQuota(d as Parameters<typeof hasChatQuota>[0])],
+];
+
+/**
+ * Если после операции дневной лимит кончился — увести в отлёжку до полуночи.
+ * `spent` — вид квоты, которую только что потратили: проверяется только он (ЛС не уводит
+ * в отлёжку из-за исчерпанных вступлений). Без него — любой исчерпанный лимит.
+ */
 export function applyQuotaCooldownIfExhausted<T extends Record<string, unknown>>(
   data: T,
+  spent?: DayLimitKind,
 ): T {
   const st = String((data as { status?: string }).status || "");
   if (st === "spamblock" || st === "frozen") return data;
@@ -277,17 +303,9 @@ export function applyQuotaCooldownIfExhausted<T extends Record<string, unknown>>
     return data;
   }
 
-  if (!hasInviteQuota(data as Parameters<typeof hasInviteQuota>[0])) {
-    return withDayLimitCooldown(data, "invite");
-  }
-  if (!hasMessageQuota(data as Parameters<typeof hasMessageQuota>[0])) {
-    return withDayLimitCooldown(data, "message");
-  }
-  if (!hasMemberInviteQuota(data as Parameters<typeof hasMemberInviteQuota>[0])) {
-    return withDayLimitCooldown(data, "memberInvite");
-  }
-  if (!hasChatQuota(data as Parameters<typeof hasChatQuota>[0])) {
-    return withDayLimitCooldown(data, "chat");
+  for (const [kind, hasQuota] of QUOTA_CHECKS) {
+    if (spent && kind !== spent) continue;
+    if (!hasQuota(data)) return withDayLimitCooldown(data, kind);
   }
   // Сброс «осиротевшего» таймера от старых FloodWait/коннект-фейлов.
   if (
