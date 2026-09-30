@@ -130,11 +130,10 @@ describe('listDueTasks / runDueTicks',()=>{
       tasks,
       budgetMs:100,
       callTimeoutMs:50,
-      minStartMs:30,
       concurrency:1,
       now:()=>clock,
       tick:async(t,timeoutMs)=>{
-        expect(timeoutMs).toBeLessThanOrEqual(50);
+        expect(timeoutMs).toBe(50);
         clock+=40;
         return {task:t,ok:true,note:''};
       },

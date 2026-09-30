@@ -10,6 +10,8 @@ import { constantTimeEqual } from "@/lib/security/secret-compare";
 import { selfOrigin } from "@/lib/security/self-origin";
 import { database } from "@/lib/server-store";
 import {
+  TASKS_TICK_CALL_TIMEOUT_MS,
+  TASKS_TICK_RUN_BUDGET_MS,
   TICK_ACTIONS,
   listDueTasks,
   runDueTicks,
@@ -18,13 +20,9 @@ import {
 } from "@/lib/processes/tasks-tick-runner";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
+/** ≥ TASKS_TICK_RUN_BUDGET_MS (tasks-tick-runner). */
+export const maxDuration = 480;
 
-/** Whole run; the worker loop's fetch timeout (server.mjs) is above this. */
-const TICK_BUDGET_MS = 200_000;
-/** One tick call; a slower tick finishes server-side under its lock. */
-const CALL_TIMEOUT_MS = 90_000;
-const MIN_START_MS = 15_000;
 /** Parallel ticks — below the worker's default 4 Python slots. */
 const CONCURRENCY = 3;
 const MIN_CRON_SECRET_LENGTH = 32;
@@ -55,7 +53,7 @@ async function ownerIdentities(): Promise<Map<string, OwnerIdentity>> {
 
 function describeError(e: unknown): string {
   const err = e as Error | null;
-  if (err?.name === "TimeoutError" || err?.name === "AbortError") return "tick continues server-side";
+  if (err?.name === "TimeoutError" || err?.name === "AbortError") return "tick call timed out";
   return String(err?.message || e).slice(0, 160);
 }
 
@@ -98,7 +96,7 @@ export async function POST(req: Request) {
           Cookie: `${sessionCookieName()}=${await cookieFor(task.owner)}`,
         },
         body: JSON.stringify({ action: TICK_ACTIONS[task.kind], id: task.id }),
-        signal: AbortSignal.timeout(Math.max(5_000, timeoutMs)),
+        signal: AbortSignal.timeout(timeoutMs),
       });
       const data = (await res.json().catch(() => ({}))) as { error?: string; task?: { status?: string } };
       return { task, ok: res.ok, note: res.ok ? String(data.task?.status || "") : String(data.error || res.status) };
@@ -110,9 +108,8 @@ export async function POST(req: Request) {
   const run = await runDueTicks({
     tasks: due,
     tick,
-    budgetMs: TICK_BUDGET_MS,
-    callTimeoutMs: CALL_TIMEOUT_MS,
-    minStartMs: MIN_START_MS,
+    budgetMs: TASKS_TICK_RUN_BUDGET_MS,
+    callTimeoutMs: TASKS_TICK_CALL_TIMEOUT_MS,
     concurrency: CONCURRENCY,
   });
   return reply({

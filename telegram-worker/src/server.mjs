@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { readFileSync, existsSync, readdirSync, chmodSync } from "node:fs";
 import {
   createCronLoop,
+  TASKS_TICK_FETCH_MS,
   createPythonRunner,
   createWorkerServer,
   cronSecretProblem,
@@ -92,8 +93,8 @@ const tasksTickLoop = createCronLoop({
   name: "tasks-tick",
   url: `${APP_URL}/api/cron/tasks-tick`,
   secret: CRON_SECRET,
-  // Бюджет прогона на стороне приложения 200с + запас.
-  fetchMs: 240_000,
+  // Бюджет прогона на стороне приложения + запас (иначе workerd отменит тики посреди работы).
+  fetchMs: TASKS_TICK_FETCH_MS,
   catchUpMs: 3_000,
 });
 

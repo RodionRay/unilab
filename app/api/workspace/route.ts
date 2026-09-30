@@ -578,6 +578,18 @@ async function openTaskTick(owner:string,id:string,kind:TickTaskKind,notFound:st
  return {session};
 }
 
+/**
+ * Worker call inside a tick: started only when its timeout still fits the tick's wall budget
+ * (else TickBudgetExhaustedError → commit and continue next tick), lock renewed first.
+ */
+function tickWorkerPost(tickRun:TickSession){
+ return async(path:string,body:unknown,timeoutMs:number)=>{
+  tickRun.budget.assertFits(timeoutMs);
+  await tickRun.renew();
+  return workerPost(path,body,timeoutMs);
+ };
+}
+
 /** Pause/start/save never clear a lock a tick still holds (REQ-I1). */
 function keepLiveLock(data:TaskData):Pick<TaskData,'tickLockUntil'|'tickLockId'>{
  return tickLockIsLive(data)
@@ -3361,7 +3373,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const tickRun=opened.session;
   // Play / start всегда → running (как mailing); scheduled тоже подхватываем
   let data:any={...tickRun.base,status:'running',nextAt:''};
-  const post=async(path:string,body:unknown,timeoutMs:number)=>{await tickRun.renew();return workerPost(path,body,timeoutMs)};
+  const post=tickWorkerPost(tickRun);
   // Уже нечего собирать — сразу завершаем (без лишнего вызова воркера)
   if(data.hasMore===false&&(Number(data.collected)||0)>0){
    const next={
@@ -3476,9 +3488,11 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   let floodWaitSec=0;
   let transientOnly=true;
   let tried=0;
-  // За тик максимум несколько слотов — иначе AbortSignal/прокси убивают весь тик
+  // За тик максимум несколько слотов и только пока вызов влезает в стену тика (tick-budget.ts)
   const perTick=Math.min(6,liveIds.length);
+  let budgetCut=false;
   for(const aid of liveIds.slice(0,perTick)){
+   if(tried>0&&!tickRun.budget.fits(workerAppTimeoutMs('collect'))){budgetCut=true;break}
    accountId=aid;
    tried++;
    try{
@@ -3565,7 +3579,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      :`Слот ${slotName(accountId)}: ${errMsg.slice(0,120)} — следующий`)};
   }
   // Если за тик не нашли рабочий слот, но слоты ещё есть — не паузим, крутим дальше
-  if(!result&&liveIds.length>perTick){
+  if(!result&&(budgetCut||liveIds.length>perTick)){
    const next={
     ...data,
     status:'running',
@@ -3795,7 +3809,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   // Автодозапуск после отлёжки аккаунтов / Play
   if(data.status==='scheduled')data={...data,status:'running',log:pushTaskLog(data.log,'info','Задача запущена автоматически')};
   data={...data,nextAt:''};
-  const post=async(path:string,body:unknown,timeoutMs:number)=>{await tickRun.renew();return workerPost(path,body,timeoutMs)};
+  const post=tickWorkerPost(tickRun);
 
   const day=moscowDayKey();
   let invitedToday=Number(data.invitedToday)||0;
@@ -3984,7 +3998,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     return reply({ok:true,needJoin:true,task:next});
    }
    data={...data,targetMissStreak:0};
-   if(sourceUrl){
+   // Источник опционален: не тратим на него стену тика, если вступление уже не влезает
+   if(sourceUrl&&tickRun.budget.fits(workerAppTimeoutMs('join'))){
     try{await post('/join-group',{...payload,url:sourceUrl},workerAppTimeoutMs('join'))}catch{/* источник опционален */}
    }
    const result=await post('/invite-users',{
@@ -4315,7 +4330,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   let data:any=tickRun.base;
   if(data.status==='scheduled')data={...data,status:'running',log:pushTaskLog(data.log,'info','Задача запущена автоматически',500)};
   data={...data,nextAt:''};
-  const post=async(path:string,body:unknown,timeoutMs:number)=>{await tickRun.renew();return workerPost(path,body,timeoutMs)};
+  const post=tickWorkerPost(tickRun);
 
   const day=moscowDayKey();
   let sentToday=Number(data.sentToday)||0;
@@ -4682,6 +4697,10 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const rotate=()=>{nextAccountIndex=(nextAccountIndex+1)%Math.max(1,liveIds.length)};
 
    for(const cand of batch){
+    if(!tickRun.budget.fits(workerAppTimeoutMs('send'))){
+     logEntries.push({level:'info',text:'Лимит времени тика — остальные получатели на следующем тике'});
+     break;
+    }
     const sendable=liveIds.filter(canSendFrom);
     if(!sendable.length){
      logEntries.push({level:'info',text:'На этом тике аккаунтов с квотой больше нет'});
