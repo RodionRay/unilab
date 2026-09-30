@@ -74,6 +74,21 @@ describe("скан · отбор лидов (lead-core)", () => {
       decideScanLead("Селлерам отсрочка смертной казни на год 😅", settings).pass,
     ).toBe(false);
   });
+
+  it("режет запрос сервиса без привязки к продукту / нише / маркетплейсу", () => {
+    const d = decideScanLead("подскажите сервис доставки цветов", settings);
+    expect(d.pass).toBe(false);
+    expect(d.temperature).toBeNull();
+  });
+
+  it("не считает спамом глагол «займёт» в запросе по теме", () => {
+    const d = decideScanLead(
+      "Сколько займёт синхронизация остатков МойСклад с Ozon? Подскажите сервис",
+      settings,
+    );
+    expect(d.core.rejectReason).toBe("");
+    expect(d.pass).toBe(true);
+  });
 });
 
 describe("скан · память отказов AI (REQ-L11)", () => {

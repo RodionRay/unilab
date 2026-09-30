@@ -219,3 +219,45 @@ describe('service-ad markers match at word start',()=>{
     expect(looksLikeServiceAd('Занимаюсь разбором матрицы судьбы')).toBe(true);
   });
 });
+
+describe('request without a product / niche / marketplace anchor is not a lead',()=>{
+  it.each([
+    'подскажите сервис доставки цветов',
+    'Подскажите сервис доставки цветов по Москве, чтобы к утру привезли',
+    'Посоветуйте сервис для записи к парикмахеру, кто что знает?',
+  ])('generic service request is rejected: %s',(msg)=>{
+    const d=explainLeadDecision(msg,baseSettings);
+    expect(d.buyer).toBe(true);
+    expect(d.pass).toBe(false);
+    expect(d.score).toBeLessThan(45);
+  });
+
+  it.each([
+    'Подскажите сервис для работы с WB, чтобы не сидеть в кабинете руками',
+    'Кто пользуется MPstats подскажите какой тариф лучше брать?',
+  ])('request anchored by marketplace or a named tool still passes: %s',(msg)=>{
+    const d=explainLeadDecision(msg,baseSettings);
+    expect(d.pass).toBe(true);
+  });
+});
+
+describe('SPAM_RE: loan words only, at Cyrillic word boundaries',()=>{
+  it.each([
+    'Займусь этим вопросом завтра, подскажите сервис для остатков WB',
+    'Сколько займёт синхронизация остатков МойСклад с Ozon?',
+    'Это займет пару дней, ищу сервис для синхронизации остатков',
+    'Занимаюсь селлингом на WB, нужна crm для нескольких кабинетов',
+  ])('verb forms are not spam: %s',(msg)=>{
+    expect(looksLikeServiceAd(msg)).toBe(false);
+  });
+
+  it.each([
+    'Займ на карту без отказа за 5 минут',
+    'Выдаём займы селлерам под оборот',
+    'Нет денег? Оформи микрозайм онлайн',
+    'Помощь в получении займа для бизнеса',
+    'Сравнили 10 микрозаймов для ИП',
+  ])('loan offers are spam: %s',(msg)=>{
+    expect(looksLikeServiceAd(msg)).toBe(true);
+  });
+});
