@@ -2268,8 +2268,8 @@ function WorkspaceHome(){
                   <Button size="sm" variant="outline" disabled={busy||!telegramConnected} onClick={()=>scanGroup(r)}>Проверить</Button>
                 )}
                 {r.data.needDiscussionJoin&&joined&&!canJoin&&(
-                  <Button size="sm" disabled={busy||joinInFlight||!telegramConnected||!r.data.accountId} onClick={()=>joinDiscussion(r)}>
-                    <Plug size={14}/>Вступить в обсуждение
+                  <Button size="sm" disabled={busy||joinInFlight||!telegramConnected||!r.data.accountId} onClick={()=>joinDiscussion(r)} aria-label="Вступить в обсуждение" title="Вступить в обсуждение">
+                    <Plug size={14}/>Обсуждение
                   </Button>
                 )}
                 {joined&&!canJoin&&r.data.status!=='pending'&&(
@@ -2277,23 +2277,25 @@ function WorkspaceHome(){
                     <Search size={14}/>Скан
                   </Button>
                 )}
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8"
-                  title="История переобхода"
-                  aria-label="История переобхода"
-                  onClick={()=>setTaskLog({
-                    title:r.data.name||'Группа',
-                    log:Array.isArray(r.data.scanLog)&&r.data.scanLog.length
-                      ?r.data.scanLog
-                      :[{at:r.data.lastScanned||new Date().toISOString(),level:'info',text:r.data.lastScanned?'Последний скан зафиксирован, детальный журнал появится после следующего переобхода':'Переобходов ещё не было'}],
-                  })}
-                >
-                  <ScrollText size={14}/>
-                </Button>
-                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={()=>open('group',r)} aria-label="Изменить"><Pencil size={14}/></Button>
-                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={()=>setDeleting(r)} aria-label="Удалить"><Trash2 size={14}/></Button>
+                <div className="groups-tools">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8"
+                    title="История переобхода"
+                    aria-label="История переобхода"
+                    onClick={()=>setTaskLog({
+                      title:r.data.name||'Группа',
+                      log:Array.isArray(r.data.scanLog)&&r.data.scanLog.length
+                        ?r.data.scanLog
+                        :[{at:r.data.lastScanned||new Date().toISOString(),level:'info',text:r.data.lastScanned?'Последний скан зафиксирован, детальный журнал появится после следующего переобхода':'Переобходов ещё не было'}],
+                    })}
+                  >
+                    <ScrollText size={14}/>
+                  </Button>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={()=>open('group',r)} aria-label="Изменить"><Pencil size={14}/></Button>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={()=>setDeleting(r)} aria-label="Удалить"><Trash2 size={14}/></Button>
+                </div>
               </div>
             </div>
           );
