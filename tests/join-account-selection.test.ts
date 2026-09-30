@@ -111,7 +111,7 @@ describe('вступление назначенным аккаунтом',()=>{
     expect(Date.parse(rec(GROUP).joinNextAt)).toBeGreaterThan(Date.now());
   });
 
-  it('«already» не расходует дневной лимит и паузу вступлений',async()=>{
+  it('«already» не расходует дневной лимит, но держит паузу вступлений',async()=>{
     await addAccount(ACC_A,{});
     addGroup({});
     workerReply={ok:true,join:'already',status:'active'};
@@ -119,7 +119,8 @@ describe('вступление назначенным аккаунтом',()=>{
     await join();
 
     expect(rec(ACC_A).joinsToday||0).toBe(0);
-    expect(rec(ACC_A).lastJoinAt||'').toBe('');
+    // По инвайту already приходит после реального ImportChatInvite — темп не сбрасываем
+    expect(rec(ACC_A).lastJoinAt).toBeTruthy();
   });
 
   it('обновление peer вступившей группы не идёт через отключённый аккаунт',async()=>{
