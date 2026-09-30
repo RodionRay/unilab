@@ -931,7 +931,13 @@ async function releaseJoinSlot(owner:string,accountId:string,before:JoinAccountS
  await restoreJoinFields(owner,accountId,before,JOIN_SLOT_FIELDS);
 }
 
-/** already: запрос в Telegram был (темп остаётся), но новой группы нет — дневной счётчик назад. */
+/**
+ * Исходы воркера, которым предшествовал реальный JoinChannel/ImportChatInvite: темп держим,
+ * а новой группы нет — дневной счётчик назад. Остальные неудачи до Telegram не доходили.
+ */
+const JOIN_AFTER_TELEGRAM_CALL=['already','banned','private','failed'];
+
+/** Запрос вступления в Telegram был (темп остаётся), но группа не добавилась — дневной счётчик назад. */
 async function releaseJoinQuota(owner:string,accountId:string,before:JoinAccountState){
  await restoreJoinFields(owner,accountId,before,JOIN_QUOTA_FIELDS);
 }
@@ -1441,7 +1447,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     if(cooled!==reserved){
      await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(cooled),owner,gdata.accountId,'account').run();
     }
-   }else if(result.join==='already'){
+   }else if(JOIN_AFTER_TELEGRAM_CALL.includes(String(result.join||''))){
     await releaseJoinQuota(owner,gdata.accountId,adata);
    }else{
     await releaseJoinSlot(owner,gdata.accountId,adata);

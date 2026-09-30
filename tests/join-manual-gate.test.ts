@@ -203,6 +203,28 @@ describe('ручное вступление: хвосты очереди и го
       expect(rec(GROUP).membership).toBe('joined');
     });
 
+    it.each(['banned','private','failed'])('отказ %s после запроса в Telegram: пауза остаётся, счётчик назад',async(joinCode)=>{
+      await addAccount(ACC_A,{});
+      addGroup(GROUP,{});
+      workerReply={ok:false,status:'error',join:joinCode,error:'Не вступили'};
+
+      await join(GROUP);
+
+      expect(rec(ACC_A).joinsToday||0).toBe(0);
+      expect(rec(ACC_A).lastJoinAt).toBeTruthy();
+    });
+
+    it('ссылка не открылась (до вступления в Telegram) — слот возвращается целиком',async()=>{
+      await addAccount(ACC_A,{});
+      addGroup(GROUP,{});
+      workerReply={ok:false,status:'error',join:'missing',usernameMissing:true,error:'Слот не видит @x'};
+
+      await join(GROUP);
+
+      expect(rec(ACC_A).joinsToday||0).toBe(0);
+      expect(rec(ACC_A).lastJoinAt||'').toBe('');
+    });
+
     it('запись аккаунта сменилась не из-за вступления — резерв повторяется и join проходит',async()=>{
       await addAccount(ACC_A,{});
       addGroup(GROUP,{});
