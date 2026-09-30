@@ -24,7 +24,7 @@ import {
 } from '@/lib/processes/scan-flow';
 import {appendLearnExamples,extractTermsFromHotMessages,extractStopTermsFromMessage,mergeKeywords,mergeKeywordsPreferNew,parseKeywordCsv} from '@/lib/ai-keywords';
 import {sanitizeMinusTerms,scanStopTerms} from '@/lib/lead-stopwords';
-import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpChatCounters,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasInviteQuota,hasMemberInviteQuota,hasMessageQuota,isAccountFlooded,isAccountUsable,isDayLimitCooldown,isOnCooldown,joinWaitSec,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
+import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpChatCounters,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasInviteQuota,hasMemberInviteQuota,hasMessageQuota,isAccountFlooded,isAccountUsable,isDayLimitCooldown,isDayLimitedFor,dayLimitCooldownKind,isOnCooldown,joinWaitSec,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
 import {INVITE_SOFT_FAIL_LIMIT,interpretInviteWorkerResult,inviteAccountStillLive,inviteBatchLimit,inviteUserPatch} from '@/lib/processes/invite-tick';
 import {bracketLabel,formatRuWhen,inviteUserFailText,inviteUserOkText,normalizeStatusFilters,normalizeTgRef,pushTaskLog,pushTaskLogs,randomPauseSec} from '@/lib/audience-invite';
 import {canonicalizeTgUrl,duplicateReason,isDuplicateKind,telegramEntityKey} from '@/lib/record-identity';
@@ -2105,7 +2105,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     }
    }
   }
-  if(isDayLimitCooldown(adata)||String(adata.status||'')==='spamblock'||String(adata.status||'')==='frozen'){
+  if(isDayLimitedFor(adata,'invite')||String(adata.status||'')==='spamblock'||String(adata.status||'')==='frozen'){
    const until=String(adata.cooldownUntil||'');
    return reply({
     error:until?`Аккаунт на отлежке до ${new Date(until).toLocaleString('ru-RU')}`:'Аккаунт на отлёжке (спамблок/заморозка/лимит)',
@@ -2115,7 +2115,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   }
   if(!hasInviteQuota(adata)){
    const inviteLimit=Number(adata.limits?.invite??DEFAULT_ACCOUNT_LIMITS.invite);
-   const cooled=applyQuotaCooldownIfExhausted(adata);
+   const cooled=applyQuotaCooldownIfExhausted(adata,'invite');
    if(cooled!==adata){
     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(cooled),owner,gdata.accountId,'account').run();
    }
@@ -2165,7 +2165,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    }
    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'group').run();
    if(joinedOk){
-    const bumped=applyQuotaCooldownIfExhausted({...adata,...bumpJoinCounters(adata)});
+    const bumped=applyQuotaCooldownIfExhausted({...adata,...bumpJoinCounters(adata)},'invite');
     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(bumped),owner,gdata.accountId,'account').run();
    }
    if(flood){
@@ -3401,8 +3401,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const liveIdsRaw=accountIds.filter(aid=>{
    const a=accMap.get(aid);
    if(!a)return false;
-   // status=cooldown без живого таймера раньше проходил isAccountUsable — для сбора не берём
-   if(String(a.status||'')==='cooldown')return false;
+   // status=cooldown без вида лимита (даже с истёкшим таймером) — для сбора не берём; дневной лимит ЛС/вступлений чтению не мешает
+   if(String(a.status||'')==='cooldown'&&dayLimitCooldownKind(a)===null)return false;
    return isAccountUsable(a);
   });
   // Аккаунт, уже вступивший в этот источник (из «Группы») — первым
@@ -3893,7 +3893,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     .map(aid=>{
      const a=accMap.get(aid);
      if(!a)return 0;
-     if(!(isDayLimitCooldown(a)||String(a.status||'')==='spamblock'))return 0;
+     if(!(isDayLimitedFor(a,'memberInvite')||String(a.status||'')==='spamblock'))return 0;
      const t=Date.parse(String(a.cooldownUntil||''));
      return Number.isFinite(t)&&t>Date.now()?t:0;
     })
@@ -4392,7 +4392,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     const flood=Date.parse(String(a.floodUntil||''));
     if(isAccountUsable(a)&&Number.isFinite(flood)&&flood>now)ends.push(flood);
     if(isAccountUsable(a)&&!hasSendQuota(a))ends.push(Date.parse(moscowNextMidnightIso()));
-    if(isDayLimitCooldown(a)||String(a.status||'')==='spamblock'){
+    if(isDayLimitedFor(a,deliveryMode==='chat'?'chat':'message')||String(a.status||'')==='spamblock'){
      const t=Date.parse(String(a.cooldownUntil||''));
      if(Number.isFinite(t)&&t>now)ends.push(t);
     }

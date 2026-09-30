@@ -34,8 +34,10 @@ describe("скан · gate", () => {
   });
 
   it("блокирует отлёжку / spam / freeze / hard-dead", () => {
-    const cool = withDayLimitCooldown({ status: "active" }, "invite");
+    // Отлёжка без вида лимита блокирует; дневной лимит вступлений скан не останавливает
+    const cool = { status: "cooldown", cooldownUntil: new Date(Date.now() + 3600_000).toISOString() };
     expect(evaluateScanGate(cool).reason).toBe("cooldown");
+    expect(evaluateScanGate(withDayLimitCooldown({ status: "active" }, "invite"))).toEqual({ ok: true });
     expect(evaluateScanGate(withSpamblockStatus({ status: "active" })).reason).toBe(
       "cooldown",
     );

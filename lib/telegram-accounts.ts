@@ -95,10 +95,36 @@ export function isDayLimitCooldown(data: {
   return String(data.status || "") === "cooldown" && isOnCooldown(data.cooldownUntil);
 }
 
-/** Можно ли ставить в работу (рассылка / инвайт / сбор / группы). */
+/**
+ * Вид дневного лимита отлёжки (`cooldownReason: day_<kind>`); null — отлёжка без известного
+ * лимита (старые записи, ручная), она блокирует аккаунт целиком.
+ */
+export function dayLimitCooldownKind(data: { cooldownReason?: unknown } | null | undefined): DayLimitKind | null {
+  const m = /^day_(invite|message|chat|memberInvite)$/.exec(String(data?.cooldownReason || ""));
+  return m ? (m[1] as DayLimitKind) : null;
+}
+
+/**
+ * Живая отлёжка закрывает этот вид действий: дневной лимит — только свой вид
+ * (ЛС на отлёжке не мешают вступлениям/инвайтам), отлёжка без вида — все.
+ */
+export function isDayLimitedFor(
+  data: { status?: string | null; cooldownUntil?: string | null; cooldownReason?: unknown } | null | undefined,
+  kind: DayLimitKind,
+): boolean {
+  if (!isDayLimitCooldown(data)) return false;
+  const limited = dayLimitCooldownKind(data);
+  return limited === null || limited === kind;
+}
+
+/**
+ * Можно ли ставить в работу (рассылка / инвайт / сбор / группы). Дневной лимит одного вида
+ * аккаунт не выключает: его вид закрывает has*Quota в подборе слота.
+ */
 export function isAccountUsable(data: {
   status?: string | null;
   cooldownUntil?: string | null;
+  cooldownReason?: unknown;
 } | null | undefined): boolean {
   if (!data) return false;
   const st = String(data.status || "");
@@ -122,9 +148,9 @@ export function isAccountUsable(data: {
   ) {
     return false;
   }
-  // Отлёжка только при явном status=cooldown и живом таймере (дневной лимит).
+  // Отлёжка только при явном status=cooldown и живом таймере; дневной лимит вида — не на весь аккаунт.
   if (st === "cooldown") {
-    return !isOnCooldown(data.cooldownUntil);
+    return !isOnCooldown(data.cooldownUntil) || dayLimitCooldownKind(data) !== null;
   }
   // active / пустой / legacy — cooldownUntil без статуса cooldown игнорируем (старые фейлы коннекта).
   return !st || st === "active" || st === "ok" || st === "connected";

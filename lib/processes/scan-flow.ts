@@ -1,6 +1,6 @@
 /** Решения скана групп / отбора лидов (app/api/workspace/route.ts::scan_group). */
 
-import { isDayLimitCooldown, isAccountUsable } from "@/lib/telegram-accounts";
+import { dayLimitCooldownKind, isDayLimitCooldown, isAccountUsable } from "@/lib/telegram-accounts";
 import {
   explainLeadDecision,
   reasonFromCore,
@@ -26,12 +26,15 @@ const HARD_DEAD = new Set([
 export function evaluateScanGate(account: {
   status?: string | null;
   cooldownUntil?: string | null;
+  cooldownReason?: unknown;
 } | null): ScanGateResult {
   if (!account) {
     return { ok: false, reason: "missing", message: "Аккаунт группы не найден" };
   }
   const st = String(account.status || "");
-  if (isDayLimitCooldown(account) || st === "spamblock" || st === "frozen") {
+  // Чтение группы — не лимитируемый вид: дневной лимит ЛС/вступлений скан не останавливает
+  const blockingCooldown = isDayLimitCooldown(account) && dayLimitCooldownKind(account) === null;
+  if (blockingCooldown || st === "spamblock" || st === "frozen") {
     const until = String(account.cooldownUntil || "");
     const waitSec = Math.max(
       60,

@@ -255,7 +255,7 @@ export function interpretAudienceJoin(
 ): AudienceJoinStep {
   const outcome = interpretJoinWorkerResult({ ...joinRes, floodWait: Number(joinRes.waitSec) || joinRes.floodWait });
   const peer = sourcePeerFromJoin(joinRes, accountId);
-  const bumped = () => applyQuotaCooldownIfExhausted({ ...account, ...bumpJoinCounters(account) });
+  const bumped = () => applyQuotaCooldownIfExhausted({ ...account, ...bumpJoinCounters(account) }, "invite");
   switch (outcome.kind) {
     case "joined":
       return { kind: "member", account: bumped(), peer };
