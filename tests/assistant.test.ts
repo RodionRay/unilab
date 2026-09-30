@@ -25,6 +25,11 @@ describe('UniLab assistant',()=>{
     expect(fallbackAssistantReply('xyz')).toMatch(/UniLab/);
   });
 
+  it('не рекламирует удалённые сбор аудитории, инвайтинг и рассылку',()=>{
+    expect(fallbackAssistantReply('xyz')).not.toMatch(/сбор аудитории|инвайтинг|рассылк/i);
+    expect(matchAssistantFaq('Как настроить рассылку?')).toMatch(/нет/i);
+  });
+
   it('валидация и rate limit',()=>{
     expect(assistantRequestSchema.parse({message:'Как работает рассылка?',surface:'admin'}).surface).toBe('admin');
     expect(canAskAssistant(null)).toBe(true);
