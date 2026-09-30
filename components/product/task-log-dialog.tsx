@@ -8,48 +8,26 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useNowTick } from "@/hooks/useNowTick";
-import {
-  formatLiveClock,
-  liveWaitLogText,
-  remainSec,
-} from "@/lib/audience-invite";
+
+export type TaskLogEntry = {
+  at?: string;
+  level?: string;
+  text?: string;
+};
 
 export type TaskLogView = {
   title: string;
-  log: any[];
-  taskId?: string;
-  nextAt?: string;
+  log: TaskLogEntry[];
 };
 
 type Props = {
   open: TaskLogView | null;
-  liveLog?: any[];
-  liveNextAt?: string;
   onClose: () => void;
 };
 
-export function TaskLogDialog({ open, liveLog, liveNextAt, onClose }: Props) {
-  const now = useNowTick(!!open);
-  const entries = liveLog ?? open?.log ?? [];
-  const nextAt = liveNextAt || open?.nextAt || "";
-  const waitLeft = remainSec(nextAt, now);
-
-  const rows = useMemo(() => {
-    const list = [...entries].reverse();
-    let waitPatched = false;
-    return list.map((e) => {
-      const raw = String(e?.text || "");
-      if (!waitPatched && /^Ожидание \d+ секунд$/.test(raw)) {
-        waitPatched = true;
-        return {
-          ...e,
-          text: liveWaitLogText(raw, e?.at, nextAt, now),
-        };
-      }
-      return e;
-    });
-  }, [entries, nextAt, now]);
+/** Журнал событий: переобход групп, скан одной группы, статистика аккаунта. */
+export function TaskLogDialog({ open, onClose }: Props) {
+  const rows = useMemo(() => [...(open?.log ?? [])].reverse(), [open]);
 
   return (
     <Dialog open={!!open} onOpenChange={(o) => { if (!o) onClose(); }}>
@@ -60,11 +38,7 @@ export function TaskLogDialog({ open, liveLog, liveNextAt, onClose }: Props) {
             {String(open?.title || "").includes("Переобход") ||
             String(open?.title || "").includes("переобход")
               ? "История сканов групп и автообходов"
-              : "События задачи в хронологии"}
-            <span className="block mt-1 tabular-nums text-[var(--foreground)]">
-              Сейчас {formatLiveClock(now)}
-              {waitLeft > 0 ? ` · пауза ${waitLeft}с` : ""}
-            </span>
+              : "События в хронологии, новые сверху"}
           </DialogDescription>
         </DialogHeader>
         <div className="task-log-list">
