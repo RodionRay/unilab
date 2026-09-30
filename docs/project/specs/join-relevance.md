@@ -1,8 +1,8 @@
 ---
 slug: join-relevance
 size: full
-status: implemented (awaiting review + live Telegram check)
-branch: task/join-relevance-2026-09-30 (based on task/lead-stopwords-fix-2026-09-30)
+status: implemented — code review + security review + verifier gaps fixed; merged with dev (joinWanted); live Telegram joins NOT verified
+branch: task/join-relevance-2026-09-30 (based on task/lead-stopwords-fix-2026-09-30, origin/dev merged in)
 model: session model (Opus 5.5), effort default
 budget: 600M
 ---
