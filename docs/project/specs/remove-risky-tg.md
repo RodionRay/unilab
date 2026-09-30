@@ -15,6 +15,7 @@ account/proxy management and a manual single-group join stay.
 - Audience collection, member inviting, mailings removed entirely (API, worker, UI, tests, copy).
 - Account mix removed: no round-robin group assignment, no farm rotation for joins/scans/DMs.
   Assigned account unavailable → explicit error, no silent substitution.
+- Discussion chats: manual gated "Вступить в обсуждение" (owner 2026-09-30); scan never joins.
 - DB rows of kinds audience_task / audience_user / invite_task / mailing_task stay in D1; code ignores them.
   No migration.
 - Staff invites (create_invite / accept_invite / app/invite/[token]) are unrelated and stay.
@@ -37,6 +38,12 @@ account/proxy management and a manual single-group join stay.
   no background join queue, no mix option; per-group "Вступить" still works.
 - REQ-10 Marketing pages, README, SERVER_HANDOFF, assistant knowledge and notification copy shall not
   advertise the removed features.
+- REQ-12 The worker's scan shall never join a channel's linked discussion chat; it reports needDiscussionJoin.
+  `join_group` with `target:'discussion'` shall join only that linked chat through the same pace + daily quota
+  gate (one join), using only the assigned account; the UI shows "Вступить в обсуждение" for such groups.
+- REQ-13 Concurrent manual joins for one account shall be serialized (reserveJoinSlot); after a real Telegram
+  call (success, already, banned/private/failed, timeout) the pace slot is kept; stale joinState
+  queued/waiting from the removed queue is cleared.
 - REQ-11 Lint does not grow vs base, `npx tsc --noEmit` errors do not grow vs base, vitest and python tests
   green, `npm run build` green.
 
