@@ -46,7 +46,7 @@ import {
  type MailingSourceKind,
 } from '@/lib/mailing';
 import {interpretMailingSendResult,isAmbiguousSendError,mailingPersonKey,notePeerMiss,untriedAccountIds,type PeerMissState} from '@/lib/processes/mailing-tick';
-import {claimMailingRecipient,loadContactedRecipients,releaseMailingRecipient,settleMailingRecipient,type MailingRecipientEntry} from '@/lib/processes/mailing-recipients';
+import {STALE_CLAIM_ERROR,claimMailingRecipient,expireStalePendingClaims,loadContactedRecipients,releaseMailingRecipient,settleMailingRecipient,staleClaimDelivery,type MailingRecipientEntry} from '@/lib/processes/mailing-recipients';
 import {checkProxyTarget} from '@/lib/security/net-guard';
 import {proxyCheckTimeoutMs,workerAppTimeoutMs,workerSlots} from '@/lib/worker-timeouts';
 import {WorkerBusyError,isRetryableTickError,tickRetryPatch} from '@/lib/processes/tick-retry';
@@ -4331,6 +4331,15 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   if(data.status==='scheduled')data={...data,status:'running',log:pushTaskLog(data.log,'info','Задача запущена автоматически',500)};
   data={...data,nextAt:''};
   const post=tickWorkerPost(tickRun);
+  // «pending» тика, который не дошёл до финиша: не шлём повторно, а показываем как «могло уйти» (R1)
+  for(const stale of await expireStalePendingClaims(db,owner,id)){
+   const d=staleClaimDelivery(stale,(data.deliveryMode||'dm') as MailingDeliveryMode);
+   data={
+    ...data,
+    deliveries:pushMailingDelivery(Array.isArray(data.deliveries)?data.deliveries:[],d),
+    log:pushTaskLog(data.log,'warn',`${d.username?`@${d.username}`:`id${d.userId||d.leadId}`}: ${STALE_CLAIM_ERROR}`,500),
+   };
+  }
 
   const day=moscowDayKey();
   let sentToday=Number(data.sentToday)||0;

@@ -252,6 +252,27 @@ describe('рассылка · отправка (tick_mailing)',()=>{
     expect(registry()).toMatchObject([{key:'dm:u:2001',state:'sent'}]);
   });
 
+  it('R1: «pending» упавшего тика через 15+ мин → «unknown» в журнале и доставках, без повторной отправки',async()=>{
+    seedAudience(['2001','2002']);
+    seedMailing({batchPerTick:2});
+    const claim=(uid:string,ageMs:number)=>testDb().sqlite.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,NULL,?)').run(
+      `mr:${OWNER}:dm:u:${uid}`,OWNER,'mailing_recipient',
+      JSON.stringify({key:`dm:u:${uid}`,state:'pending',taskId:MAIL,accountId:ACC_A,leadId:'',at:new Date(Date.now()-ageMs).toISOString(),error:''}),
+      new Date().toISOString(),
+    );
+    claim('2001',60*60_000);
+    claim('2002',60_000);
+    const {calls}=stubWorker(()=>({ok:true,messageId:'1'}));
+
+    await tick();
+
+    expect(sends(calls)).toHaveLength(0);
+    const byKey=Object.fromEntries(registry().map(r=>[r.key,r.state]));
+    expect(byKey).toEqual({'dm:u:2001':'unknown','dm:u:2002':'pending'});
+    expect(task().deliveries).toMatchObject([{key:'u:2001',userId:'2001',ok:false}]);
+    expect(task().log.map(l=>l.text).join('\n')).toMatch(/id2001.*могло уйти/);
+  });
+
   it('R2: AI-текст возвращается в пул, если отправка упала',async()=>{
     seedAudience(['2001']);
     const pool=['t1','t2','t3','t4','t5','t6'];

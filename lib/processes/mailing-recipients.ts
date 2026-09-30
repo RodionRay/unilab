@@ -3,9 +3,12 @@
  * Не ограничен по размеру (в отличие от deliveredKeys задачи) и общий для всех задач — человеку,
  * которому уже писала любая рассылка, повторно не пишем (REQ-M2, REQ-M3).
  * Строка ставится `pending` ДО отправки: таймаут → `unknown`, автоповтора нет (письмо могло уйти).
+ * `pending` тика, который так и не финишировал, следующий тик задачи через 15 мин переводит в
+ * `unknown` и показывает в журнале/доставках (expireStalePendingClaims).
  */
 
 import type { D1LikeDatabase } from "@/lib/db";
+import type { MailingDelivery, MailingDeliveryMode } from "@/lib/mailing";
 
 export const MAILING_RECIPIENT_KIND = "mailing_recipient";
 
@@ -127,4 +130,69 @@ export async function releaseMailingRecipient(
     .prepare("DELETE FROM records WHERE owner=? AND id=? AND kind=?")
     .bind(owner, recipientRowId(owner, personKey), MAILING_RECIPIENT_KIND)
     .run();
+}
+
+/**
+ * A `pending` claim this old belongs to a tick that never finished (crash, handler cancelled):
+ * a live tick settles its claim within one send call (≤ 3 min) under its lock.
+ */
+export const MAILING_PENDING_STALE_MS = 15 * 60_000;
+const STALE_CLAIMS_PER_TICK = 50;
+export const STALE_CLAIM_ERROR = "Тик прервался до ответа Telegram — сообщение могло уйти, повтора не будет";
+
+/**
+ * Stale `pending` claims of the task → `unknown` (never re-sent: the message may have gone).
+ * Returns the claims it moved, so the tick can show them in the log and deliveries.
+ */
+export async function expireStalePendingClaims(
+  db: D1LikeDatabase,
+  owner: string,
+  taskId: string,
+  now = Date.now(),
+): Promise<MailingRecipientEntry[]> {
+  const rows = await db
+    .prepare(
+      "SELECT id,data FROM records WHERE owner=? AND kind=? AND json_extract(data,'$.state')='pending' " +
+        "AND json_extract(data,'$.taskId')=? AND json_extract(data,'$.at')<? LIMIT ?",
+    )
+    .bind(owner, MAILING_RECIPIENT_KIND, taskId, new Date(now - MAILING_PENDING_STALE_MS).toISOString(), STALE_CLAIMS_PER_TICK)
+    .all();
+  const moved: MailingRecipientEntry[] = [];
+  for (const r of rows.results) {
+    const entry = parseData(r.data) as MailingRecipientEntry | null;
+    if (!entry) continue;
+    const next: MailingRecipientEntry = { ...entry, state: "unknown", error: "stale_pending" };
+    const res = await db
+      .prepare("UPDATE records SET data=? WHERE owner=? AND id=? AND kind=? AND data=?")
+      .bind(JSON.stringify(next), owner, String(r.id), MAILING_RECIPIENT_KIND, String(r.data))
+      .run();
+    if (res.meta.changes === 1) moved.push(next);
+  }
+  return moved;
+}
+
+/** Delivery row for a claim that ended `unknown` without a worker answer. */
+export function staleClaimDelivery(
+  entry: MailingRecipientEntry,
+  mode: MailingDeliveryMode,
+  at = new Date().toISOString(),
+): MailingDelivery {
+  const key = entry.key.startsWith("dm:") ? entry.key.slice(3) : entry.key;
+  const userId = key.startsWith("u:") ? key.slice(2) : "";
+  const username = key.startsWith("un:") ? key.slice(3) : "";
+  return {
+    at,
+    key,
+    userId,
+    username,
+    leadId: entry.leadId,
+    accountId: entry.accountId,
+    ok: false,
+    error: STALE_CLAIM_ERROR,
+    messageId: "",
+    chatId: userId,
+    link: "",
+    textPreview: "",
+    mode,
+  };
 }
