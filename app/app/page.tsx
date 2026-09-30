@@ -783,9 +783,15 @@ function WorkspaceHome(){
   // Автообход лидов крутит tg-worker → /api/cron/auto-rescan (24/7, без открытого кабинета).
   // Здесь только кнопка «Собрать лиды» и отображение статуса.
 
-  /** Poller: сбор аудитории + инвайтинг пока кабинет открыт */
+  /** Poller: сбор аудитории + инвайтинг пока кабинет открыт (фоном задачи тикает и tg-worker → /api/cron/tasks-tick) */
   useEffect(()=>{
     if(!telegramConnected)return;
+    // busy/waiting несут актуальную строку с сервера — показываем прогресс серверного раннера;
+    // skipped применяем только для финальных статусов, чтобы не затереть свежий running устаревшим paused
+    const syncFromServer=(id:string,r:{skipped?:boolean;task?:Record<string,unknown>})=>{
+      if(r.skipped&&r.task?.status!=='completed'&&r.task?.status!=='error')return;
+      applyTickTask(id,r.task);
+    };
     const tick=async()=>{
       if(taskPollLock.current)return;
       // autoRescan/join не стопят тики задач — иначе сбор/инвайт простаивают минутами
@@ -799,7 +805,7 @@ function WorkspaceHome(){
         for(const t of runningAudience){
           try{
             const r=await api({action:'tick_audience',id:t.id});
-            if(r.busy||r.skipped)continue;
+            if(r.busy||r.skipped||r.waiting){syncFromServer(t.id,r);continue}
             applyTickTask(t.id,r.task);
             if(r.joined)toast.message(`${displayTgHandle(t.data.url||'')}: вступили в источник`);
             if(r.task?.status==='completed')toast.success(`Сбор завершён: ${displayTgHandle(t.data.url||'')} · ${r.task.collected||0}`);
@@ -809,7 +815,7 @@ function WorkspaceHome(){
         for(const t of runningInvite){
           try{
             const r=await api({action:'tick_invite',id:t.id});
-            if(r.busy||r.skipped||r.waiting)continue;
+            if(r.busy||r.skipped||r.waiting){syncFromServer(t.id,r);continue}
             applyTickTask(t.id,r.task);
             if(r.completed)toast.success(`Инвайт завершён: ${displayTgHandle(t.data.targetUrl||'')}`);
           }catch(e){toast.error(`Инвайт: ${String((e as Error).message||e).slice(0,100)}`)}
@@ -817,8 +823,7 @@ function WorkspaceHome(){
         for(const t of runningMailing){
           try{
             const r=await api({action:'tick_mailing',id:t.id});
-            // skipped/busy — не затираем локальный running устаревшим paused
-            if(r.skipped||r.busy||r.waiting)continue;
+            if(r.skipped||r.busy||r.waiting){syncFromServer(t.id,r);continue}
             applyTickTask(t.id,r.task);
             if(r.stopped){
               toast.error(r.task?.error||`Рассылка остановлена: ${t.data.name||''}`);
