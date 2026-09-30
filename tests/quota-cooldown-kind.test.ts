@@ -108,7 +108,7 @@ describe('routes: a DM day limit does not stop invites or joins',()=>{
 
   it('join_group joins from it and the join bump does not re-rest it for DMs',async()=>{
     testDb().sqlite.prepare('UPDATE records SET data=? WHERE id=?').run(JSON.stringify({...dmSpent(),name:'Acc'}),ACC);
-    addRecord(GROUP,'group',{name:'G',url:'https://t.me/some_group',accountId:ACC,status:'new',membership:'none'});
+    addRecord(GROUP,'group',{name:'G',url:'https://t.me/some_group',accountId:ACC,status:'new',membership:'none',joinWanted:true});
 
     const res=await POST(postRequest({action:'join_group',id:GROUP}));
 

@@ -7,6 +7,7 @@ import { isDeadAccountMailingError } from "@/lib/mailing";
 import {
   evaluateJoinGate,
   interpretJoinWorkerResult,
+  type JoinProxyState,
   type JoinWorkerResult,
 } from "@/lib/processes/join-flow";
 import {
@@ -221,14 +222,18 @@ const JOIN_GATE_FALLBACK_WAIT_SEC = 3600;
 
 export type AudienceJoinGate = { ok: true } | { ok: false; waitSec: number; message: string };
 
-/** REQ-A4: тот же гейт квоты/темпа, что у вступления из «Группы». */
+/**
+ * REQ-A4: тот же гейт квоты/темпа/прокси, что у вступления из «Группы».
+ * proxy: запись прокси аккаунта (undefined — прокси не назначен, null — назначен, но записи нет).
+ */
 export function audienceJoinGate(
   url: string,
   accountId: string,
   account: Record<string, unknown> | undefined,
   spareSlots: boolean,
+  proxy?: JoinProxyState | null,
 ): AudienceJoinGate {
-  const gate = evaluateJoinGate({ groupUrl: url, accountId, account: account ?? null });
+  const gate = evaluateJoinGate({ groupUrl: url, accountId, account: account ?? null, proxy });
   if (gate.ok) return gate;
   const waitSec = spareSlots ? JOIN_GATE_ROTATE_WAIT_SEC : (gate.waitSec ?? JOIN_GATE_FALLBACK_WAIT_SEC);
   return { ok: false, waitSec, message: gate.message };
