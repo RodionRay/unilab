@@ -152,6 +152,16 @@ describe('tg-worker HTTP guard', () => {
     expect(res.json.ok).toBe(true);
   });
 
+  it('returns 404 for the removed audience/invite routes and never runs python', async () => {
+    let calls = 0;
+    const {base, port} = await listen({runPython: async () => { calls += 1; return {ok: true}; }});
+    for (const path of ['/collect-audience', '/invite-users']) {
+      const res = await post(base, path, {token: TOKEN, contentType: 'application/json', host: `localhost:${port}`});
+      expect(res.status).toBe(404);
+    }
+    expect(calls).toBe(0);
+  });
+
   it('hides autoRescan details on /health unless authed', async () => {
     const {base} = await listen();
     const anon = await rawRequest(base, '/health', 'GET', {});
