@@ -1886,15 +1886,60 @@ async def collect_audience(client, payload: dict[str, Any]) -> dict[str, Any]:
             "hasMore": False,
         }
 
+# Ошибки цели: касаются всей группы, а не пользователя — батч прерывается, никого не отмечаем.
+INVITE_TARGET_ERRORS: dict[str, tuple[str, str]] = {
+    "ChatAdminRequiredError": (
+        "need_admin",
+        "Нужны права администратора: целевая группа не даёт аккаунту приглашать участников",
+    ),
+    "UsersTooMuchError": ("chat_full", "Целевая группа заполнена — достигнут лимит участников Telegram"),
+    "ChannelPrivateError": (
+        "target_private",
+        "Целевая группа недоступна аккаунту (приватная или аккаунт в ней забанен)",
+    ),
+    "ChatWriteForbiddenError": ("target_forbidden", "Аккаунту запрещено приглашать в целевую группу"),
+    "ChannelInvalidError": ("target_invalid", "Целевая группа не найдена или недоступна"),
+    "ChatInvalidError": ("target_invalid", "Целевая группа не найдена или недоступна"),
+    "ChatIdInvalidError": ("target_invalid", "Целевая группа не найдена или недоступна"),
+}
+
+# Постоянные отказы пользователя: повтор с другого аккаунта не поможет.
+INVITE_USER_PERMANENT_ERRORS: dict[str, str] = {
+    "UserPrivacyRestrictedError": "privacy",
+    "UserNotMutualContactError": "privacy",
+    "UserKickedError": "kicked",
+    "UserChannelsTooMuchError": "channels_too_much",
+    "UserBotError": "bot",
+}
+
+
+def invite_user_error(exc: BaseException) -> str:
+    return INVITE_USER_PERMANENT_ERRORS.get(type(exc).__name__) or str(exc)[:120]
+
+
+def missing_invitee_error(result: Any) -> str | None:
+    """messages.InvitedUsers.missing_invitees: Telegram не добавил пользователя из-за его приватности."""
+    return "privacy" if getattr(result, "missing_invitees", None) else None
+
+
+def invite_target_error(code: str, message: str, results: list[dict[str, Any]], title: str = "") -> dict[str, Any]:
+    return {
+        "ok": False,
+        "status": "target_error",
+        "targetError": code,
+        "error": message,
+        "results": results,
+        "title": title,
+    }
+
+
 async def invite_users(client, payload: dict[str, Any]) -> dict[str, Any]:
     """Батч инвайтов в целевую группу. mode: ordinary | advanced."""
     import asyncio
     from telethon.errors import (
         FloodWaitError,
         RPCError,
-        UserPrivacyRestrictedError,
         UserAlreadyParticipantError,
-        ChatAdminRequiredError,
         PeerFloodError,
         UserNotParticipantError,
         ChannelPrivateError,
@@ -1916,17 +1961,20 @@ async def invite_users(client, payload: dict[str, Any]) -> dict[str, Any]:
     try:
         entity, err = await _resolve_entity(client, target_url)
         if err:
-            return {**err, "results": []}
+            if err.get("accountBlind"):
+                return {**err, "results": []}
+            code = "need_join" if err.get("join") == "need_join" else "target_missing"
+            return invite_target_error(code, str(err.get("error") or "Целевая группа не найдена"), [])
         title = getattr(entity, "title", None) or getattr(entity, "username", "") or target_url
 
         # Канал-витрина без megagroup — нельзя инвайтить как в группу
         if bool(getattr(entity, "broadcast", False)) and not bool(getattr(entity, "megagroup", False)):
-            return {
-                "ok": False,
-                "error": "Цель — канал, не группа. Инвайт участников работает только в супергруппу/чат.",
-                "results": [],
-                "title": title,
-            }
+            return invite_target_error(
+                "broadcast",
+                "Цель — канал, не группа. Инвайт участников работает только в супергруппу/чат.",
+                [],
+                title,
+            )
 
         source_entity = None
         if source_url:
@@ -2057,27 +2105,30 @@ async def invite_users(client, payload: dict[str, Any]) -> dict[str, Any]:
                         results.append({"userId": uid, "username": uname, "ok": True, "error": "", "method": "advanced"})
                     except UserAlreadyParticipantError:
                         results.append({"userId": uid, "username": uname, "ok": True, "error": "already", "method": "advanced"})
-                    except Exception as e:
-                        try:
-                            await client(InviteToChannelRequest(entity, [peer]))
+                    except Exception:
+                        # Нет прав админа — обычный инвайт; его ошибки разбирают общие обработчики ниже
+                        res = await client(InviteToChannelRequest(entity, [peer]))
+                        missing = missing_invitee_error(res)
+                        if missing:
+                            results.append({"userId": uid, "username": uname, "ok": False, "error": missing})
+                        else:
                             results.append({"userId": uid, "username": uname, "ok": True, "error": "", "method": "ordinary_fallback"})
-                        except Exception as e2:
-                            results.append({"userId": uid, "username": uname, "ok": False, "error": str(e2)[:120]})
                 else:
                     if isinstance(entity, Channel) or getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False):
-                        await client(InviteToChannelRequest(entity, [peer]))
+                        res = await client(InviteToChannelRequest(entity, [peer]))
                     else:
                         from telethon.tl.functions.messages import AddChatUserRequest
 
                         chat_id = getattr(entity, "id", None)
-                        await client(AddChatUserRequest(chat_id=chat_id, user_id=peer, fwd_limit=0))
-                    results.append({"userId": uid, "username": uname, "ok": True, "error": "", "method": "ordinary"})
+                        res = await client(AddChatUserRequest(chat_id=chat_id, user_id=peer, fwd_limit=0))
+                    # Telegram отвечает успехом, но перечисляет в missing_invitees тех, кого не добавил
+                    missing = missing_invitee_error(res)
+                    if missing:
+                        results.append({"userId": uid, "username": uname, "ok": False, "error": missing})
+                    else:
+                        results.append({"userId": uid, "username": uname, "ok": True, "error": "", "method": "ordinary"})
             except UserAlreadyParticipantError:
                 results.append({"userId": uid, "username": uname, "ok": True, "error": "already", "method": mode})
-            except UserPrivacyRestrictedError:
-                results.append({"userId": uid, "username": uname, "ok": False, "error": "privacy"})
-            except ChatAdminRequiredError:
-                results.append({"userId": uid, "username": uname, "ok": False, "error": "need_admin"})
             except PeerFloodError:
                 return {
                     "ok": False,
@@ -2098,11 +2149,15 @@ async def invite_users(client, payload: dict[str, Any]) -> dict[str, Any]:
             except RPCError as e:
                 if is_frozen_rpc(e):
                     return {**frozen_action_error("инвайт"), "results": results}
-                results.append({"userId": uid, "username": uname, "ok": False, "error": str(e)[:120]})
+                target = INVITE_TARGET_ERRORS.get(type(e).__name__)
+                if target:
+                    return invite_target_error(target[0], target[1], results, title)
+                results.append({"userId": uid, "username": uname, "ok": False, "error": invite_user_error(e)})
             except Exception as e:
-                results.append({"userId": uid, "username": uname, "ok": False, "error": str(e)[:120]})
+                results.append({"userId": uid, "username": uname, "ok": False, "error": invite_user_error(e)})
 
-        ok_n = sum(1 for r in results if r.get("ok"))
+        # «Уже в группе» — не инвайт: не входит в счётчик и квоту
+        ok_n = sum(1 for r in results if r.get("ok") and r.get("error") != "already")
         return {
             "ok": True,
             "title": title,

@@ -31,7 +31,7 @@ const CAS_ATTEMPTS = 8;
 
 /** Fields a tick owns; kept even when the user paused the task mid-tick (REQ-I3). */
 export const TICK_PROGRESS_KEYS: Readonly<Record<TickTaskKind, readonly string[]>> = {
-  invite_task: ["done", "invitedToday", "inviteDay", "accountIndex", "lastTickAt"],
+  invite_task: ["done", "invitedToday", "inviteDay", "alreadyMembers", "skipped", "accountIndex", "lastTickAt"],
   mailing_task: [
     "sentTotal",
     "sentToday",
