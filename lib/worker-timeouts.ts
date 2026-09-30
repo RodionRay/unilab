@@ -25,3 +25,25 @@ export function workerSlots(raw: string | undefined): number {
   const n = Number(raw);
   return Number.isInteger(n) && n > 0 ? n : WORKER_DEFAULT_SLOTS;
 }
+
+/**
+ * Worker job timeouts per action (worker-app.mjs timeoutForAction; pinned by
+ * tests/tick-runtime.test.ts). The app must wait longer: the job may first sit in
+ * the worker queue, and a slow-but-successful call must not look like a failure.
+ */
+export const WORKER_JOB_TIMEOUT_MS = {
+  collect: 180_000,
+  invite: 180_000,
+  join: 120_000,
+  send: 120_000,
+} as const;
+export type WorkerTickAction = keyof typeof WORKER_JOB_TIMEOUT_MS;
+/** Queue wait + kill grace + network on top of the job timeout. */
+export const WORKER_QUEUE_MARGIN_MS = 60_000;
+
+export function workerAppTimeoutMs(action: WorkerTickAction): number {
+  return WORKER_JOB_TIMEOUT_MS[action] + WORKER_QUEUE_MARGIN_MS;
+}
+
+export const WORKER_LONGEST_APP_TIMEOUT_MS =
+  Math.max(...Object.values(WORKER_JOB_TIMEOUT_MS)) + WORKER_QUEUE_MARGIN_MS;
