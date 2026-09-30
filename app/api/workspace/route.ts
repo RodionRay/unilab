@@ -44,6 +44,7 @@ import {checkProxyTarget} from '@/lib/security/net-guard';
 import {proxyCheckTimeoutMs,workerSlots} from '@/lib/worker-timeouts';
 import {authorizeWorkspaceAction,keepOwnerSecretsOnSave,visibleRecordsFor,type WorkspaceActor} from '@/lib/security/workspace-authz';
 import {ALL_CRM_ACCESS} from '@/lib/staff-types';
+import {INBOX_CURSOR_MARGIN_SEC,applySendOutcome,findSendBlock,markLeadOpened,mergeIncomingDm,nextInboxCursor,withPendingSend,type LeadData,type ReplyEntry,type SendOutcome} from '@/lib/lead-conversation';
 import {env} from 'cloudflare:workers';
 import {z} from 'zod';
 export const dynamic='force-dynamic';
@@ -1348,6 +1349,49 @@ function sameMailingPeer(lead:any,msg:any){
  return !!(a&&b&&a===b);
 }
 
+/** Lead rows change under us (manager reply, DM poll, save): writes are compare-and-swap on the row text. */
+class LeadUpdateConflictError extends Error{}
+
+/**
+ * Worker send job may take 120 s (worker-app.mjs timeoutForAction) after waiting for a slot; aborting kills the job,
+ * so a shorter app timeout turns a slow-but-delivered reply into an «unknown» result.
+ */
+const SEND_MESSAGE_TIMEOUT_MS=185_000;
+/** /inbox-dms: 120 s worker job + queue margin. */
+const INBOX_DMS_TIMEOUT_MS=150_000;
+/** One poll_dm_replies per owner; covers the worst case of up to 4 accounts × INBOX_DMS_TIMEOUT_MS. */
+const DM_POLL_LEASE_MS=11*60_000;
+
+/** A thrown send: busy worker = not sent (retry allowed); our timeout/abort = maybe sent (retry blocked). */
+function sendFailureOutcome(e:unknown):{outcome:SendOutcome;httpStatus:number}{
+ if(e instanceof WorkerBusyError){
+  return {outcome:{status:'failed',error:'Telegram-воркер занят — повторите через минуту'},httpStatus:429};
+ }
+ const name=String((e as Error)?.name||'');
+ if(name==='TimeoutError'||name==='AbortError'){
+  console.error('[workspace] send_lead_message: worker timeout, delivery unknown');
+  return {outcome:{status:'unknown',error:'Нет ответа Telegram-воркера — сообщение могло уйти. Проверьте переписку в Telegram перед повтором.'},httpStatus:504};
+ }
+ return {outcome:{status:'failed',error:internalError('send_lead_message',e,'Не удалось отправить сообщение. Повторите попытку.')},httpStatus:503};
+}
+
+/**
+ * Re-reads the lead, applies `fn` and writes only if the row is unchanged since the read (retries on a race).
+ * `fn` returns `next` to write (or none to skip the write) and a result; null when the lead is gone.
+ */
+async function mutateLead<T>(db:any,owner:string,id:string,fn:(lead:LeadData)=>{next?:LeadData;result:T}):Promise<{result:T;lead:LeadData}|null>{
+ for(let attempt=0;attempt<5;attempt++){
+  const row:any=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'lead').first();
+  if(!row)return null;
+  const lead=JSON.parse(String(row.data)) as LeadData;
+  const {next,result}=fn(lead);
+  if(!next)return {result,lead};
+  const upd=await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=? AND data=?').bind(JSON.stringify(next),owner,id,'lead',String(row.data)).run();
+  if(upd.meta.changes)return {result,lead:next};
+ }
+ throw new LeadUpdateConflictError('Лид одновременно изменён — повторите');
+}
+
 export async function GET(){const session=await getSessionUser();if(!session?.userId)return reply({error:'Войдите в рабочее пространство'},401);
  const actor=await readActor();
  if(!actor)return reply({error:'Войдите в рабочее пространство'},401);
@@ -2199,20 +2243,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
  }
  if(b.action==='mark_lead_viewed'){
   const id=z.string().uuid().parse(b.id);
-  const row:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'lead').first();
-  if(!row)return reply({error:'Лид не найден'},404);
-  const data=JSON.parse(row.data);
-  const alreadyViewed=!!data.viewed;
-  const needsManager=!!data.needsManager;
-  if(alreadyViewed&&!needsManager)return reply({ok:true,already:true});
-  const next={
-   ...data,
-   viewed:true,
-   viewedAt:data.viewedAt||new Date().toISOString(),
-   needsManager:false,
-  };
-  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'lead').run();
-  return reply({ok:true,lead:next});
+  const nowIso=new Date().toISOString();
+  const done=await mutateLead(db,owner,id,lead=>{
+   const patch=markLeadOpened(lead,nowIso);
+   return {next:patch?{...lead,...patch}:undefined,result:!patch};
+  });
+  if(!done)return reply({error:'Лид не найден'},404);
+  return done.result?reply({ok:true,already:true}):reply({ok:true,lead:done.lead});
  }
  if(b.action==='set_lead_training_exclude'){
   const id=z.string().uuid().parse(b.id);
@@ -2482,12 +2519,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(data),owner,config.id,'settings').run();
   return reply({ok:true,lead:leadNext,data,minusAdded:minusAdd,minusSkippedAsProduct,minusKeywords:data.minusKeywords});
  }
-  if(b.action==='send_lead_message'){
+ if(b.action==='send_lead_message'){
   const id=z.string().uuid().parse(b.id);
   const mode=z.enum(['dm','chat']).parse(b.mode||'dm');
   const text=z.string().trim().min(1).max(4000).parse(b.text);
+  const clientMsgId=z.string().trim().max(80).optional().parse(b.clientMsgId)||'';
+  const force=b.force===true;
   const silent=b.silent===true;
-  const deleteDialog=b.deleteDialog===true;
   const row:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'lead').first();
   if(!row)return reply({error:'Лид не найден'},404);
   const lead=JSON.parse(row.data);
@@ -2509,123 +2547,140 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    sendAccountId=farm[0]?.id||'';
   }
   if(!sendAccountId)return reply({error:'Назначьте аккаунт для ответа'},400);
-  let arow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,sendAccountId,'account').first();
+  const arow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,sendAccountId,'account').first();
   let adata=arow?JSON.parse(arow.data):null;
   let rotatedAccount=false;
-  // Для уже открытой переписки держим тот же аккаунт (чужой peer → invalid Peer)
+  // Открытая переписка держит свой аккаунт (чужой peer → invalid Peer): не ротируем, но и не обходим отлёжку/лимит
   const keepConversationAccount=!!lead.conversationOpen||(Array.isArray(lead.replies)&&lead.replies.some((x:any)=>x&&x.from==='us'&&x.ok));
+  const keepAccount=keepConversationAccount&&!!adata&&canPollDmInbox(adata);
   const currentOk=adata&&isAccountUsable(adata)&&hasMessageQuota(adata);
-  const currentAlive=adata&&canPollDmInbox(adata);
-  if(!currentOk&&mode==='dm'&&!(keepConversationAccount&&currentAlive)){
+  if(!currentOk&&mode==='dm'&&!keepAccount){
    const farm=await listMessageFarmCandidates(owner);
    const pick=farm.find(x=>x.id!==sendAccountId)||farm[0];
    if(pick){
     sendAccountId=pick.id;
     adata=pick.data;
-    arow={id:pick.id};
     rotatedAccount=true;
    }
   }
   if(!adata)return reply({error:'Аккаунт не найден'},404);
-  if(!isAccountUsable(adata)&&!(keepConversationAccount&&currentAlive)){
-   return reply({error:'Аккаунт на отлежке — отправка недоступна',cooldown:true},429);
-  }
-  if(!hasMessageQuota(adata)&&!(keepConversationAccount&&currentAlive)){
+  if(!isAccountUsable(adata)){
    return reply({
-    error:mode==='dm'
+    error:keepAccount
+     ?'Аккаунт этой переписки на отлежке или в спамблоке — с другого аккаунта ответить нельзя. Повторите позже.'
+     :'Аккаунт на отлежке — отправка недоступна',
+    cooldown:true,
+    cooldownUntil:String(adata.cooldownUntil||''),
+   },429);
+  }
+  if(!hasMessageQuota(adata)){
+   return reply({
+    error:keepAccount
+     ?'Дневной лимит сообщений аккаунта этой переписки исчерпан — ответ после полуночи (МСК)'
+     :mode==='dm'
      ?'Дневной лимит сообщений на всех рабочих аккаунтах фермы'
      :'Дневной лимит сообщений этого аккаунта — для чата нужен тот же слот',
     limitReached:true,
-    farmExhausted:mode==='dm',
+    farmExhausted:mode==='dm'&&!keepAccount,
    },429);
   }
+  let payload:any;
   try{
-   const {payload}=await loadAccountSessionPayload(owner,sendAccountId);
-   // Берём лучший peer из истории переписки (chatId после успешной отправки)
-   const replyPeers=(Array.isArray(lead.replies)?lead.replies:[])
-    .filter((x:any)=>x&&x.ok!==false&&(x.chatId||x.from==='client'))
-    .map((x:any)=>String(x.chatId||'').replace(/^-/,'').trim())
-    .filter(Boolean);
-   let senderId=String(lead.senderId||'').replace(/^-/,'').trim();
-   if((!senderId||senderId.startsWith('100'))&&replyPeers[0])senderId=replyPeers[0];
-   // access_hash чужого аккаунта ломает SendMessage → invalid Peer
-   const sameAccount=String(lead.accountId||'')===String(sendAccountId);
-   let accessHash=sameAccount?String(lead.senderAccessHash||''):'';
-   const result=await workerPost('/send-message',{
-    ...payload,
-    mode,
-    text,
-    url:gdata.url,
-    replyTo:mode==='chat'?(lead.tgMsgId||''):'',
-    tgMsgId:lead.tgMsgId||'',
-    senderId:senderId||lead.senderId||'',
-    senderUsername:lead.senderUsername||'',
-    senderAccessHash:accessHash,
-    silent,
-    deleteDialog:false,
-   });
-   // Повтор без access_hash, если peer битый
-   let finalResult=result;
-   if(!result.ok&&/invalid peer/i.test(String(result.error||''))&&accessHash){
-    finalResult=await workerPost('/send-message',{
-     ...payload,
-     mode,
-     text,
-     url:gdata.url,
-     replyTo:mode==='chat'?(lead.tgMsgId||''):'',
-     tgMsgId:lead.tgMsgId||'',
-     senderId:senderId||lead.senderId||'',
-     senderUsername:lead.senderUsername||'',
-     senderAccessHash:'',
-     silent,
-     deleteDialog:false,
-    });
-   }
-   const link=String(finalResult.link||'').slice(0,300);
-   const messageId=String(finalResult.messageId||'').slice(0,40);
-   const entry={
-    text,
-    mode,
-    at:new Date().toISOString(),
-    ok:!!finalResult.ok,
-    error:(finalResult.error||'').slice(0,400),
-    messageId,
-    link,
-    chatId:String(finalResult.chatId||senderId||'').slice(0,40),
-    from:'us' as const,
-   };
-   const replies=[...(Array.isArray(lead.replies)?lead.replies:[]),entry].slice(-40);
-   const next={
-    ...lead,
-    replies,
-    draft:text,
-    status:lead.status==='new'?'working':lead.status,
-    viewed:true,
-    viewedAt:lead.viewedAt||new Date().toISOString(),
-    conversationOpen:true,
-    accountId:sendAccountId||lead.accountId||'',
-    needsManager:false,
-    senderId:String(finalResult.chatId||senderId||lead.senderId||'').replace(/^-/,'').slice(0,40),
-    senderUsername:String(finalResult.chatUsername||lead.senderUsername||'').slice(0,64),
-    senderAccessHash:String(finalResult.senderAccessHash||(finalResult.ok?accessHash:lead.senderAccessHash)||'').slice(0,40),
-   };
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'lead').run();
-   if(finalResult.flood||finalResult.status==='flood'){
-    const sec=Number(finalResult.waitSec)||900;
-    // FloodWait на ЛС — пауза ответа, аккаунт не уводим в «Отлежка».
-    return reply({ok:false,error:finalResult.error||'FloodWait',waitSec:sec,lead:next,rotatedAccount,pace:true},429);
-   }
-   if(!finalResult.ok)return reply({ok:false,error:finalResult.error||'Не удалось отправить',lead:next,rotatedAccount},502);
-   const accRow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,sendAccountId,'account').first();
-   if(accRow){
-    const acc=JSON.parse(accRow.data);
-    const bumped=applyQuotaCooldownIfExhausted({...acc,...bumpMessageCounters(acc,1)});
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(bumped),owner,sendAccountId,'account').run();
-   }
-   return reply({ok:true,lead:next,mode,link,messageId,rotatedAccount,accountId:sendAccountId});
+   ({payload}=await loadAccountSessionPayload(owner,sendAccountId));
   }catch(e){
    return reply({error:internalError('send_lead_message',e,'Не удалось отправить сообщение. Повторите попытку.')},503);
   }
+  // Берём лучший peer из истории лички (chatId ответа в чат — это группа, не клиент)
+  const replyPeers=(Array.isArray(lead.replies)?lead.replies:[])
+   .filter((x:any)=>x&&x.mode!=='chat'&&x.ok!==false&&(x.chatId||x.from==='client'))
+   .map((x:any)=>String(x.chatId||'').replace(/^-/,'').trim())
+   .filter(Boolean);
+  let senderId=String(lead.senderId||'').replace(/^-/,'').trim();
+  if((!senderId||senderId.startsWith('100'))&&replyPeers[0])senderId=replyPeers[0];
+  // access_hash чужого аккаунта ломает SendMessage → invalid Peer
+  const sameAccount=String(lead.accountId||'')===String(sendAccountId);
+  const accessHash=sameAccount?String(lead.senderAccessHash||''):'';
+
+  // Запись «отправляется» до вызова воркера: повтор после таймаута не шлёт дубль
+  const sendKey=clientMsgId||`srv:${crypto.randomUUID()}`;
+  const pendingEntry:ReplyEntry={text,mode,at:new Date().toISOString(),ok:false,status:'pending',error:'',messageId:'',link:'',chatId:'',from:'us',sendKey,accountId:sendAccountId};
+  const claim=await mutateLead(db,owner,id,cur=>{
+   const block=findSendBlock(cur,{clientMsgId,text,mode},Date.now());
+   if(block&&!(force&&block.kind==='unknown'))return {result:block};
+   return {next:{...withPendingSend(cur,pendingEntry,block?.entry.sendKey||''),draft:text},result:null};
+  });
+  if(!claim)return reply({error:'Лид не найден'},404);
+  const block=claim.result;
+  if(block?.kind==='delivered'){
+   return reply({ok:true,duplicate:true,lead:claim.lead,mode,link:block.entry.link,messageId:block.entry.messageId,rotatedAccount:false,accountId:String(claim.lead.accountId||'')});
+  }
+  if(block){
+   return reply({
+    error:block.kind==='inflight'
+     ?'Это сообщение уже отправляется — дождитесь результата'
+     :'Результат прошлой отправки этого сообщения неизвестен. Проверьте переписку в Telegram — если сообщения нет, отправьте ещё раз.',
+    inflight:block.kind==='inflight',
+    unknown:block.kind==='unknown',
+    lead:claim.lead,
+   },409);
+  }
+
+  const sendBody={
+   ...payload,
+   mode,
+   text,
+   url:gdata.url,
+   replyTo:mode==='chat'?(lead.tgMsgId||''):'',
+   tgMsgId:lead.tgMsgId||'',
+   senderId:senderId||lead.senderId||'',
+   senderUsername:lead.senderUsername||'',
+   silent,
+   deleteDialog:false,
+  };
+  let finalResult:any={};
+  let usedHash=accessHash;
+  let outcome:SendOutcome;
+  let failStatus=502;
+  try{
+   finalResult=await workerPost('/send-message',{...sendBody,senderAccessHash:accessHash},SEND_MESSAGE_TIMEOUT_MS);
+   // Повтор без access_hash, если peer битый
+   if(!finalResult.ok&&/invalid peer/i.test(String(finalResult.error||''))&&accessHash){
+    usedHash='';
+    finalResult=await workerPost('/send-message',{...sendBody,senderAccessHash:''},SEND_MESSAGE_TIMEOUT_MS);
+   }
+   outcome={
+    status:finalResult.ok?'sent':'failed',
+    error:String(finalResult.error||(finalResult.ok?'':'Не удалось отправить')),
+    messageId:finalResult.messageId,
+    link:finalResult.link,
+    chatId:finalResult.chatId,
+    chatUsername:finalResult.chatUsername,
+    senderAccessHash:finalResult.senderAccessHash,
+   };
+  }catch(e){
+   ({outcome,httpStatus:failStatus}=sendFailureOutcome(e));
+  }
+  const saved=await mutateLead(db,owner,id,cur=>({
+   next:applySendOutcome(cur,{sendKey,mode,accountId:sendAccountId,peerId:senderId,accessHash:usedHash,nowIso:new Date().toISOString()},outcome),
+   result:null,
+  }));
+  const next=saved?.lead||lead;
+  if(outcome.status==='unknown')return reply({ok:false,unknown:true,error:outcome.error,lead:next,rotatedAccount},504);
+  if(finalResult.flood||finalResult.status==='flood'){
+   const sec=Number(finalResult.waitSec)||900;
+   // FloodWait на ЛС — пауза ответа, аккаунт не уводим в «Отлежка».
+   return reply({ok:false,error:finalResult.error||'FloodWait',waitSec:sec,lead:next,rotatedAccount,pace:true},429);
+  }
+  if(outcome.status!=='sent')return reply({ok:false,error:outcome.error,busy:failStatus===429,lead:next,rotatedAccount},failStatus);
+  const accRow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,sendAccountId,'account').first();
+  if(accRow){
+   const acc=JSON.parse(accRow.data);
+   const bumped=applyQuotaCooldownIfExhausted({...acc,...bumpMessageCounters(acc,1)});
+   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(bumped),owner,sendAccountId,'account').run();
+  }
+  const link=String(finalResult.link||'').slice(0,300);
+  const messageId=String(finalResult.messageId||'').slice(0,40);
+  return reply({ok:true,lead:next,mode,link,messageId,rotatedAccount,accountId:sendAccountId});
  }
  if(b.action==='rescan_groups'){
   const force=b.force===true;
