@@ -63,6 +63,14 @@ describe("workspace UI without bulk Telegram actions (REQ-9)", () => {
     expect(page).not.toContain("В очереди");
   });
 
+  it("every «Вступить» button is locked while one manual join is in flight", () => {
+    const page = read("app/app/page.tsx");
+    const joinButtons = [...page.matchAll(/disabled=\{([^}]*)\}\s*onClick=\{\(\)=>\{?[^}]*joinGroup\(/g)];
+    expect(joinButtons.length).toBe(2);
+    for (const [, disabled] of joinButtons) expect(disabled).toContain("joinInFlight");
+    expect(page).toContain("if(joinLock.current)");
+  });
+
   it("removed panels are gone from the component tree", () => {
     for (const file of ["audience-panel", "invite-panel", "mailing-panel"]) {
       expect(() => read(`components/product/${file}.tsx`)).toThrow();

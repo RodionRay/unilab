@@ -13,8 +13,10 @@ import {clearStaleJoinState,JOIN_STATE_STALE_MS} from '@/lib/processes/join-flow
 
 const ACC_A='a0000000-0000-4000-8000-00000000000a';
 const GROUP='e0000000-0000-4000-8000-00000000000e';
+const GROUP_2='e0000000-0000-4000-8000-0000000000e2';
 
 let joinCalls=0;
+let workerReply:Record<string,unknown>={ok:true,join:'joined',status:'active'};
 
 function rec(id:string){
   const row=testDb().sqlite.prepare('SELECT data FROM records WHERE id=?').get(id) as {data:string};
@@ -39,10 +41,13 @@ describe('ручное вступление: хвосты очереди и го
     testDb().sqlite.prepare('DELETE FROM records WHERE id=?').run(ACCOUNT_ID);
     errSpy=vi.spyOn(console,'error').mockImplementation(()=>{});
     joinCalls=0;
+    workerReply={ok:true,join:'joined',status:'active'};
     vi.stubGlobal('fetch',vi.fn(async(url:string)=>{
       if(String(url).endsWith('/join-group')){
         joinCalls++;
-        return Response.json({ok:true,join:'joined',status:'active'});
+        // Воркер отвечает не сразу: параллельный запрос успевает дойти до своей проверки темпа
+        await new Promise(r=>setTimeout(r,20));
+        return Response.json(workerReply);
       }
       return Response.json({ok:false,error:'not stubbed'},{status:500});
     }));
@@ -98,6 +103,35 @@ describe('ручное вступление: хвосты очереди и го
 
       expect(res.status).toBe(400);
       expect(rec(GROUP).joinState||'').toBe('');
+    });
+  });
+
+  describe('темп и дневная квота аккаунта',()=>{
+    it('два параллельных join_group одним аккаунтом: до воркера доходит один, второй — 429 темп',async()=>{
+      await addAccount(ACC_A,{});
+      addGroup(GROUP,{});
+      addGroup(GROUP_2,{});
+
+      const [a,b]=await Promise.all([join(GROUP),join(GROUP_2)]);
+      const statuses=[a.status,b.status].sort();
+      const loser=a.status===429?a:b;
+
+      expect(statuses).toEqual([200,429]);
+      expect(await loser.json()).toMatchObject({pace:true});
+      expect(joinCalls).toBe(1);
+      expect(rec(ACC_A).joinsToday).toBe(1);
+    });
+
+    it('неудача, которая не тратит вступление, возвращает счётчик и паузу',async()=>{
+      await addAccount(ACC_A,{});
+      addGroup(GROUP,{});
+      workerReply={ok:false,status:'disconnected',error:'Таймаут воркера'};
+
+      await join(GROUP);
+
+      expect(joinCalls).toBe(1);
+      expect(rec(ACC_A).joinsToday||0).toBe(0);
+      expect(rec(ACC_A).lastJoinAt||'').toBe('');
     });
   });
 });

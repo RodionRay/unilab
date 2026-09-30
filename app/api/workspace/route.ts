@@ -912,6 +912,30 @@ async function accountJoinGate(owner:string,adata:JoinAccountState){
  return evaluateAccountJoinReadiness(adata,{proxy:proxyStateFor(adata,await loadProxyStates(owner))});
 }
 
+/**
+ * Занять слот вступления аккаунта: lastJoinAt/joinsToday пишутся, только если запись не менялась
+ * с чтения (сравнение data). null = параллельный запрос успел первым.
+ */
+async function reserveJoinSlot(owner:string,accountId:string,prevRaw:string,adata:JoinAccountState){
+ const reserved={...adata,...bumpJoinCounters(adata)};
+ const res=await database().prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=? AND data=?')
+  .bind(JSON.stringify(reserved),owner,accountId,'account',prevRaw).run();
+ return res.meta.changes?reserved:null;
+}
+
+/** Вступление не потрачено (already, сбой, отказ): вернуть темп и счётчик к значениям до резерва. */
+async function releaseJoinSlot(owner:string,accountId:string,before:JoinAccountState){
+ const db=database();
+ const row=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,accountId,'account').first<{data:string}>();
+ if(!row)return;
+ const next:Record<string,unknown>=JSON.parse(String(row.data));
+ for(const key of ['lastJoinAt','joinsDay','joinsToday'] as const){
+  if(before[key]===undefined)delete next[key];
+  else next[key]=before[key];
+ }
+ await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,accountId,'account').run();
+}
+
 /** Аккаунт годится для групп, которым предстоит вступление: готов сейчас или ждёт только паузу темпа. */
 async function accountCanJoinGroups(owner:string,adata:JoinAccountState|null){
  if(!adata)return false;
@@ -1333,6 +1357,18 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    }
    return reply({error:gate.message,accountUnavailable:true,reason:gate.reason,group:gdata},409);
   }
+  // Слот темпа и дневной счётчик занимаем до воркера условным UPDATE: параллельный клик по
+  // другой группе того же аккаунта проигрывает сравнение data и получает паузу темпа.
+  const reserved=await reserveJoinSlot(owner,gdata.accountId,String(arow.data),adata);
+  if(!reserved){
+   return reply({
+    error:`Аккаунт группы уже вступает в другую группу — подождите ${Math.ceil(JOIN_GAP_DEFAULT_SEC/60)} мин`,
+    waitSec:JOIN_GAP_DEFAULT_SEC,
+    nextJoinAt:new Date(Date.now()+JOIN_GAP_DEFAULT_SEC*1000).toISOString(),
+    pace:true,
+    group:gdata,
+   },429);
+  }
   try{
    const {payload}=await loadAccountSessionPayload(owner,gdata.accountId);
    const result=await workerPost('/join-group',{...payload,url:gdata.url});
@@ -1371,8 +1407,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    }
    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'group').run();
    if(spentJoin){
-    const bumped=applyQuotaCooldownIfExhausted({...adata,...bumpJoinCounters(adata)});
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(bumped),owner,gdata.accountId,'account').run();
+    // Счётчик уже поднят резервом; осталось уйти в отлёжку, если это вступление исчерпало лимит
+    const cooled=applyQuotaCooldownIfExhausted(reserved);
+    if(cooled!==reserved){
+     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(cooled),owner,gdata.accountId,'account').run();
+    }
+   }else{
+    await releaseJoinSlot(owner,gdata.accountId,adata);
    }
    if(flood){
     const m=/FloodWait\s+(\d+)/i.exec(String(result.error||''));
@@ -1410,6 +1451,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const frozen=workerLooksFrozen(null,msg);
    const next={...gdata,status:'error',error:msg.slice(0,500),joinState:'',joinStateAt:'',joinStateError:msg.slice(0,500),joinNextAt:new Date(Date.now()+JOIN_WORKER_ERROR_RETRY_MS).toISOString()};
    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'group').run();
+   await releaseJoinSlot(owner,gdata.accountId,adata);
    if(frozen){
     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...adata,status:'frozen',error:msg.slice(0,500)}),owner,gdata.accountId,'account').run();
    }

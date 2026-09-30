@@ -494,6 +494,9 @@ function WorkspaceHome(){
   const [taskLog,setTaskLog]=useState<{title:string;log:any[]}|null>(null);
   const inboxPollLock=useRef(false);
   const busyRef=useRef(false);
+  // Одно ручное вступление за раз: параллельные клики по группам одного аккаунта обходили бы темп.
+  const joinLock=useRef(false);
+  const [joinInFlight,setJoinInFlight]=useState(false);
   const lastInboxPollAt=useRef(0);
 
   const refreshStaff=useCallback(async()=>{
@@ -1622,6 +1625,9 @@ function WorkspaceHome(){
     }
     if(!telegramConnected){toast.error('Запустите: npm run dev');return}
     // Одна группа за клик, без очереди и ожиданий в браузере: отказ сервера (темп, дневной лимит) показываем как есть.
+    if(joinLock.current){toast.message('Дождитесь окончания текущего вступления');return}
+    joinLock.current=true;
+    setJoinInFlight(true);
     const name=String(item.data.name||'Группа');
     try{
       await persistJoinState(item.id,'joining');
@@ -1659,7 +1665,10 @@ function WorkspaceHome(){
       await persistJoinState(item.id,'',msg);
       toast.error(`${name}: ${msg}`);
     }finally{
-      await refresh();
+      try{await refresh()}finally{
+        joinLock.current=false;
+        setJoinInFlight(false);
+      }
     }
   }
 
@@ -2226,7 +2235,7 @@ function WorkspaceHome(){
               </div>
               <div className="groups-actions">
                 {canJoin&&(
-                  <Button size="sm" disabled={busy||!telegramConnected||!r.data.accountId} onClick={()=>joinGroup(r)}>
+                  <Button size="sm" disabled={busy||joinInFlight||!telegramConnected||!r.data.accountId} onClick={()=>joinGroup(r)}>
                     <Plug size={14}/>Вступить
                   </Button>
                 )}
@@ -3978,7 +3987,7 @@ function WorkspaceHome(){
                         ):(
                           <Button
                             size="sm"
-                            disabled={busy||!telegramConnected||!dbRec.data.accountId}
+                            disabled={busy||joinInFlight||!telegramConnected||!dbRec.data.accountId}
                             onClick={()=>{setCatalogOpen(false);void joinGroup(dbRec)}}
                           >Вступить</Button>
                         )
