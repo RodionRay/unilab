@@ -16,7 +16,13 @@ const TICK_BUDGET_MS = 210_000;
 const JOIN_TIMEOUT_MS = 90_000;
 const SCAN_TIMEOUT_MS = 150_000;
 const BOOT_TIMEOUT_MS = 20_000;
-const MAX_JOINS = 3;
+/**
+ * Join attempts per tick and how many run at once. The server picks a different ready account for each
+ * parallel join (CAS reservation, one per proxy), so 4 lanes = up to 4 accounts joining in parallel,
+ * each account still serial with its own randomized 6–15 min gap (lib/join-pacing).
+ */
+const MAX_JOINS = 8;
+const JOIN_CONCURRENCY = 4;
 const MAX_SCANS_AUTO = 6;
 const MAX_SCANS_FORCE = 10;
 
@@ -92,16 +98,23 @@ async function tryJoin(
       { action: "join_group", id },
       timeoutMs,
     );
-    if (j?.ok || j?.pending) return { joined: 1, rejoinId: "", error: "" };
+    if (j?.ok || j?.pending) return { joined: 1, rejoinId: "", error: "", stop: false };
     const error = String(j?.error || j?.result?.error || "не вступил").slice(0, 160);
-    if (j?.rejoinItem?.id) return { joined: 0, rejoinId: String(j.rejoinItem.id), error };
-    return { joined: 0, rejoinId: "", error };
+    if (j?.rejoinItem?.id) return { joined: 0, rejoinId: String(j.rejoinItem.id), error, stop: false };
+    return { joined: 0, rejoinId: "", error, stop: false };
   } catch (e) {
     const data = (e as any)?.data;
     const error = String(data?.error || (e as Error)?.message || e).slice(0, 160);
-    if (data?.rejoinItem?.id) return { joined: 0, rejoinId: String(data.rejoinItem.id), error };
+    if (data?.rejoinItem?.id) return { joined: 0, rejoinId: String(data.rejoinItem.id), error, stop: false };
     if (isAbort(e)) throw e;
-    return { joined: 0, rejoinId: "", error };
+    // Farm-wide stop: daily caps everywhere, or every account is inside its gap. A per-account
+    // FloodWait / PEER_FLOOD (retryOther) only takes that account out — the next group goes to another.
+    const stop =
+      !!data?.farmExhausted ||
+      !!data?.limitReached ||
+      (!!data?.accountBlind && !!data?.cooldown) ||
+      (!!data?.pace && !data?.retryOther);
+    return { joined: 0, rejoinId: "", error, stop, parked: !!data?.parked };
   }
 }
 
@@ -239,29 +252,39 @@ async function tickOwner(
     let stoppedEarly = false;
     const errors: string[] = [];
 
-    for (const item of rejoin.slice(0, MAX_JOINS)) {
-      if (left() < 50_000) {
-        stoppedEarly = true;
-        break;
-      }
-      try {
-        const r = await tryJoin(origin, cookie, item.id, opTimeout(JOIN_TIMEOUT_MS));
-        joined += r.joined;
-        if (r.error) errors.push(`join ${item.name || item.id.slice(0, 8)}: ${r.error}`);
-        if (r.rejoinId && r.rejoinId !== item.id) {
-          extraReassigned++;
-          pendingJoins.add(r.rejoinId);
-        }
-        pendingJoins.delete(item.id);
-      } catch (e) {
-        if (isAbort(e)) {
+    // The server returns the queue already filtered by relevance and sorted best-first.
+    const joinQueue = rejoin.slice(0, MAX_JOINS);
+    let attempted = 0;
+    let farmStopped = false;
+    const lane = async () => {
+      while (joinQueue.length && !farmStopped && !stoppedEarly) {
+        if (left() < 50_000) {
           stoppedEarly = true;
-          errors.push(`join timeout:${item.id.slice(0, 8)}`);
-          break;
+          return;
         }
-        errors.push(String((e as Error).message || e).slice(0, 120));
+        const item = joinQueue.shift()!;
+        attempted++;
+        try {
+          const r = await tryJoin(origin, cookie, item.id, opTimeout(JOIN_TIMEOUT_MS));
+          joined += r.joined;
+          if (r.error && !r.parked) errors.push(`join ${item.name || item.id.slice(0, 8)}: ${r.error}`);
+          if (r.rejoinId && r.rejoinId !== item.id) {
+            extraReassigned++;
+            pendingJoins.add(r.rejoinId);
+          }
+          pendingJoins.delete(item.id);
+          if (r.stop) farmStopped = true;
+        } catch (e) {
+          if (isAbort(e)) {
+            stoppedEarly = true;
+            errors.push(`join timeout:${item.id.slice(0, 8)}`);
+            return;
+          }
+          errors.push(String((e as Error).message || e).slice(0, 120));
+        }
       }
-    }
+    };
+    await Promise.all(Array.from({ length: JOIN_CONCURRENCY }, lane));
 
     const ids: string[] = Array.isArray(pack.groupIds) ? pack.groupIds : [];
     let scanned = 0;
@@ -349,10 +372,17 @@ async function tickOwner(
       /* ответы в ЛС — следующим тиком */
     }
 
+    const js = pack.joinStats || {};
+    const throughput =
+      js.capToday != null
+        ? ` · за сутки ${Number(js.joinsToday) || 0}/${Number(js.capToday) || 0}, готовы ${Number(js.readyNow) || 0} акк.` +
+          `, на подтверждении ${Number(js.review) || 0}, не вступать ${(Number(js.skip) || 0) + (Number(js.skipped) || 0)}`
+        : "";
     const summary =
-      `Автообход: вступил ${joined}/${Math.min(rejoin.length, MAX_JOINS)}, ` +
+      `Автообход: вступил ${joined}/${attempted} (${JOIN_CONCURRENCY} потока), ` +
       `в очереди ${rejoin.length}, возвращено ${Number(pack.restored) || 0}, ` +
       `просканировано ${scanned}, лидов +${added}` +
+      throughput +
       (errors.length ? ` · ошибки: ${errors.slice(0, 3).join(" | ")}` : "");
     try {
       await workspace(
