@@ -31,7 +31,7 @@ export function DemoPanels() {
             </tr>
             <tr>
               <td>
-                <b>Кто делает рассылку под ключ?</b>
+                <b>Посоветуйте CRM для отдела продаж</b>
                 <small>сегодня · 13:04</small>
               </td>
               <td>Маркетинг · чат агентств</td>
@@ -54,7 +54,7 @@ export function DemoPanels() {
       </article>
       <article className="us-demo-card">
         <header>
-          <span>Очередь вступлений</span>
+          <span>Группы и каналы</span>
           <em>демонстрационные данные</em>
         </header>
         <table>
@@ -70,7 +70,7 @@ export function DemoPanels() {
               <td>Подрядчики IT</td>
               <td>session · 02</td>
               <td>
-                <span className="us-chip wait">Холд 3:12</span>
+                <span className="us-chip wait">Ждёт вступления</span>
               </td>
             </tr>
             <tr>

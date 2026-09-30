@@ -10,7 +10,7 @@ export function MarketingHeader({
     <div className="us-chrome">
       <div className="us-topbar">
         <div className="us-container us-topbar-inner">
-          <span>Лиды из Telegram-чатов и очередь вступлений без спамблока</span>
+          <span>Лиды из Telegram-чатов и ответ из одной карточки</span>
           <a href="#contact">Обсудить задачу →</a>
         </div>
       </div>

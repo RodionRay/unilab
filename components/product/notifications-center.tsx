@@ -37,7 +37,7 @@ export function NotificationsList({
       <Empty className={compact ? "notify-empty-compact" : undefined}>
         <EmptyHeader>
           <EmptyTitle>Пока тихо</EmptyTitle>
-          <EmptyDescription>События кабинета появятся здесь: сканы, вступления, рассылки и ошибки.</EmptyDescription>
+          <EmptyDescription>События кабинета появятся здесь: сканы, вступления, ответы клиентов и ошибки.</EmptyDescription>
         </EmptyHeader>
       </Empty>
     );
