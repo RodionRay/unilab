@@ -6,7 +6,7 @@ import {
   explainLeadDecision,
   LEAD_SCORE_WARM,
   type LeadCoreSettings,
-} from "../lib/lead-core.ts";
+} from "../lib/lead-core";
 
 const settings: LeadCoreSettings = {
   keywords:

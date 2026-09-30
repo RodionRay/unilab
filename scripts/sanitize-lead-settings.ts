@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
-import { strongPlusTerms } from "../lib/lead-filter.ts";
-import { mergeKeywords } from "../lib/ai-keywords.ts";
+import { strongPlusTerms } from "../lib/lead-filter";
+import { mergeKeywords } from "../lib/ai-keywords";
 import { cleanStopLists } from "@/lib/lead-stopwords";
 
 const DB =
