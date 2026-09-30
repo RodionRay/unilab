@@ -28,14 +28,15 @@ niches / description / audience / subscriber count (`catalogEntryFor`, `membersF
 Bands (`RELEVANCE_AUTO_MIN` = 60, `RELEVANCE_REVIEW_MIN` = 35): **auto** joins by itself,
 **review** («На подтверждение») waits for the owner, **skip** («Не вступать») is not joined. Nothing is
 deleted: every parked group stays in the list with its score and reason. Settings without product
-config switch the filter off (everything auto).
+config put every group in review — never a blind auto-join.
 
 `joinGateFor(group)` is the single decision used by the server and the UI: joined/pending groups are
 always allowed and never rescored — so is a group whose membership was reset by an account swap
 (`joinRejoin`, set by heal reassign / restore-previous and by scan rotations, cleared on the next
 successful join; `seedRejoin` migrates older groups that have `joinedAccountId` but lost membership).
 A dead link and the owner's «не вступать» still win over a rejoin; rejoins are scored for queue order; owner decisions (`joinDecision`: `approved` / `skipped`) beat the
-score; a dead link (`joinDead`) is never auto-joined; a group without a score is parked, not joined blind.
+score (`joinWanted: true` from the earlier «only owner-queued groups» rule counts as approval);
+a dead link (`joinDead`) is never auto-joined; a group without a score is parked, not joined blind.
 Queue order: `compareJoinPriority` — approved first, then score, then subscribers.
 
 Where it applies (`app/api/workspace/route.ts`):
@@ -43,8 +44,10 @@ Where it applies (`app/api/workspace/route.ts`):
   (`refreshGroupRelevance`), queues only allowed groups, best first, clears the queue state of parked ones;
 - `join_group` scores a group that has no fresh score yet (added after the last heal, settings changed),
   answers `409 {parked:true}` for a parked group and never calls the worker for it;
-- `enqueue_joins` queues only allowed groups; `manual:true` (the owner pressed «Вступить», imported or
-  picked from the catalog) is an approval;
+- `enqueue_joins` is the owner's intent («Вступить», import, catalog) and approves the group
+  (`joinDecision: approved`, `joinWanted: true`); the client never sends automatic items (heal/rescan) there;
+- `planGroupHeal` receives `joinWanted` = the gate's decision, so its `not_wanted` branch parks
+  non-target groups (no queue, no account reassignment);
 - `set_group_join_decision {groupIds, decision: approved|skipped|''}` — owner decision, reversible.
   Like manual joins before this change, any workspace member with `groups` access may approve
   (`lib/security/workspace-authz.ts`); approving also clears a dead-link mark (explicit retry);
@@ -71,7 +74,8 @@ Parallel across accounts, serial per account and per proxy.
 | failed attempt that reached Telegram (private, banned, dead link, worker error) | half a gap + proxy spacing, not counted in the cap (`joinAttemptPatch`) | a queue of bad links must not turn into back-to-back calls |
 
 `join_group` picks the group's own account if ready, else the soonest ready farm account
-(`planJoinFarm`), and reserves it with a compare-and-swap on the account row (`reserveJoinAccount`) so
+(`planJoinFarm`; accounts whose proxy record is missing or inactive are excluded — the
+`evaluateAccountJoinReadiness` rule), and reserves it with a compare-and-swap on the account row (`reserveJoinAccount`) so
 parallel joins never share an account or a proxy. The cron (`app/api/cron/auto-rescan/route.ts`) runs
 up to 4 joins at once (`JOIN_CONCURRENCY`, ≤ 8 per tick) and stops launching joins only on farm-wide
 answers: `farmExhausted` / `limitReached` (caps everywhere), every account resolve-blind, or `pace`
