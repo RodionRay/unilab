@@ -24,6 +24,8 @@ core + AI pipeline as Telegram, in the same Leads view and Telegram notification
 - Scope: BOTH global keyword search (`newsfeed.search`) AND added niche groups (wall posts + comments + board topics).
 - Replies: search only in M1; the lead card links to the post/comment in VK, the owner replies by hand.
 - Token: pasted manually by the user, stored sealed like Telegram sessions; spike checks which methods it allows.
+- Accounts (owner, 2026-10-01): mostly bought on a marketplace and added in bulk → bulk import, proxy per account,
+  rotation across the account pool (like the Telegram farm).
 
 ## Context — existing, DO NOT recreate
 - Storage: `db/schema.ts::records` (owner, kind, data JSON, secret sealed); `lib/server-store.ts::seal/unseal`.
@@ -38,8 +40,10 @@ core + AI pipeline as Telegram, in the same Leads view and Telegram notification
 - Identity: `lib/record-identity.ts` (`canonicalizeTgUrl`, `duplicateReason`). VK OAuth login only: `lib/oauth.ts`.
 
 ## Design decisions
-- D1 VK client in TypeScript inside the web app (`lib/vk/*`): VK API is plain HTTPS, no Telethon-style session;
-  the Python worker stays Telegram-only.
+- D1 Transport in the Python worker, logic in TS: bought accounts need their own proxy, and Cloudflare workerd `fetch`
+  cannot use SOCKS/HTTP proxies. New worker endpoint `/vk-call` (`telegram-worker/src/vk_api.py`, urllib +
+  PySocks `sockshandler`, already pinned) runs a batch of VK calls through the account's proxy; parsing, keys,
+  limits, scoring stay in `lib/vk/*` (TS).
 - D2 New record kinds `vk_account` (token in `secret`) and `vk_source` (`type: 'search' | 'group'`, cursor state)
   so Telegram pickers/limits (`lib/telegram-accounts.ts`) never see VK rows. Leads stay kind `lead` with
   `platform: 'vk'`; a missing `platform` means `'telegram'` (no data migration).
@@ -49,10 +53,17 @@ core + AI pipeline as Telegram, in the same Leads view and Telegram notification
   / `vk:board<group_id>_<topic_id>_<comment_id>`, so search and group scans never duplicate one item.
 
 ## Acceptance criteria
-- REQ-1 WHEN the user saves a VK token THE SYSTEM SHALL validate it (`users.get`), store it only sealed in
-  `records.secret`, show the VK name/id, and never return the token to the client.
-- REQ-2 IF the token is invalid/expired (VK error 5) THEN THE SYSTEM SHALL mark the `vk_account` `error` with the
-  reason, stop VK scans for the workspace, and show the state in the Accounts view.
+- REQ-1 WHEN the user pastes a list of VK accounts (one per line: `token` or `login:password:token`, the marketplace
+  format; password is discarded, never stored) THE SYSTEM SHALL validate each token (`users.get`) through its proxy,
+  store it only sealed in `records.secret`, skip duplicates (same `vkUserId`), and report per line
+  added / duplicate / invalid with the reason; the token is never returned to the client.
+- REQ-1a WHEN accounts are imported THE SYSTEM SHALL bind each to a proxy (chosen proxy, or round-robin over active
+  `proxy` records, ≤ N accounts per proxy, default 3); IF no active proxy is available THEN the account is saved
+  `no_proxy` and is not used for scans.
+- REQ-1b WHEN a VK source is scanned THE SYSTEM SHALL pick an active account from the pool (least used today,
+  not in cooldown) and fail over to the next one on errors 5/6/9/14/29 within the same run.
+- REQ-2 IF the token is invalid/expired (VK error 5) THEN THE SYSTEM SHALL mark that `vk_account` `error` with the
+  reason, exclude it from the pool, and show the state in the Accounts view; scans stop only when no active account is left.
 - REQ-3 WHEN a VK scan runs in `search` mode THE SYSTEM SHALL query `newsfeed.search` for each strong keyword from
   settings, posts not older than `scanDepthDays`, continuing from the stored cursor (`start_time`/`start_from`).
 - REQ-4 WHEN the user adds a VK group (URL `vk.com/<screen_name>` / `club<id>` / `public<id>`) THE SYSTEM SHALL resolve
@@ -73,16 +84,18 @@ core + AI pipeline as Telegram, in the same Leads view and Telegram notification
   (default 500), reset at Moscow midnight like Telegram counters.
 - REQ-11 (UI) Leads view SHALL show a platform badge (Telegram/VK), a platform filter (all/Telegram/VK) next to the
   group filter, and «Открыть в VK» on VK leads instead of the send controls; Telegram leads look unchanged.
-- REQ-12 (UI) Accounts view SHALL have a VK section (add token, status, last error, delete); Groups view SHALL list
+- REQ-12 (UI) Accounts view SHALL have a VK section (bulk import textarea with per-line result, proxy binding, status,
+  last error, today's usage, bulk delete); Groups view SHALL list
   VK sources (search source auto-created on first token; groups added by URL) with last scan time and error.
   States: empty / loading / error / success; 390 / 768 / 1440.
 - REQ-13 Existing Telegram leads/scan behaviour SHALL be unchanged: the full existing vitest + Python suites stay green.
 
 ## Contracts
-- `vk_account.data`: `{ vkUserId, name, status: 'active'|'error'|'cooldown', error?, cooldownUntil?, counters:{day, searchCalls} }`; `secret`: sealed token.
+- `vk_account.data`: `{ vkUserId, name, proxyId, status: 'active'|'error'|'cooldown'|'no_proxy', error?, cooldownUntil?, counters:{day, calls, searchCalls} }`; `secret`: sealed token.
+- Worker `POST /vk-call` (Bearer `TG_WORKER_TOKEN`): `{ token, proxy, calls:[{method, params}] }` → `{ results:[{ok, response?, error:{code,msg}?}] }`; ≤25 calls per request, 3 rps pacing inside.
 - `vk_source.data`: `{ type, title, vkGroupId?, screenName?, cursor:{ searchStartTime?, wallMaxPostId?, boardSince? }, lastScanAt, scanLockUntil, error?, aiRejected[], leadTombstones[] }`.
 - `lead.data` additions: `platform`, `msgKey` (D4), `url`, `vkSourceId`; Telegram leads keep `tgMsgId`.
-- `R` actions: `vk_account_save`, `vk_account_delete`, `vk_source_add`, `vk_source_delete`, `scan_vk_source`; read
+- `R` actions: `vk_accounts_import`, `vk_account_delete`, `vk_account_set_proxy`, `vk_source_add`, `vk_source_delete`, `scan_vk_source`; read
   actions extend the existing workspace list payload.
 
 ## NFRs
@@ -94,7 +107,8 @@ core + AI pipeline as Telegram, in the same Leads view and Telegram notification
 | id | assumption | evidence | if wrong → | conf |
 |---|---|---|---|---|
 | A-1 | A user token can call `newsfeed.search`, `wall.get`, `wall.getComments`, `board.getTopics/getComments` | VK API docs | spike S0 finds the minimal token scopes or drops a mode | med |
-| A-2 | Cloudflare workerd `fetch` reaches `api.vk.com` from the stand/prod | the app already calls DeepSeek/Telegram via fetch | move the client into the worker | high |
+| A-2 | Marketplace accounts come as `login:password:token` with a long-lived (offline) token | typical marketplace format | add a cookie/password auth flow in M2 | med |
+| A-6 | Bought accounts get banned faster for read-only API use without a proxy | Telegram farm experience | — (proxy is mandatory) | med |
 | A-3 | `newsfeed.search` daily cap ≈ 1000 per token | community reports, not official | lower the default cap | low |
 | A-4 | VK leads need no reply flow in M1 | owner answer | — | high |
 | A-5 | A live token for S0 comes from the owner's VK account | owner said GO | S0 runs on recorded fixtures, live check = HUMAN_NEEDED | med |
@@ -108,9 +122,11 @@ Milestone M1 = read-only VK leads. Risks first.
 - **T1 shared ingest refactor (wave 1)** — extract `ingestLeadCandidates` from `R` `scan_group` into
   `lib/processes/lead-ingest.ts`; generalise `leadMessageFingerprint` to accept a `msgKey`. REQ-13, REQ-6.
   Verify: `npm test` all green, no Telegram test changed. Owns: `R` (scan_group part), `lib/lead-filter.ts`, `lib/processes/`.
-- **T2 VK client + limiter (wave 1, [P] with T1)** — `lib/vk/client.ts` (version, timeout, error mapping), `lib/vk/limiter.ts`
-  (3 rps, daily cap, cooldown), `lib/vk/parse.ts` (post/comment/board → candidate + D4 key + deep link), `lib/vk/url.ts`.
-  REQ-9, REQ-10, REQ-4 (parse). Verify: unit tests on fixtures. Owns: `lib/vk/*`, `tests/vk-*.test.ts`.
+- **T2 VK transport + client + pool (wave 1, [P] with T1)** — worker `vk_api.py` + `/vk-call` route (proxy, pacing,
+  error passthrough; Python unittest with a stub server); `lib/vk/client.ts` (version, error mapping, via `workerPost`),
+  `lib/vk/pool.ts` (account pick, failover, daily caps, cooldown), `lib/vk/import.ts` (line parser), `lib/vk/parse.ts`
+  (post/comment/board → candidate + D4 key + deep link), `lib/vk/url.ts`. REQ-1 (parse), 1a, 1b, 9, 10.
+  Verify: unit tests on fixtures. Owns: `lib/vk/*`, `telegram-worker/src/vk_api.py`, worker route map, `tests/vk-*`.
 - **T3 VK scan + storage + cron (wave 2)** — record kinds, `R` VK actions, `scan_vk_source` via T1 ingest, notify mark,
   auto-rescan loop. REQ-1..8. Verify: route-level tests with `tests/helpers/workspace-harness.ts` + mocked `fetch`
   (search + group, rerun = 0 new leads, concurrent run = 1 lead, error 5/6/14 paths). Owns: `R` VK actions, cron route.
@@ -127,7 +143,8 @@ REQ-1..10, 13 → vitest (route + unit, fixtures from S0). REQ-11, 12 → ui-qa 
 Live VK (real token, ≥1 real lead from search and from a group) → stand, evidence = lead record + screenshot.
 
 ## Decision log
-- 2026-10-01 TS client in the web app, separate kinds, platform-wide dedup key (D1–D4).
+- 2026-10-01 separate kinds, platform-wide dedup key (D2–D4).
+- 2026-10-01 D1 revised: bulk bought accounts need per-account proxy; workerd fetch has no proxy → transport in the Python worker.
 
 ## Surprises
 - (S0 fills this)
