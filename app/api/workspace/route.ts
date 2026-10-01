@@ -1,7 +1,7 @@
 import {getSessionUser} from '@/lib/auth';
 import {GROUP_CATALOG,isCatalogPlaceholderUrl} from '@/lib/group-catalog';
 import {JOIN_SUCCESS_PATCH,type JoinAccountState,type JoinProxyState,evaluateAccountJoinReadiness,isJoinFarmCandidate,JOIN_WORKER_ERROR_RETRY_MS,accountBlindPatch,classifyJoinFailure,deadLinkPatch,isAccountBlindResult,isAccountResolveBlind,isUsernameMissingResult,joinFailurePatch,missingAccountsOf,planGroupHeal,recordUsernameMissing,sanitizeJoinStateError,seedMissingAccounts,tmeMissingPatch} from '@/lib/processes/join-flow';
-import {probeTmeUsername,probeableUsername,tmeProbeDue,type TmeProbeResult} from '@/lib/tme-probe';
+import {probeTmeUsername,probeableUsername,tmeMissingMessage,tmeProbeDue,type TmeProbeResult} from '@/lib/tme-probe';
 import {buildRelevanceProfile,compareJoinPriority,joinGateFor,rescoreGroup,seedRejoin,type JoinGateState} from '@/lib/join-relevance';
 import {JOIN_RESERVE_MS,accountJoinWaitSec,channelsTooMuchPatch,joinAttemptPatch,farmThroughput,joinErrorPatch,joinFloodPatch,joinSuccessPatch,planJoinFarm,type FarmAccount} from '@/lib/join-pacing';
 import {database,seal,unseal} from '@/lib/server-store';
@@ -1337,8 +1337,8 @@ const DEAD_GROUP_PROBES_PER_TICK=4;
 
 /**
  * Уборка мёртвых групп — только тик (heal, право записи групп), не GET. Подтверждённые t.me без лидов
- * удаляются; группы, которые ферма «не видит», проверяются через t.me: не больше probeBudget за тик,
- * давно не проверенные первыми (ротация), unknown ждёт 30 мин — сбой сети не смерть.
+ * удаляются; остальные невступившие @username-группы проверяются через t.me: не больше probeBudget за тик,
+ * сначала не проверенные, затем давно проверенные (ротация); back-off — tmeProbeDue. Сбой сети не смерть.
  */
 async function purgeDeadGroups(owner:string,opts:{probeBudget:number}){
  const db=database();
@@ -1351,7 +1351,8 @@ async function purgeDeadGroups(owner:string,opts:{probeBudget:number}){
   try{d=JSON.parse(String(row.data)) as GroupData}catch{continue}
   if(groupLooksJoined(d))continue;
   if(d.joinDead&&d.tmeMissing)confirmed.push({id:String(row.id),d});
-  else if((d.joinDead||d.usernameMissing)&&tmeProbeDue(d,now)&&probeableUsername(String(d.url||'')))suspects.push({id:String(row.id),d});
+  // Любая невступившая @username-группа (в т.ч. «На подтверждение» / «Не вступать»): мёртвая не должна висеть в списке.
+  else if(tmeProbeDue(d,now)&&!isCatalogPlaceholderUrl(String(d.url||''))&&probeableUsername(String(d.url||'')))suspects.push({id:String(row.id),d});
  }
  let removed=0;
  for(const {id,d} of confirmed){
@@ -1906,6 +1907,16 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    return reply({ok:true,result:{ok:true,join:next.membership==='pending'?'requested':'already'},group:next,skipped:true});
   }
   if(!alreadyIn){
+   // До вступления и до фильтра релевантности: t.me без аккаунта. «Нет такого чата» — не тратим попытки фермы; сбой сети — вступаем как обычно.
+   if(tmeProbeDue(gdata)&&probeableUsername(String(gdata.url||''))){
+    const probe=await probeGroupTme(gdata,{sync:true});
+    if(probe==='dead'){
+     const dead=await settleDeadGroup(owner,id,gdata);
+     return reply({error:String(dead.group.error),parked:true,deadLink:true,gate:'dead',removed:dead.removed,group:dead.group},409);
+    }
+    gdata=withTmeProbe(gdata,probe);
+    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(gdata),owner,id,'group').run();
+   }
    // Группа ещё не оценена (добавлена после автопочинки) или настройки менялись — оцениваем сейчас.
    const scored=rescoreGroup(gdata,await loadRelevanceProfile(owner));
    if(scored)gdata={...gdata,joinRelevance:scored.joinRelevance};
@@ -1920,16 +1931,6 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     return reply({error:`${gate.label}: ${gate.reason||'группа вне автоочереди'}`,parked:true,notWanted:true,gate:gate.state,group:gdata},409);
    }
    if(scored)await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(gdata),owner,id,'group').run();
-   // До первого вступления: t.me без аккаунта. «Нет такого чата» — не тратим попытки фермы; сбой сети — вступаем как обычно.
-   if(tmeProbeDue(gdata)&&probeableUsername(String(gdata.url||''))){
-    const probe=await probeGroupTme(gdata,{sync:true});
-    if(probe==='dead'){
-     const dead=await settleDeadGroup(owner,id,gdata);
-     return reply({error:String(dead.group.error),parked:true,deadLink:true,gate:'dead',removed:dead.removed,group:dead.group},409);
-    }
-    gdata=withTmeProbe(gdata,probe);
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(gdata),owner,id,'group').run();
-   }
   }
   const farm=await loadFarmAccounts(owner);
   let adata:any=null;
@@ -5390,6 +5391,11 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    }
   }catch{/* */}
  }
+ // Сохранение из каталога (source catalog/tgstat-*) не возвращает чат с надгробием: у клиента могли быть устаревшие ключи.
+ const catalogSave=kind==='group'&&/^(?:catalog|tgstat-)/.test(String((b.data as {source?:unknown}).source||''));
+ if(catalogSave&&!existing&&(await loadDeadGroupKeys(owner)).includes(telegramEntityKey(String(data.url||'')))){
+  return reply({error:tmeMissingMessage(probeableUsername(String(data.url||''))||String(data.url||'')),deadLink:true},409);
+ }
  const refId=kind==='account'?data.proxyId:kind==='group'?data.accountId:null;if(refId){const ref=await db.prepare('SELECT id FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,refId,kind==='account'?'proxy':'account').first();if(!ref)return reply({error:'Выбранное подключение не найдено'},400)}
  if(kind==='account'&&!existing){
   const uname=String(data.username||'').replace(/^@/,'').trim();
@@ -5403,7 +5409,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
  if(existing)await db.prepare('UPDATE records SET data=?,secret=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(data),secret,owner,id,kind).run();
  else await db.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)').bind(id,owner,kind,JSON.stringify(data),secret,new Date().toISOString()).run();
  // Владелец сам добавил чат (или сменил ссылку) — снимаем надгробие этой ссылки: undo удаления мёртвой группы.
- if(kind==='group'){let prevUrl='';try{prevUrl=existing?canonicalizeTgUrl(String(JSON.parse(String(existing.data)).url||'')):''}catch{/* */}if(prevUrl!==data.url)await forgetDeadGroup(owner,String(data.url||''))}
+ if(kind==='group'&&!catalogSave){let prevUrl='';try{prevUrl=existing?canonicalizeTgUrl(String(JSON.parse(String(existing.data)).url||'')):''}catch{/* */}if(prevUrl!==data.url)await forgetDeadGroup(owner,String(data.url||''))}
  let provision:any=null;
  if(!existing&&kind==='account'&&secret&&b.provisionUsername===true){
   try{

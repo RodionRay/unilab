@@ -2621,6 +2621,7 @@ function WorkspaceHome(){
             scanMatched:0,
             rating:0,
             lastScanned:'',
+            source:'catalog',
           })});
           added++;
           if(saved.id){

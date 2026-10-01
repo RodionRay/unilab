@@ -243,6 +243,47 @@ describe('workspace API: dead groups are never recommended or joined',()=>{
     expect(tmeUsernames(net.tme()).sort()).toEqual(['suspect_1_test','suspect_2_test','suspect_3_test','suspect_4_test']);
   });
 
+  it('an untried @username group parked for review is probed on the tick: dead → removed, live → untouched',async()=>{
+    addRecord(G_DEAD,'group',unjoined('Ghost','https://t.me/ghost_chat_test',{joinDecision:'',joinWanted:false,joinState:''}));
+    addRecord(G_LIVE,'group',unjoined('Live','https://t.me/live_chat_test',{joinDecision:'',joinWanted:false,joinState:''}));
+    stubNet({tme:'dead'});
+    vi.stubGlobal('fetch',vi.fn(async(url:string)=>{
+      const u=String(url);
+      if(u==='https://t.me/ghost_chat_test')return new Response(MISSING_PAGE);
+      if(u==='https://t.me/live_chat_test')return new Response(LIVE_PAGE);
+      throw new Error('offline');
+    }));
+
+    await POST(postRequest({action:'heal_dead_group_accounts'}));
+
+    expect(groupRow(G_DEAD)).toBeNull();
+    expect(tombstones().map(t=>t.key)).toEqual(['t.me/ghost_chat_test']);
+    expect(groupRow(G_LIVE)).toMatchObject({name:'Live',tmeProbe:'live'});
+    expect(groupRow(G_LIVE)!.joinDead).toBeFalsy();
+  });
+
+  it('join_group probes before the relevance gate: a parked dead chat is removed, not just parked',async()=>{
+    addRecord(G_DEAD,'group',unjoined('Ghost','https://t.me/ghost_chat_test',{joinDecision:'',joinWanted:false}));
+    const net=stubNet({tme:'dead'});
+
+    const data=await json(await POST(postRequest({action:'join_group',id:G_DEAD})));
+
+    expect(data).toMatchObject({deadLink:true,removed:true});
+    expect(net.joins()).toHaveLength(0);
+    expect(groupRow(G_DEAD)).toBeNull();
+  });
+
+  it('a catalog save of a tombstoned chat is refused and keeps the tombstone (stale client keys)',async()=>{
+    addTombstone('t.me/ghost_chat_test');
+    stubNet({tme:'dead'});
+
+    const res=await POST(postRequest({action:'save',kind:'group',data:{name:'Ghost',url:'https://t.me/ghost_chat_test',accountId:ACCOUNT_ID,source:'catalog'}}));
+
+    expect(res.status).toBe(409);
+    expect(tombstones()).toHaveLength(1);
+    expect(groupsWithKey('t.me/ghost_chat_test')).toBe(0);
+  });
+
   it('re-adding a removed chat by hand clears its tombstone (undo)',async()=>{
     addRecord(G_DEAD,'group',unjoined('Ghost','https://t.me/ghost_chat_test'));
     stubNet({tme:'dead'});

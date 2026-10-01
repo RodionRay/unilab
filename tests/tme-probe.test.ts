@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  TME_LIVE_RECHECK_MS,
   TME_UNKNOWN_RETRY_MS,
   classifyTmePage,
   isDeadTmePage,
@@ -127,13 +128,15 @@ describe("helpers", () => {
     expect(probeableUsername("https://t.me/joinchat/AbCdEf123")).toBeNull();
   });
 
-  it("an unknown probe waits 30 minutes; live and dead are final", () => {
+  it("an unknown probe waits 30 minutes, a live one 7 days; dead is final", () => {
     const now = Date.parse("2026-10-01T12:00:00Z");
     const at = (ms: number) => new Date(now - ms).toISOString();
     expect(tmeProbeDue({}, now)).toBe(true);
     expect(tmeProbeDue({ tmeProbe: "unknown", tmeProbeAt: at(TME_UNKNOWN_RETRY_MS - 1000) }, now)).toBe(false);
     expect(tmeProbeDue({ tmeProbe: "unknown", tmeProbeAt: at(TME_UNKNOWN_RETRY_MS + 1000) }, now)).toBe(true);
     expect(tmeProbeDue({ tmeProbe: "live", tmeProbeAt: at(1000) }, now)).toBe(false);
+    expect(tmeProbeDue({ tmeProbe: "live", tmeProbeAt: at(TME_LIVE_RECHECK_MS + 1000) }, now)).toBe(true);
+    expect(TME_LIVE_RECHECK_MS).toBe(7 * 24 * 60 * 60_000);
     expect(TME_UNKNOWN_RETRY_MS).toBe(30 * 60_000);
   });
 

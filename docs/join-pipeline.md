@@ -119,10 +119,11 @@ links and reserved first path segments (`addlist`, `share`, `iv`, `proxy`, `adds
 drops a group.
 
 The group stores `tmeProbe` (`live` / `unknown`; `dead` with `tmeMissing`) and `tmeProbeAt`.
-`tmeProbeDue`: live and dead are final; unknown is retried no sooner than 30 min (`TME_UNKNOWN_RETRY_MS`).
+`tmeProbeDue` (callers pass non-member groups only; members are never probed): dead is final; unknown is
+retried after 30 min (`TME_UNKNOWN_RETRY_MS`), live after 7 days (`TME_LIVE_RECHECK_MS`).
 
-- `join_group`: before joining a public @username with a due probe, the server probes t.me once,
-  synchronously, timeout 4 s. Dead → `settleDeadGroup`, answer `409 {parked, deadLink, gate:'dead', removed}`,
+- `join_group`: before joining a public @username with a due probe — and before the relevance gate, so a
+  parked group is checked too — the server probes t.me once, synchronously, timeout 4 s. Dead → `settleDeadGroup`, answer `409 {parked, deadLink, gate:'dead', removed}`,
   no account is reserved or spent. Live / unknown → stored on the group, the join goes on.
 - `settleDeadGroup` (route): `tmeMissingPatch` marks the group `joinDead` + `tmeMissing` with the copy
   «Чат @x не существует в Telegram» (also the gate reason in `joinGateFor`). Without leads
@@ -130,14 +131,22 @@ The group stores `tmeProbe` (`live` / `unknown`; `dead` with `tmeMissing`) and `
   (`kind='dead_group'`, `data.key` = `telegramEntityKey(url)`) is inserted only if none exists for that key.
 - `purgeDeadGroups` runs only on the heal tick (`healDeadGroupAccounts`: cron, `rescan_groups`,
   `heal_dead_group_accounts` — actions with groups write access), never on `GET`. It deletes confirmed
-  dead groups without leads and probes up to 4 groups with `joinDead` / `usernameMissing` and a due probe,
-  least recently probed first (rotation), in parallel. A group the farm «does not see» but t.me shows
+  dead groups without leads and probes up to 4 non-member public @username groups with a due probe (any
+  band: auto, «На подтверждение», «Не вступать», witness-dead; catalog placeholders excluded), never-probed
+  first, then the least recently probed (rotation), in parallel. A group the farm «does not see» but t.me shows
   alive keeps the witness rule of §3.
 - Tombstones: `GET` returns `deadGroupKeys` (not in `records`) only to actors who can see groups
   (`lib/security/workspace-authz.ts::canViewKind`), else `[]`. The catalog dialog hides and never saves
-  those chats; `import_catalog` skips them.
-- Undo: saving a group (new, or with a changed link) whose link has a tombstone deletes the tombstone
-  (`forgetDeadGroup`); the next join probes t.me again. Approving a kept dead group clears
+  those chats; `import_catalog` skips them; `save` of a new group with `source` `catalog` / `tgstat-*`
+  (the catalog dialog sends `source: 'catalog'`) and a tombstoned link answers `409 {deadLink}` and keeps
+  the tombstone — a client with stale `deadGroupKeys` cannot bring the chat back.
+- Any other recommended / catalog view must filter tombstones the same way (`deadGroupKeys`,
+  `telegramEntityKey`). Merge note: `lib/catalog-recommend.ts::buildRecommendedView` on
+  `task/catalog-recommended-2026-10-01` does not know about tombstones yet — whoever merges it must
+  filter its result by `deadGroupKeys`.
+- Undo: a manual save (no catalog `source`) of a new group, or a link change, whose link has a tombstone
+  deletes the tombstone (`forgetDeadGroup`); the next join probes t.me again. A client without the
+  `source` field counts as manual; if the chat is still dead the next probe removes it again. Approving a kept dead group clears
   `tmeMissing` / `tmeProbe` / `tmeProbeAt` (explicit retry).
 - Catalog upkeep: `npx tsx scripts/probe-catalog.ts [--json]` probes every catalog username
   (concurrency ≤ 4) and lists dead / unknown ones for removal from `lib/group-catalog.ts`.

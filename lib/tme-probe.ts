@@ -66,11 +66,18 @@ export const TME_UNKNOWN_RETRY_MS = 30 * 60_000;
 
 export type TmeProbeState = { tmeProbe?: unknown; tmeProbeAt?: unknown };
 
-/** Probe needed: never probed, or the last answer was «unknown» long enough ago. Live/dead are final. */
+/** A chat seen alive can be deleted later: non-member groups are re-checked after this. */
+export const TME_LIVE_RECHECK_MS = 7 * 24 * 60 * 60_000;
+
+/**
+ * Probe needed (callers pass non-member groups only): never probed; «unknown» older than 30 min;
+ * «live» older than 7 days. «dead» is final (the group is removed or kept dead with leads).
+ */
 export function tmeProbeDue(group: TmeProbeState, now = Date.now()): boolean {
-  if (group.tmeProbe === "live" || group.tmeProbe === "dead") return false;
+  if (group.tmeProbe === "dead") return false;
   const at = Date.parse(String(group.tmeProbeAt || ""));
-  return !Number.isFinite(at) || now - at >= TME_UNKNOWN_RETRY_MS;
+  if (!Number.isFinite(at)) return true;
+  return now - at >= (group.tmeProbe === "live" ? TME_LIVE_RECHECK_MS : TME_UNKNOWN_RETRY_MS);
 }
 
 export type TmeFetch = (
