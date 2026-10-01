@@ -91,6 +91,7 @@ def _resolving(entity):
 
 
 def assert_funnel_invariant(case: unittest.TestCase, res: dict[str, Any]) -> None:
+    """REQ-13 left side; the app keeps the worker's `fetched` (lib/leads/pipeline.ts::workerFetched)."""
     case.assertEqual(
         res["fetched"],
         len(res["messages"]) + res["skippedNotUser"] + res["skippedOld"] + res["skippedError"],
@@ -111,6 +112,7 @@ class ScanRawTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([m["message"] for m in res["messages"]], texts)
         self.assertNotIn("skippedMinus", res)
         self.assertNotIn("skippedKw", res)
+        assert_funnel_invariant(self, res)
 
     async def test_bot_and_channel_senders_count_as_not_user(self) -> None:
         client = FakeClient({GROUP.id: [
@@ -154,6 +156,7 @@ class ScanRawTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(res["messages"]), 80)
         self.assertEqual(res["cursor"], "80")
         self.assertEqual(res["fetched"], 80)
+        assert_funnel_invariant(self, res)
 
     async def test_first_scan_reads_one_day_regardless_of_days(self) -> None:
         client = FakeClient({GROUP.id: [
@@ -168,6 +171,7 @@ class ScanRawTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("offset_id", client.calls[0])
         self.assertEqual([m["tgMsgId"] for m in res["messages"]], ["2"])
         self.assertEqual(res["cursor"], "2")
+        assert_funnel_invariant(self, res)
 
     async def test_later_scan_reads_forward_from_cursor(self) -> None:
         client = FakeClient({GROUP.id: [FakeMsg(i, f"текст {i}") for i in range(1, 6)]})
@@ -177,6 +181,7 @@ class ScanRawTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.calls[0]["offset_id"], 3)
         self.assertTrue(client.calls[0]["reverse"])
         self.assertEqual([m["tgMsgId"] for m in res["messages"]], ["4", "5"])
+        assert_funnel_invariant(self, res)
 
     async def test_comment_fallback_ids_never_move_cursor(self) -> None:
         client = FakeClient(

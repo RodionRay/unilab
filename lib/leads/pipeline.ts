@@ -111,10 +111,18 @@ function clockLabel(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(11, 16);
 }
 
-function runLine(nowMs: number, label: string, c: FunnelCounts, error: string, skip: string): string {
+function runLine(nowMs: number, label: string, c: FunnelCounts, error: string, skip: string, note = ""): string {
   const dropped = c.skippedErrorApp + c.old + c.short + c.duplicate + c.stopword;
-  const tail = error ? " · ошибка судьи" : skip ? ` · судья пропущен: ${skip}` : "";
+  const tail = (error ? " · ошибка судьи" : skip ? ` · судья пропущен: ${skip}` : "") + (note ? ` · ${note}` : "");
   return `${clockLabel(nowMs)} · ${label} · собрано ${c.fetched} · отдано ${c.returned} · отсеяно ${dropped} · судья ${c.judged} · лиды ${c.leads}${tail}`.slice(0, RUN_LINE_MAX);
+}
+
+/** Worker `fetched` when it reported one, else the sum of its counters (REQ-13 left side). */
+function workerFetched(worker: WorkerScanResult, counted: number): number {
+  const reported = Number(worker.fetched);
+  return worker.fetched !== undefined && worker.fetched !== null && Number.isFinite(reported) && reported >= 0
+    ? Math.floor(reported)
+    : counted;
 }
 
 /**
@@ -212,8 +220,10 @@ export async function runGroupScan(deps: GroupScanDeps): Promise<GroupScanResult
   counts.skippedOldWorker = count(deps.worker.skippedOld);
   counts.skippedError = count(deps.worker.skippedError);
   counts.returned = messages.length;
-  // REQ-13 holds by construction; the worker's own `fetched` is only shown when it disagrees.
-  counts.fetched = counts.skippedNotUser + counts.skippedOldWorker + counts.skippedError + counts.returned;
+  // REQ-13: the worker's own `fetched` is kept; a worker that breaks the invariant is shown, not hidden.
+  const counted = counts.skippedNotUser + counts.skippedOldWorker + counts.skippedError + counts.returned;
+  counts.fetched = workerFetched(deps.worker, counted);
+  const mismatch = counts.fetched !== counted ? `расхождение: воркер собрал ${counts.fetched}, по счётчикам ${counted}` : "";
   const samples = { ...filtered.samples };
 
   const leads: NewLead[] = [];
@@ -231,14 +241,12 @@ export async function runGroupScan(deps: GroupScanDeps): Promise<GroupScanResult
   counts.leads = leads.length;
   counts.rejected = rejectedIds.length;
 
-  const workerFetched = count(deps.worker.fetched);
-  const label = deps.group.name + (workerFetched && workerFetched !== counts.fetched ? ` (worker fetched ${workerFetched})` : "");
   const skip = judge.unjudged[0]?.step === "judgeSkipped" ? judge.unjudged[0].reason : "";
   return {
     leads,
     aiRejected: rememberAiRejects(active, rejectedIds, sig, now),
     ...decideCursor(deps, judge.judged.length, judge.unjudged),
-    delta: { counts, samples, run: runLine(now, label, counts, judge.error, skip) },
+    delta: { counts, samples, run: runLine(now, deps.group.name, counts, judge.error, skip, mismatch) },
     judgeError: judge.error,
   };
 }

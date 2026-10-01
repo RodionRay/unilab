@@ -64,6 +64,31 @@ describe('runGroupScan', () => {
     expect(r.delta.samples.leads?.[0]?.text).toContain('сообщение номер 10');
   });
 
+  it('keeps the worker-reported fetched; a mismatch is shown in Russian in the run line', async () => {
+    const {llm} = scriptedLlm([answerAll(() => ({isLead: false, score: 1}))]);
+    const msgs = [makeMessage(10), makeMessage(11)];
+    const r = await runGroupScan(
+      groupDeps(msgs, llm, {worker: {messages: msgs, fetched: 7, skippedNotUser: 1, skippedOld: 1, skippedError: 1, cursor: '900'}}),
+    );
+    expect(r.delta.counts.fetched).toBe(7);
+    expect(r.delta.run).toMatch(/расхождение: воркер собрал 7, по счётчикам 5/);
+    expect(r.delta.run).not.toMatch(/worker/);
+  });
+
+  it('a consistent worker answer keeps the invariant and adds no note; a missing fetched falls back to the sum', async () => {
+    const {llm} = scriptedLlm([answerAll(() => ({isLead: false, score: 1}))]);
+    const msgs = [makeMessage(10), makeMessage(11)];
+    const ok = await runGroupScan(
+      groupDeps(msgs, llm, {worker: {messages: msgs, fetched: 5, skippedNotUser: 1, skippedOld: 1, skippedError: 1, cursor: '900'}}),
+    );
+    expect(ok.delta.counts.fetched).toBe(5);
+    expect(ok.delta.run).not.toMatch(/расхождение/);
+    expectInvariant(ok.delta.counts);
+    const missing = await runGroupScan(groupDeps(msgs, llm, {worker: {messages: msgs, skippedNotUser: 1, cursor: '900'}}));
+    expect(missing.delta.counts.fetched).toBe(3);
+    expectInvariant(missing.delta.counts);
+  });
+
   it('respects project minScore and scanDepthDays', async () => {
     const {llm} = scriptedLlm([answerAll(() => ({isLead: true, score: 70}))]);
     const msgs = [makeMessage(1), makeMessage(2, {date: new Date(NOW - 2 * DAY).toISOString()})];

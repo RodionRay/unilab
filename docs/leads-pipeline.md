@@ -84,7 +84,10 @@ Response adds `dmLeads` (number of DM leads created).
 
 ## Funnel counters (`lib/leads/types.ts::FUNNEL_COUNTERS`, events per run)
 
-`fetched = skippedNotUser + skippedOldWorker + skippedError + returned`;
+`fetched = skippedNotUser + skippedOldWorker + skippedError + returned` — `fetched` is the worker's own
+number when it reports one (`pipeline.ts::workerFetched`, else the sum); a worker that breaks the equation
+is shown, not hidden: the run line ends with «расхождение: воркер собрал N, по счётчикам M». Asserted in
+`tests/leads/pipeline.test.ts` and `telegram-worker/tests/test_scan_raw.py::assert_funnel_invariant`;
 `returned = skippedErrorApp + old + short + duplicate + stopword + judgeSkipped + judgeError + rejected + leads`.
 `judged` = messages the judge answered (`rejected + leads`). Each app step keeps the last 3 samples
 (text ≤200, `term` for stop words, `reason` for judge steps / skip reason `no_ai_key|daily_cap|blocked|batch_limit|deadline|sender_limit|no_project`);
