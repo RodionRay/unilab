@@ -102,6 +102,19 @@ class JoinDiscussionTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(res["ok"])
         self.assertEqual(res["join"], "need_join")
 
+    async def test_megagroup_source_never_joins_its_linked_channel(self) -> None:
+        client = FakeClient()
+        client.channel.broadcast, client.channel.megagroup = False, True
+        client.discussion.broadcast, client.discussion.megagroup = True, False
+
+        res = await ca.join_group(client, URL, target="discussion")
+
+        self.assertEqual(client.joins(), [])
+        self.assertFalse(any(isinstance(r, GetFullChannelRequest) for r in client.requests))
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["join"], "no_discussion")
+        self.assertIn("не канал", res["error"])
+
     async def test_default_target_still_joins_the_channel(self) -> None:
         client = FakeClient(in_channel=False)
 

@@ -819,6 +819,15 @@ async def _join_linked_discussion(client, url: str, peer_hint: dict | None) -> d
     channel, err = await _resolve_for_join(client, url, peer_hint)
     if err:
         return err
+    # у супергруппы linked_chat_id указывает на канал — вступили бы не туда и потратили join
+    if not getattr(channel, "broadcast", False):
+        return {
+            "ok": False,
+            "status": "error",
+            "join": "no_discussion",
+            "error": "Это не канал — вступать в обсуждение не нужно",
+            "member": False,
+        }
     if not await _is_member(client, channel):
         return {
             "ok": False,

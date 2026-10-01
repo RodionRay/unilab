@@ -41,6 +41,8 @@ account/proxy management and a manual single-group join stay.
 - REQ-12 The worker's scan shall never join a channel's linked discussion chat; it reports needDiscussionJoin.
   `join_group` with `target:'discussion'` shall join only that linked chat through the same pace + daily quota
   gate (one join), using only the assigned account; the UI shows "Вступить в обсуждение" for such groups.
+  Only a broadcast channel's linked chat is joined: a non-broadcast source (megagroup) returns
+  `join:'no_discussion'` with no JoinChannel call, and the API releases the slot without spending quota/pace.
 - REQ-13 Concurrent manual joins for one account shall be serialized (reserveJoinSlot); after a real Telegram
   call (success, already, banned/private/failed, timeout) the pace slot is kept; stale joinState
   queued/waiting from the removed queue is cleared.
