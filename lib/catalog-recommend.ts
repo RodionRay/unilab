@@ -160,6 +160,8 @@ export function buildRecommendedView(opts: {
     seen.add(key);
     const meta = catalogRowMeta(c);
     if (!matchesQuery(q, c.name, meta.handle, c.url)) continue;
+    // The gate knows why this chat fits the project (matched niches); the chat's own niches are the fallback.
+    const gate = opts.gateOf({ url: c.url });
     catalogRows.push({
       key,
       source: "catalog",
@@ -168,18 +170,20 @@ export function buildRecommendedView(opts: {
       url: c.url,
       handle: meta.handle,
       subscribers: meta.subscribers,
-      reason: c.niches.slice(0, 2).map((n) => GROUP_NICHE_LABELS[n]).join(", "),
+      reason: gate.reason || c.niches.slice(0, 2).map((n) => GROUP_NICHE_LABELS[n]).join(", "),
       status: "join",
-      score: null,
+      score: gate.score ?? null,
     });
   }
+  // Closest fit first; equal fit keeps catalog (rank) order (Array.prototype.sort is stable).
+  catalogRows.sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
 
   const byRank = (a: RecommendedRow, b: RecommendedRow) =>
     STATUS_ORDER[a.status] - STATUS_ORDER[b.status] ||
     (b.score ?? -1) - (a.score ?? -1) ||
     a.name.localeCompare(b.name, "ru");
   recommended.sort(byRank);
-  // Catalog rows have no score yet: they follow the scored workspace rows in catalog (rank) order.
+  // Catalog rows follow the workspace rows: the owner's own groups first, then new chats by fit.
   const actionable = recommended.filter((r) => r.status === "join");
   const inFlight = recommended.filter((r) => r.status !== "join");
   joined.sort((a, b) => Number(a.pending) - Number(b.pending) || b.leadsTotal - a.leadsTotal || a.name.localeCompare(b.name, "ru"));
@@ -189,19 +193,23 @@ export function buildRecommendedView(opts: {
 
 /**
  * Gate for workspaces without stored relevance scores: a group is recommended when its chat is one of the
- * project-niche catalog chats. Owner decisions and a stored relevance band win, same order as the relevance gate.
+ * project-niche catalog chats; score = how many project niches the chat matches (orders rows, closest fit first).
+ * Owner decisions and a stored relevance band win, same order as the relevance gate.
  */
 export function nicheFallbackGate(
   candidates: readonly CatalogGroup[],
   projectNiches: readonly GroupNiche[],
 ): (data: GroupData) => RecommendGate {
   const wanted = new Set(projectNiches);
-  const reasons = new Map<string, string>();
+  const fits = new Map<string, { reason: string; score: number }>();
   for (const c of candidates) {
     const key = telegramEntityKey(c.url);
-    if (!key) continue;
+    if (!key || fits.has(key)) continue;
     const hits = c.niches.filter((n) => wanted.has(n));
-    reasons.set(key, (hits.length ? hits : c.niches).slice(0, 2).map((n) => GROUP_NICHE_LABELS[n]).join(", "));
+    fits.set(key, {
+      reason: (hits.length ? hits : c.niches).slice(0, 2).map((n) => GROUP_NICHE_LABELS[n]).join(", "),
+      score: hits.length,
+    });
   }
   return (d) => {
     if (d.joinDead) return { state: "dead" };
@@ -212,8 +220,8 @@ export function nicheFallbackGate(
       const score = Number(rel.score);
       return { state: rel.band, score: Number.isFinite(score) ? score : null };
     }
-    const reason = reasons.get(telegramEntityKey(str(d.url)));
-    return reason !== undefined ? { state: "auto", reason, score: null } : { state: "skip" };
+    const fit = fits.get(telegramEntityKey(str(d.url)));
+    return fit ? { state: "auto", reason: fit.reason, score: fit.score } : { state: "skip" };
   };
 }
 

@@ -132,6 +132,22 @@ describe("buildRecommendedView", () => {
     expect(view.hiddenCount).toBe(1);
   });
 
+  it("orders catalog chats by project fit and explains them with the matched niches", () => {
+    const candidates = [
+      cat("blog", "https://t.me/big_blog", ["blogs", "marketing", "business"]),
+      cat("wb", "https://t.me/wb_people", ["marketplaces", "wildberries", "analytics"]),
+    ];
+    const view = buildRecommendedView({
+      groups: [],
+      catalog: candidates,
+      gateOf: nicheFallbackGate(candidates, ["wildberries", "marketplaces", "business"]),
+    });
+    expect(view.recommended.map((r) => [r.id, r.reason])).toEqual([
+      ["wb", "Маркетплейсы, Wildberries"],
+      ["blog", "Бизнес"],
+    ]);
+  });
+
   it("reads handle and subscribers for rows", () => {
     const view = buildRecommendedView({
       groups: [],
@@ -147,7 +163,7 @@ describe("nicheFallbackGate", () => {
   const gate = nicheFallbackGate(candidates, ["wildberries"]);
 
   it("recommends a workspace group whose chat is a project-niche catalog chat, with the niche as reason", () => {
-    expect(gate({ url: "t.me/WB_SELLERS" })).toEqual({ state: "auto", reason: "Wildberries", score: null });
+    expect(gate({ url: "t.me/WB_SELLERS" })).toEqual({ state: "auto", reason: "Wildberries", score: 1 });
   });
 
   it("does not recommend other groups", () => {
