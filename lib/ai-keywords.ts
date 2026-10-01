@@ -1,6 +1,6 @@
 /** Подсказки плюс/минус слов и обучение на горячих лидах. */
 
-import { splitTerms } from "@/lib/lead-filter";
+import { normalizeYo, splitTerms } from "@/lib/lead-filter";
 
 export const SUGGESTED_PLUS = [
   "остатки",
@@ -54,17 +54,26 @@ export function parseKeywordCsv(value: string): string[] {
     .filter(Boolean);
 }
 
+function termKey(term: string): string {
+  return normalizeYo(term.toLowerCase());
+}
+
+/**
+ * Append `add` to the CSV `current`, deduplicated case-insensitively (ё = е); order kept, first
+ * spelling wins. A string `add` is CSV too: passing it as one term appended the whole block on
+ * every save. Duplicates already in `current` are dropped, so dirty stored lists heal on write.
+ */
 export function mergeKeywords(current: string, add: string | string[]): string {
-  const base = parseKeywordCsv(current);
-  const set = new Set(base.map((s) => s.toLowerCase()));
-  const incoming = Array.isArray(add) ? add : [add];
-  for (const raw of incoming) {
-    const t = String(raw || "").trim();
-    if (!t || set.has(t.toLowerCase())) continue;
-    set.add(t.toLowerCase());
-    base.push(t);
+  const incoming = Array.isArray(add) ? add.map((s) => String(s || "").trim()) : parseKeywordCsv(add);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const t of [...parseKeywordCsv(current), ...incoming]) {
+    const key = termKey(t);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(t);
   }
-  return base.join(", ");
+  return out.join(", ");
 }
 
 /** Новые слова в начало; обрезка с конца по лимиту символов (чтобы стоп-слова не терялись). */
