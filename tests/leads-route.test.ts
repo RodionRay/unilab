@@ -442,6 +442,24 @@ describe('lead core v2 · workspace route',()=>{
       expect(rows('scan_day')).toHaveLength(1);
     });
 
+    it('a scan prunes the owner\'s scan_day rows older than 30 days, not other owners\' rows',async()=>{
+      const day=(daysAgo:number)=>new Date(Date.now()-daysAgo*86400000).toISOString().slice(0,10);
+      const insert=(owner:string,id:string,d:string)=>testDb().sqlite.prepare("INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,'scan_day',?,NULL,?)")
+        .run(id,owner,JSON.stringify({projectId:'p',day:d,counts:{},samples:{},runs:[]}),nowIso());
+      insert(OWNER,'scan-day:old-a',day(31));
+      insert(OWNER,'scan-day:old-b',day(90));
+      insert(OWNER,'scan-day:keep',day(29));
+      insert('owner-2','scan-day:foreign-old',day(90));
+      workerMessages=messages(1);
+
+      await scan();
+
+      const ids=(testDb().sqlite.prepare("SELECT id FROM records WHERE kind='scan_day'").all() as {id:string}[]).map(r=>r.id);
+      expect(ids).not.toContain('scan-day:old-a');
+      expect(ids).not.toContain('scan-day:old-b');
+      expect(ids).toEqual(expect.arrayContaining(['scan-day:keep','scan-day:foreign-old']));
+    });
+
     it('rejects days other than 1 or 7',async()=>{
       const f=await post({action:'funnel',projectId:DEFAULT_PROJECT,days:30});
       expect(f.status).toBe(400);

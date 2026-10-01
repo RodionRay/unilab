@@ -12,6 +12,7 @@ import {
   generateDraft,
   HOT_SCORE,
   runDmJudge,
+  pruneScanDays,
   runGroupScan,
   upsertScanDay,
   type DmMessage,
@@ -100,10 +101,14 @@ async function insertLeads(db: D1LikeDatabase, owner: string, leads: readonly Ne
   return out;
 }
 
-/** A funnel row that cannot be written must not fail the scan that already stored its leads. */
+/**
+ * Writes today's funnel row and prunes the owner's rows past retention. A funnel failure must not
+ * fail the scan that already stored its leads.
+ */
 async function recordFunnel(db: D1LikeDatabase, owner: string, projectId: string, delta: ScanDelta, nowMs: number): Promise<void> {
   try {
     await upsertScanDay(db, owner, projectId, delta, nowMs);
+    await pruneScanDays(db, owner, nowMs);
   } catch (e) {
     logError("scan_day", e);
   }
