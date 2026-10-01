@@ -40,7 +40,7 @@
   --secondary-foreground: var(--tma-text);
   --muted: var(--tma-fill);
   --muted-foreground: var(--tma-hint);
-  --accent: var(--tma-fill);
+  --accent: var(--tma-fill-strong);
   --accent-foreground: var(--tma-text);
   --destructive: var(--tma-destructive);
   --border: var(--tma-separator);

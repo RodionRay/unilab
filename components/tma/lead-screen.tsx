@@ -159,6 +159,11 @@ function LeadView({ lead, reload, hasMainButton }: { lead: Lead; reload(): Promi
           <li className="flex flex-col">
             <OriginalBubble lead={lead} collapsedByDefault={lead.messages.length > 0} />
           </li>
+          {lead.reason ? (
+            <ServiceNote>
+              <span className="font-semibold">Почему лид:</span> {lead.reason}
+            </ServiceNote>
+          ) : null}
           {messages.map((m, i) => {
             const prev = messages[i - 1];
             const newDay = !prev || dayKey(prev.at) !== dayKey(m.at);
@@ -177,9 +182,7 @@ function LeadView({ lead, reload, hasMainButton }: { lead: Lead; reload(): Promi
               </Fragment>
             );
           })}
-          {messages.length === 0 ? (
-            <li className="py-3 text-center text-[13px] text-(--tma-hint)">Вы ещё не писали этому человеку — черновик ответа ниже</li>
-          ) : null}
+          {messages.length === 0 && lead.canReply && text.trim() ? <ServiceNote>Вы ещё не писали — черновик ответа готов</ServiceNote> : null}
         </ol>
       </div>
       <div className="shrink-0 border-t border-(--tma-separator) bg-(--tma-bar) px-3 pt-2 pb-[max(8px,var(--tma-inset-bottom))]">
@@ -239,21 +242,27 @@ function LeadView({ lead, reload, hasMainButton }: { lead: Lead; reload(): Promi
 
 function LeadHeader({ lead }: { lead: Lead }) {
   return (
-    <header className="flex flex-col gap-2.5 px-4 pt-4 pb-3">
-      <div className="flex items-center gap-3">
-        <Avatar id={lead.id} name={lead.name} username={lead.username} size={48} />
-        <div className="min-w-0 flex-1">
-          <h1 tabIndex={-1} className="truncate text-[20px] leading-6 font-semibold outline-none">
-            {lead.name || `@${lead.username}`}
-          </h1>
-          <p className="truncate text-[14px] text-(--tma-hint)">{lead.username ? `@${lead.username}` : "без username"}</p>
-        </div>
+    <header className="flex items-center gap-3 px-4 pt-4 pb-3">
+      <Avatar id={lead.id} name={lead.name} username={lead.username} size={48} />
+      <div className="min-w-0 flex-1">
+        <h1 tabIndex={-1} className="truncate text-[20px] leading-6 font-semibold outline-none">
+          {lead.name || `@${lead.username}`}
+        </h1>
+        <p className="flex items-center gap-2 text-[14px] text-(--tma-hint)">
+          <span className="min-w-0 truncate">{lead.username ? `@${lead.username}` : "без username"}</span>
+          <TemperatureChip value={lead.temperature} />
+        </p>
       </div>
-      <p className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-[14px] leading-snug">
-        <TemperatureChip value={lead.temperature} />
-        {lead.reason ? <span className="text-(--tma-text)">{lead.reason}</span> : null}
-      </p>
     </header>
+  );
+}
+
+/** Telegram service-message pill: centred, small, on a translucent fill. */
+function ServiceNote({ children }: { children: React.ReactNode }) {
+  return (
+    <li className="flex justify-center px-6 py-1">
+      <p className="rounded-[14px] bg-(--tma-fill-strong) px-3 py-1 text-center text-[13px] leading-snug text-(--tma-text)">{children}</p>
+    </li>
   );
 }
 
@@ -261,7 +270,7 @@ function TemperatureChip({ value }: { value: Temperature }) {
   return (
     <span
       className={cn(
-        "inline-flex shrink-0 items-center gap-1 self-center rounded-full px-2 py-0.5 text-[13px] font-semibold",
+        "inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-px text-[12px] font-semibold",
         value === "hot" ? "bg-(--tma-accent) text-(--tma-accent-ink)" : "bg-(--tma-fill-strong) text-(--tma-text)",
       )}
     >

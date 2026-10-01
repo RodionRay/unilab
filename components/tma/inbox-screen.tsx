@@ -196,7 +196,7 @@ function HotQuote({ item, unread }: { item: InboxRow; unread: boolean }) {
           <span className="tma-clamp-2">{item.preview}</span>
         </span>
         {item.reason ? (
-          <span className="truncate pl-1 text-[13px] text-(--tma-hint)">
+          <span className="tma-clamp-2 pl-1 text-[13px] leading-snug text-(--tma-hint)">
             <span className="text-(--tma-text)">Почему:</span> {item.reason}
           </span>
         ) : null}
