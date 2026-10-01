@@ -81,6 +81,25 @@ describe('рассылка · первый контакт сразу в «Пер
     expect(lead.replies.at(-1)).toMatchObject({from:'us',ok:true});
   });
 
+  it('REQ-2: уведомление о запуске рассылки доставлено до ответа API (не fire-and-forget)',async()=>{
+    addRecord(AUD,'audience_task',{name:'Src',url:'https://t.me/src_chat',status:'completed',accountIds:[ACC_A],log:[]});
+    addRecord('f0002002-0000-4000-8000-000000000000','audience_user',{taskId:AUD,userId:'2002',username:'buyer2002'});
+    seedMailing({status:'paused'});
+    enableNotifications();
+    let delivered=0;
+    stubWorkerAndBot(()=>({ok:true,messageId:'1'}),async(call)=>{
+      if(call.method!=='sendMessage')return undefined;
+      await new Promise(r=>setTimeout(r,40));
+      delivered++;
+      return undefined;
+    });
+
+    const res=await POST(postRequest({action:'start_mailing',id:MAIL}));
+
+    expect(res.status).toBe(200);
+    expect(delivered).toBe(1);
+  });
+
   it('REQ-1: лиду, которому мы уже писали, рассылка не шлёт второе «Начата переписка»',async()=>{
     addRecord(LEAD,'lead',{name:'Пётр',message:'Ищу склад',status:'working',temperature:'hot',senderId:'3003',senderUsername:'petr3',conversationOpen:true,conversationAt:'2026-09-30T10:00:00.000Z',
       replies:[{text:'Ранее',mode:'dm',at:'2026-09-30T10:00:00.000Z',ok:true,error:'',messageId:'1',link:'',chatId:'3003',from:'us'}]});

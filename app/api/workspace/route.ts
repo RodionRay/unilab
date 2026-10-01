@@ -4426,9 +4426,9 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   }
   const saved=await commitTaskEdit(db,owner,id,'mailing_task',data,next)??next;
   if(next.status==='running'){
-   void notifyMailingEvent(db,owner,String(next.name||'Рассылка'),`Запущена · к отправке ~${pending}`);
+   await notifyMailingEvent(db,owner,String(next.name||'Рассылка'),`Запущена · к отправке ~${pending}`);
   }else if(next.status==='paused'&&next.error){
-   void notifyMailingEvent(db,owner,String(next.name||'Рассылка'),`Не стартовала: ${next.error}`);
+   await notifyMailingEvent(db,owner,String(next.name||'Рассылка'),`Не стартовала: ${next.error}`);
   }
   return reply({ok:true,task:saved});
  }
@@ -4546,7 +4546,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      ],500),
     };
     const saved=await tickRun.finish(next);
-    void notifyMailingEvent(db,owner,String(next.name||'Рассылка'),next.error||'Остановлено: аккаунты недоступны');
+    await notifyMailingEvent(db,owner,String(next.name||'Рассылка'),next.error||'Остановлено: аккаунты недоступны');
     return reply({ok:true,stopped:true,task:saved});
    }
    const quotaHit=accountIds.filter(aid=>{
@@ -4568,7 +4568,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     ],500),
    };
    const saved=await tickRun.finish(next);
-   void notifyMailingEvent(db,owner,String(next.name||'Рассылка'),`Пауза: нет активных аккаунтов · автозапуск ${formatRuWhen(resumeIso)}`);
+   await notifyMailingEvent(db,owner,String(next.name||'Рассылка'),`Пауза: нет активных аккаунтов · автозапуск ${formatRuWhen(resumeIso)}`);
    return reply({ok:true,stopped:true,scheduled:true,task:saved});
   }
   if(dead>0){
