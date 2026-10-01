@@ -5929,18 +5929,32 @@ button.aiw-row-main {
     min-height: 44px;
   }
   /* 44px touch floor for every control on the page (ui-engineering-qa A4); visual size kept where the hit area can grow */
-  .aiw button:not(.aiw-headline-link),
+  .aiw button:not([role="switch"]),
   .aiw a[href],
   .aiw select,
+  .aiw input:not([type="checkbox"], [type="radio"]),
   .aiw [role="button"],
   .aiw [role="tab"] {
     min-height: 44px;
   }
-  .aiw button:not(.aiw-headline-link, .aiw-row-main, .aiw-dm-main, .aiw-queue-row, .aiw-tab) {
+  .aiw button:not([role="switch"], .aiw-headline-link, .aiw-row-main, .aiw-dm-main, .aiw-queue-row, .aiw-tab) {
     min-width: 44px;
   }
+  /* the switch keeps its visual size; the hit area grows around it */
+  .aiw [role="switch"] {
+    position: relative;
+  }
+  .aiw [role="switch"]::before {
+    content: "";
+    position: absolute;
+    inset: 50% auto auto 50%;
+    width: max(100%, 44px);
+    height: 44px;
+    transform: translate(-50%, -50%);
+  }
   .aiw .aiw-headline-link {
-    padding-block: 7px;
+    display: inline-flex;
+    align-items: center;
   }
   .aiw .aiw-link-btn {
     margin-top: -10px;
