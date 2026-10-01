@@ -1088,7 +1088,7 @@ button.studio-metric:hover .studio-metric-card {
 
 .leads-list-cols {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1.8fr) auto auto minmax(100px, 0.8fr) auto;
+  grid-template-columns: minmax(0, 1.8fr) auto auto minmax(100px, 0.8fr) auto;
   gap: 10px;
   align-items: center;
   padding: 10px 16px;

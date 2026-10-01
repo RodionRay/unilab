@@ -5,7 +5,7 @@ import {Users,Radio,Shield,Sparkles,Plus,ArrowRight,Search,ChevronRight,External
 import {Button} from '@/components/ui/button';
 import {OverviewDashboard} from '@/components/product/overview-dashboard';
 import {AiWorkspace} from '@/components/product/ai/ai-workspace';
-import {canSeeGroups,canSeeLeadText,isInConversations,pluralRu,projectIdOf,projectsFrom} from '@/components/product/ai/model';
+import {canSeeGroups,canSeeLeadText,isInConversations,isWorkspaceOwner,pluralRu,projectIdOf,projectsFrom} from '@/components/product/ai/model';
 import {useActiveProject} from '@/components/product/ai/use-active-project';
 import {WorkspaceNav,parseWorkspaceView,persistWorkspaceView,readStoredWorkspaceView,WORKSPACE_VIEW_PARAM,type NavName} from '@/components/product/workspace-nav';
 import {NotificationsBell,NotificationsPanel} from '@/components/product/notifications-center';
@@ -2038,7 +2038,7 @@ function WorkspaceHome(){
     return items.length?(
     <>
       {/* Row checkboxes are gone: the header drops their 28px gutter so «Лид» lines up with the row names. */}
-      <div className="leads-list-cols" style={{gridTemplateColumns:'minmax(0,1.8fr) auto auto minmax(100px,0.8fr) auto'}}>
+      <div className="leads-list-cols">
         <SortHeaderButton columnKey="name" sortKey={sortKey} sortDir={sortDir} onSort={onSort}>Лид</SortHeaderButton>
         <SortHeaderButton columnKey="temperature" sortKey={sortKey} sortDir={sortDir} onSort={onSort}>Темп.</SortHeaderButton>
         <SortHeaderButton columnKey="status" sortKey={sortKey} sortDir={sortDir} onSort={onSort}>Статус</SortHeaderButton>
@@ -2993,6 +2993,7 @@ function WorkspaceHome(){
               aiKeyReady={aiKeyReady}
               leadTextVisible={canSeeLeadText(workspaceMeta)}
               groupsVisible={canSeeGroups(workspaceMeta)}
+              isOwner={isWorkspaceOwner(workspaceMeta)}
               telegramConnected={telegramConnected}
               activeProjectId={activeProjectId}
               onSelectProject={setActiveProjectId}
