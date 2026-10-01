@@ -148,6 +148,13 @@ export function defaultProjectId(projects: readonly ProjectRecord[]): string {
   return projects[0]?.id ?? '';
 }
 
+export const DEFAULT_PROJECT_DELETE_REASON = 'Основной проект нельзя удалить — в него попадают чаты без проекта';
+
+/** Why «Удалить проект» is unavailable, or `''` when it is allowed: the default project catches unassigned chats. */
+export function deleteBlockedReason(projectId: string, projects: readonly ProjectRecord[]): string {
+  return projectId !== '' && projectId === defaultProjectId(projects) ? DEFAULT_PROJECT_DELETE_REASON : '';
+}
+
 /** Missing or unknown `projectId` reads as the default project (spec REQ-2, no bulk rewrite). */
 export function projectIdOf(item: { projectId?: unknown }, projects: readonly ProjectRecord[]): string {
   const id = typeof item.projectId === 'string' ? item.projectId.trim() : '';
@@ -217,7 +224,7 @@ type StepDef = { key: string; label: string; hint: string; tone: FunnelTone; par
 const STEPS: StepDef[] = [
   { key: 'notUser', label: 'Боты и каналы', hint: 'Пишет не человек: бот, канал или пересылка.', tone: 'neutral', parts: ['skippedNotUser'], sampleKeys: ['skippedNotUser'] },
   { key: 'old', label: 'Старые', hint: 'Старше глубины просмотра проекта.', tone: 'neutral', parts: ['skippedOldWorker', 'old'], sampleKeys: ['old'] },
-  { key: 'short', label: 'Короткие', hint: 'Короче 12 символов: «+», «спасибо», «в лс».', tone: 'neutral', parts: ['short'], sampleKeys: ['short'] },
+  { key: 'short', label: 'Короткие (меньше 12 символов)', hint: 'Ответы вроде «+», «спасибо», «в лс»: в них нет запроса.', tone: 'neutral', parts: ['short'], sampleKeys: ['short'] },
   { key: 'duplicate', label: 'Повторы', hint: 'Уже видели это сообщение или уже отклонили его.', tone: 'neutral', parts: ['duplicate'], sampleKeys: ['duplicate'] },
   { key: 'stopword', label: 'Стоп-слова', hint: 'Нашлось слово из стоп-списка проекта.', tone: 'neutral', parts: ['stopword'], sampleKeys: ['stopword'] },
   { key: 'judgeSkipped', label: 'Без оценки', hint: 'AI не смотрел: нет ключа или дневной лимит. Оценит при следующем обходе.', tone: 'warning', parts: ['judgeSkipped'], sampleKeys: ['judgeSkipped'] },
@@ -228,11 +235,19 @@ const STEPS: StepDef[] = [
 
 const n = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0);
 
-export function funnelRows(counts: FunnelCounts): FunnelRow[] {
+export const DEFAULT_SCAN_DEPTH_DAYS = 7;
+
+/** «Старше 7 дней»: the step is named by the project's own history depth. */
+export function oldStepLabel(scanDepthDays: number = DEFAULT_SCAN_DEPTH_DAYS): string {
+  const days = Number.isFinite(scanDepthDays) && scanDepthDays > 0 ? Math.round(scanDepthDays) : DEFAULT_SCAN_DEPTH_DAYS;
+  return `Старше ${days} ${pluralRu(days, 'дня', 'дней', 'дней')}`;
+}
+
+export function funnelRows(counts: FunnelCounts, scanDepthDays: number = DEFAULT_SCAN_DEPTH_DAYS): FunnelRow[] {
   const total: FunnelRow = { key: 'fetched', label: 'Собрано', hint: 'Сообщений прочитано в чатах проекта.', count: n(counts.fetched), tone: 'total', sampleKeys: [] };
   const rows = STEPS.map((s) => ({
     key: s.key,
-    label: s.label,
+    label: s.key === 'old' ? oldStepLabel(scanDepthDays) : s.label,
     hint: s.hint,
     tone: s.tone,
     sampleKeys: s.sampleKeys,
@@ -271,14 +286,53 @@ export function periodLabel(days: 1 | 7): string {
   return days === 1 ? 'за 24 часа' : 'за 7 дней';
 }
 
-/** «Из 1 240 сообщений за 7 дней AI нашёл 9 лидов». */
-export function funnelHeadline(counts: FunnelCounts, days: 1 | 7): string {
+/** «1 лид», «3 лида», «27 лидов». */
+export const leadsLabel = (count: number): string => `${formatCount(count)} ${pluralRu(count, 'лид', 'лида', 'лидов')}`;
+
+/**
+ * Which story the funnel headline tells. `unchecked`: no leads yet, but part of the messages never reached
+ * AI, so «лидов не нашлось» would be a false verdict.
+ */
+export type HeadlineKind = 'empty' | 'leads' | 'unchecked' | 'none';
+
+export function headlineKind(counts: FunnelCounts): HeadlineKind {
+  if (!n(counts.fetched)) return 'empty';
+  if (n(counts.leads)) return 'leads';
+  return n(counts.judgeSkipped) ? 'unchecked' : 'none';
+}
+
+/** Why the unchecked messages wait: drives the tail of the `unchecked` headline. */
+export const uncheckedCause = (keyMissing: boolean): string => (keyMissing ? 'AI не подключён' : 'AI проверит их при следующем обходе');
+
+/** «Из 1 240 сообщений за 7 дней AI нашёл 9 лидов» / «Из 797 сообщений 91 ещё не проверено — AI не подключён». */
+export function funnelHeadline(counts: FunnelCounts, days: 1 | 7, keyMissing = false): string {
   const fetched = n(counts.fetched);
-  const leads = n(counts.leads);
-  if (!fetched) return `Сообщений ${periodLabel(days)} пока нет`;
-  const msgs = pluralRu(fetched, 'сообщения', 'сообщений', 'сообщений');
-  const found = leads ? `AI нашёл ${formatCount(leads)} ${pluralRu(leads, 'лид', 'лида', 'лидов')}` : 'лидов не нашлось';
-  return `Из ${formatCount(fetched)} ${msgs} ${periodLabel(days)} ${found}`;
+  const msgs = `${formatCount(fetched)} ${pluralRu(fetched, 'сообщения', 'сообщений', 'сообщений')}`;
+  switch (headlineKind(counts)) {
+    case 'empty':
+      return `Сообщений ${periodLabel(days)} пока нет`;
+    case 'leads':
+      return `Из ${msgs} ${periodLabel(days)} AI нашёл ${leadsLabel(n(counts.leads))}`;
+    case 'unchecked': {
+      const k = n(counts.judgeSkipped);
+      return `Из ${msgs} ${formatCount(k)} ещё не ${pluralRu(k, 'проверено', 'проверены', 'проверено')} — ${uncheckedCause(keyMissing)}`;
+    }
+    default:
+      return `Из ${msgs} ${periodLabel(days)} лидов не нашлось`;
+  }
+}
+
+/** Compact age for one-line meta: «только что», «35 мин назад», «3 ч назад», «2 дня назад». */
+export function shortAgoRu(iso: string, now: number = Date.now()): string {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return '';
+  const mins = Math.round(Math.max(0, now - t) / 60000);
+  if (mins < 1) return 'только что';
+  if (mins < 60) return `${mins} мин назад`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours} ч назад`;
+  const days = Math.round(hours / 24);
+  return `${days} ${pluralRu(days, 'день', 'дня', 'дней')} назад`;
 }
 
 // ---------- project card ----------
@@ -303,6 +357,11 @@ export const isPatchEmpty = (patch: ProjectPatch): boolean => Object.keys(patch)
 export type WorkspaceViewer = { isOwner: boolean; role: string; access: Readonly<Partial<Record<string, boolean>>> };
 
 /** Group records reach only owner, admin and members with «Группы и каналы» (`KIND_ACCESS.group`). */
+/** Only the owner manages the server AI key; others are pointed at settings or the admin. */
+export function isWorkspaceOwner(viewer: WorkspaceViewer | null): boolean {
+  return !viewer || viewer.isOwner || viewer.role === 'owner';
+}
+
 export function canSeeGroups(viewer: WorkspaceViewer | null): boolean {
   if (!viewer || viewer.isOwner || viewer.role === 'admin' || viewer.role === 'owner') return true;
   return viewer.access.groups === true;
