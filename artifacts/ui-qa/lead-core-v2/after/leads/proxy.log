@@ -1,0 +1,4 @@
+mock-proxy :8011 -> http://127.0.0.1:8001 scenario=full
+[mock] POST poll_dm_replies -> 200
+[mock] POST poll_dm_replies -> 200
+[mock] POST poll_dm_replies -> 200

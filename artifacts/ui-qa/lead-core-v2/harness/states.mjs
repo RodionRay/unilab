@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Interaction states of the AI page (scenario `full`), full-page at 390 / 768 / 1440:
 //   funnel-stopwords-open · card-dirty · draft-editing  ->  <out>/<state>-<width>.png
+//   leave-dialog (dirty card -> sidebar «Лиды») · project-menu-default (⋯ menu, delete disabled): 390 / 1440 only
+//   ONLY=<state,...> env limits the run to those states.
 // Usage: node states.mjs [--url http://127.0.0.1:8011] [--out <abs dir>]   (proxy + storage.json must exist, see README)
 import { createRequire } from 'node:module';
 import { mkdirSync } from 'node:fs';
@@ -43,7 +45,19 @@ const STATES = {
     await area.press('End');
     await area.pressSequentially(' Могу созвониться сегодня после 15:00.');
   },
+  'leave-dialog': async (page) => {
+    await STATES['card-dirty'](page);
+    const navLeads = page.locator('button.nav-item', { hasText: 'Лиды' }).first();
+    if (!(await navLeads.isVisible())) await page.locator('[data-sidebar="trigger"]').first().click();
+    await navLeads.click();
+    await page.getByRole('alertdialog', { name: 'Карточка проекта не сохранена' }).waitFor();
+  },
+  'project-menu-default': async (page) => {
+    await page.getByRole('button', { name: 'Действия с проектом' }).first().click();
+    await page.getByRole('menuitem', { name: 'Удалить проект' }).waitFor();
+  },
 };
+const ONLY_AT = { 'leave-dialog': [390, 1440], 'project-menu-default': [390, 1440] };
 
 const { chromium } = createRequire(path.join(playwrightProject(), 'package.json'))('@playwright/test');
 mkdirSync(OUT, { recursive: true });
@@ -52,6 +66,8 @@ let failed = 0;
 try {
   for (const [width, height] of WIDTHS) {
     for (const [name, act] of Object.entries(STATES)) {
+      if (ONLY_AT[name] && !ONLY_AT[name].includes(width)) continue;
+      if (process.env.ONLY && !process.env.ONLY.split(',').includes(name)) continue;
       const context = await browser.newContext({ viewport: { width, height }, storageState: path.join(HARN, 'storage.json') });
       const page = await context.newPage();
       try {

@@ -1,6 +1,6 @@
 {
   "base": "http://127.0.0.1:8011",
-  "started": "2026-10-01T06:45:51.558Z",
+  "started": "2026-10-01T07:08:27.543Z",
   "routes": {
     "/app?view=ai": {
       "390x844": {
@@ -9,7 +9,7 @@
           "overflow": false,
           "offenders": [],
           "smallTargets": 1,
-          "smallPrimary": 3,
+          "smallPrimary": 2,
           "smallInputs": 0,
           "imgsNoDims": 0,
           "imgsBroken": 0,
@@ -63,11 +63,11 @@
           {
             "tag": "button",
             "label": "Повторить",
-            "visibleRing": false,
+            "visibleRing": true,
             "inView": true,
             "size": [
-              332,
-              40
+              324,
+              44
             ],
             "covered": false
           },
@@ -85,8 +85,8 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 892,
-          "cls": 0.06,
+          "lcp": 188,
+          "cls": 0,
           "inp": null,
           "interactions": [],
           "cta": null,
@@ -102,8 +102,7 @@
         "ok": false,
         "issues": [
           "A4 1 standalone controls < 24px",
-          "A4 3 primary buttons < 44px on mobile",
-          "C2 1 focused elements without visible ring",
+          "A4 2 primary buttons < 44px on mobile",
           "E8 console errors: 1",
           "E8 failed requests: 1"
         ]
@@ -410,7 +409,7 @@
           {
             "tag": "button",
             "label": "Повторить",
-            "visibleRing": false,
+            "visibleRing": true,
             "inView": true,
             "size": [
               113,
@@ -432,8 +431,8 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 812,
-          "cls": 0.016,
+          "lcp": 244,
+          "cls": 0,
           "inp": null,
           "interactions": [],
           "cta": null,
@@ -449,7 +448,6 @@
         "ok": false,
         "issues": [
           "A4 13 standalone controls < 24px",
-          "C2 1 focused elements without visible ring",
           "E8 console errors: 1",
           "E8 failed requests: 1"
         ]
@@ -756,7 +754,7 @@
           {
             "tag": "button",
             "label": "Повторить",
-            "visibleRing": false,
+            "visibleRing": true,
             "inView": true,
             "size": [
               113,
@@ -778,8 +776,8 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 864,
-          "cls": 0.021,
+          "lcp": 164,
+          "cls": 0.002,
           "inp": null,
           "interactions": [],
           "cta": null,
@@ -795,13 +793,12 @@
         "ok": false,
         "issues": [
           "A4 13 standalone controls < 24px",
-          "C2 1 focused elements without visible ring",
           "E8 console errors: 1",
           "E8 failed requests: 1"
         ]
       }
     }
   },
-  "failures": 13,
+  "failures": 10,
   "visualFailures": 0
 }

@@ -1,6 +1,6 @@
 {
   "base": "http://127.0.0.1:8011",
-  "started": "2026-10-01T06:45:37.313Z",
+  "started": "2026-10-01T11:29:56.810Z",
   "routes": {
     "/app?view=ai": {
       "390x844": {
@@ -12,7 +12,7 @@
             "span.aiw-tab-count"
           ],
           "smallTargets": 1,
-          "smallPrimary": 30,
+          "smallPrimary": 27,
           "smallInputs": 0,
           "imgsNoDims": 0,
           "imgsBroken": 0,
@@ -22,7 +22,7 @@
           "main": true,
           "nav": true,
           "unlabeled": 0,
-          "stickyPct": 27,
+          "stickyPct": 14,
           "bodyBg": "rgb(25, 25, 25)",
           "bodyFont": "\"PP Mori\", \"Plus Jakarta Sans\", Helvetica, Arial, sans-serif",
           "fontsLoaded": "loaded",
@@ -120,6 +120,17 @@
           },
           {
             "tag": "button",
+            "label": "Открыть настройки",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              298,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
             "label": "Боты и каналыПишет не человек: бот, кана",
             "visibleRing": true,
             "inView": true,
@@ -131,7 +142,7 @@
           },
           {
             "tag": "button",
-            "label": "СтарыеСтарше глубины просмотра проекта.2",
+            "label": "Старше 7 днейСтарше глубины просмотра пр",
             "visibleRing": true,
             "inView": true,
             "size": [
@@ -142,12 +153,12 @@
           },
           {
             "tag": "button",
-            "label": "КороткиеКороче 12 символов: «+», «спасиб",
+            "label": "Короткие (меньше 12 символов)Ответы врод",
             "visibleRing": true,
             "inView": true,
             "size": [
               324,
-              46
+              68
             ],
             "covered": false
           },
@@ -202,7 +213,7 @@
             "inView": true,
             "size": [
               324,
-              61
+              57
             ],
             "covered": false
           },
@@ -213,7 +224,7 @@
             "inView": true,
             "size": [
               324,
-              61
+              57
             ],
             "covered": false
           },
@@ -234,8 +245,8 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              109,
-              40
+              83,
+              32
             ],
             "covered": false
           },
@@ -300,8 +311,8 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              103,
-              36
+              324,
+              27
             ],
             "covered": false
           },
@@ -542,8 +553,8 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              189,
-              36
+              324,
+              27
             ],
             "covered": false
           },
@@ -575,8 +586,8 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              189,
-              36
+              324,
+              27
             ],
             "covered": false
           },
@@ -649,9 +660,9 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 2024,
+          "lcp": 1184,
           "cls": 0,
-          "inp": 32,
+          "inp": 24,
           "interactions": [
             "field"
           ],
@@ -664,7 +675,7 @@
         "ok": false,
         "issues": [
           "A4 1 standalone controls < 24px",
-          "A4 30 primary buttons < 44px on mobile"
+          "A4 27 primary buttons < 44px on mobile"
         ]
       },
       "768x1024": {
@@ -683,7 +694,7 @@
           "main": true,
           "nav": true,
           "unlabeled": 0,
-          "stickyPct": 119,
+          "stickyPct": 112,
           "bodyBg": "rgb(25, 25, 25)",
           "bodyFont": "\"PP Mori\", \"Plus Jakarta Sans\", Helvetica, Arial, sans-serif",
           "fontsLoaded": "loaded",
@@ -1023,6 +1034,17 @@
           },
           {
             "tag": "button",
+            "label": "Открыть настройки",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              198,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
             "label": "Боты и каналыПишет не человек: бот, кана",
             "visibleRing": true,
             "inView": true,
@@ -1034,7 +1056,7 @@
           },
           {
             "tag": "button",
-            "label": "СтарыеСтарше глубины просмотра проекта.2",
+            "label": "Старше 7 днейСтарше глубины просмотра пр",
             "visibleRing": true,
             "inView": true,
             "size": [
@@ -1045,7 +1067,7 @@
           },
           {
             "tag": "button",
-            "label": "КороткиеКороче 12 символов: «+», «спасиб",
+            "label": "Короткие (меньше 12 символов)Ответы врод",
             "visibleRing": true,
             "inView": true,
             "size": [
@@ -1105,7 +1127,7 @@
             "inView": true,
             "size": [
               415,
-              61
+              57
             ],
             "covered": false
           },
@@ -1116,7 +1138,7 @@
             "inView": true,
             "size": [
               415,
-              61
+              57
             ],
             "covered": false
           },
@@ -1137,8 +1159,8 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              109,
-              40
+              83,
+              32
             ],
             "covered": false
           },
@@ -1146,7 +1168,7 @@
             "tag": "textarea",
             "label": "Марина, добрый день. Мы в Подольске, отг",
             "visibleRing": true,
-            "inView": true,
+            "inView": false,
             "size": [
               415,
               113
@@ -1212,7 +1234,7 @@
             "tag": "textarea",
             "label": "Фулфилмент для Wildberries и Ozon в Подо",
             "visibleRing": true,
-            "inView": true,
+            "inView": false,
             "size": [
               415,
               113
@@ -1552,9 +1574,9 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 1944,
+          "lcp": 1208,
           "cls": 0,
-          "inp": 32,
+          "inp": 24,
           "interactions": [
             "field"
           ],
@@ -1585,7 +1607,7 @@
           "main": true,
           "nav": true,
           "unlabeled": 0,
-          "stickyPct": 121,
+          "stickyPct": 114,
           "bodyBg": "rgb(25, 25, 25)",
           "bodyFont": "\"PP Mori\", \"Plus Jakarta Sans\", Helvetica, Arial, sans-serif",
           "fontsLoaded": "loaded",
@@ -1925,6 +1947,17 @@
           },
           {
             "tag": "button",
+            "label": "Открыть настройки",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              198,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
             "label": "Боты и каналыПишет не человек: бот, кана",
             "visibleRing": true,
             "inView": true,
@@ -1936,7 +1969,7 @@
           },
           {
             "tag": "button",
-            "label": "СтарыеСтарше глубины просмотра проекта.2",
+            "label": "Старше 7 днейСтарше глубины просмотра пр",
             "visibleRing": true,
             "inView": true,
             "size": [
@@ -1947,7 +1980,7 @@
           },
           {
             "tag": "button",
-            "label": "КороткиеКороче 12 символов: «+», «спасиб",
+            "label": "Короткие (меньше 12 символов)Ответы врод",
             "visibleRing": true,
             "inView": true,
             "size": [
@@ -2007,7 +2040,7 @@
             "inView": true,
             "size": [
               405,
-              61
+              57
             ],
             "covered": false
           },
@@ -2018,7 +2051,7 @@
             "inView": true,
             "size": [
               405,
-              61
+              57
             ],
             "covered": false
           },
@@ -2039,8 +2072,8 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              109,
-              40
+              83,
+              32
             ],
             "covered": false
           },
@@ -2048,7 +2081,7 @@
             "tag": "textarea",
             "label": "Марина, добрый день. Мы в Подольске, отг",
             "visibleRing": true,
-            "inView": false,
+            "inView": true,
             "size": [
               405,
               113
@@ -2114,7 +2147,7 @@
             "tag": "textarea",
             "label": "Фулфилмент для Wildberries и Ozon в Подо",
             "visibleRing": true,
-            "inView": false,
+            "inView": true,
             "size": [
               1063,
               69
@@ -2125,7 +2158,7 @@
             "tag": "textarea",
             "label": "Отгрузка на склад маркетплейса за 24 час",
             "visibleRing": true,
-            "inView": true,
+            "inView": false,
             "size": [
               1063,
               64
@@ -2158,12 +2191,12 @@
             "tag": "textarea",
             "label": "Сам предлагает услуги фулфилмента, ищет ",
             "visibleRing": true,
-            "inView": false,
+            "inView": true,
             "size": [
               1063,
               64
             ],
-            "covered": true
+            "covered": false
           },
           {
             "tag": "button",
@@ -2454,9 +2487,9 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 2584,
+          "lcp": 1264,
           "cls": 0.03,
-          "inp": 40,
+          "inp": 32,
           "interactions": [
             "field"
           ],
@@ -2468,13 +2501,11 @@
         "failedReq": [],
         "ok": false,
         "issues": [
-          "A4 13 standalone controls < 24px",
-          "C2 1 focused elements covered by sticky UI",
-          "E7 LCP 2584 ms > 2500"
+          "A4 13 standalone controls < 24px"
         ]
       }
     }
   },
-  "failures": 6,
+  "failures": 4,
   "visualFailures": 0
 }

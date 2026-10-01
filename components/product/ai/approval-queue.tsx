@@ -185,7 +185,7 @@ function DraftDetail({ item, telegramConnected, onOpenThread, onDone }: DetailPr
       <div className="aiw-field">
         <div className="aiw-label-row">
           <label className="aiw-label" htmlFor={fieldId}>{KIND_LABEL[item.draftKind]}</label>
-          <Button variant="ghost" size="sm" disabled={!!busy} onClick={() => void regenerate()} aria-label="Написать черновик заново">
+          <Button variant="ghost" size="sm" className="aiw-link-btn" disabled={!!busy} onClick={() => void regenerate()} aria-label="Написать черновик заново">
             {busy === 'regen' ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}Заново
           </Button>
         </div>

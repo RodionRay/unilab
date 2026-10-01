@@ -5392,7 +5392,7 @@ button.aiw-row-main {
   gap: 2px;
   width: 100%;
   min-height: 44px;
-  padding: 8px 12px;
+  padding: 6px 12px;
   border: 1px solid transparent;
   border-radius: 10px;
   background: transparent;
@@ -5440,9 +5440,11 @@ button.aiw-row-main {
 }
 .aiw-draft {
   display: grid;
-  gap: 10px;
+  /* minmax(0,1fr): an `auto` track grows to the head's min-content and pushed the draft past the card at 390 */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
   min-width: 0;
-  padding-top: 12px;
+  padding-top: 10px;
   border-top: 1px solid var(--spike-border);
 }
 .aiw-draft-head > .min-w-0 {

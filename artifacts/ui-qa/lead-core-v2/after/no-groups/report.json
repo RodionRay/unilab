@@ -1,6 +1,6 @@
 {
   "base": "http://127.0.0.1:8011",
-  "started": "2026-10-01T06:45:10.783Z",
+  "started": "2026-10-01T07:07:35.005Z",
   "routes": {
     "/app?view=ai": {
       "390x844": {
@@ -9,7 +9,7 @@
           "overflow": false,
           "offenders": [],
           "smallTargets": 1,
-          "smallPrimary": 28,
+          "smallPrimary": 25,
           "smallInputs": 0,
           "imgsNoDims": 0,
           "imgsBroken": 0,
@@ -19,7 +19,7 @@
           "main": true,
           "nav": true,
           "unlabeled": 0,
-          "stickyPct": 27,
+          "stickyPct": 14,
           "bodyBg": "rgb(25, 25, 25)",
           "bodyFont": "\"PP Mori\", \"Plus Jakarta Sans\", Helvetica, Arial, sans-serif",
           "fontsLoaded": "loaded",
@@ -154,8 +154,8 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              103,
-              36
+              324,
+              27
             ],
             "covered": false
           },
@@ -165,8 +165,8 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              213,
-              40
+              324,
+              44
             ],
             "covered": false
           },
@@ -407,8 +407,8 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              189,
-              36
+              324,
+              27
             ],
             "covered": false
           },
@@ -440,8 +440,8 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              189,
-              36
+              324,
+              27
             ],
             "covered": false
           },
@@ -514,7 +514,7 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 2004,
+          "lcp": 1996,
           "cls": 0,
           "inp": 32,
           "interactions": [
@@ -529,7 +529,7 @@
         "ok": false,
         "issues": [
           "A4 1 standalone controls < 24px",
-          "A4 28 primary buttons < 44px on mobile"
+          "A4 25 primary buttons < 44px on mobile"
         ]
       },
       "768x1024": {
@@ -548,7 +548,7 @@
           "main": true,
           "nav": true,
           "unlabeled": 0,
-          "stickyPct": 119,
+          "stickyPct": 112,
           "bodyBg": "rgb(25, 25, 25)",
           "bodyFont": "\"PP Mori\", \"Plus Jakarta Sans\", Helvetica, Arial, sans-serif",
           "fontsLoaded": "loaded",
@@ -1285,9 +1285,9 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 1940,
+          "lcp": 1992,
           "cls": 0,
-          "inp": 32,
+          "inp": 40,
           "interactions": [
             "field"
           ],
@@ -1318,7 +1318,7 @@
           "main": true,
           "nav": true,
           "unlabeled": 0,
-          "stickyPct": 121,
+          "stickyPct": 114,
           "bodyBg": "rgb(25, 25, 25)",
           "bodyFont": "\"PP Mori\", \"Plus Jakarta Sans\", Helvetica, Arial, sans-serif",
           "fontsLoaded": "loaded",
@@ -1720,7 +1720,7 @@
               1063,
               69
             ],
-            "covered": true
+            "covered": false
           },
           {
             "tag": "textarea",
@@ -1764,7 +1764,7 @@
               1063,
               64
             ],
-            "covered": true
+            "covered": false
           },
           {
             "tag": "button",
@@ -2055,7 +2055,7 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 1972,
+          "lcp": 2004,
           "cls": 0.03,
           "inp": 32,
           "interactions": [
@@ -2069,12 +2069,11 @@
         "failedReq": [],
         "ok": false,
         "issues": [
-          "A4 13 standalone controls < 24px",
-          "C2 2 focused elements covered by sticky UI"
+          "A4 13 standalone controls < 24px"
         ]
       }
     }
   },
-  "failures": 5,
+  "failures": 4,
   "visualFailures": 0
 }

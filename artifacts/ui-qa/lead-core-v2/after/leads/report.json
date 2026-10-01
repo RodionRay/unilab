@@ -1,21 +1,18 @@
 {
   "base": "http://127.0.0.1:8011",
-  "started": "2026-10-01T06:46:15.146Z",
+  "started": "2026-10-01T07:08:44.265Z",
   "routes": {
     "/app?view=leads": {
       "390x844": {
         "screenshot": "/Users/rodiontipcov/worktrees/wt-unilab-lead-core-v2-2026-10-01-ui/artifacts/ui-qa/lead-core-v2/after/leads/app_view_leads-390x844.png",
         "dom": {
-          "overflow": true,
+          "overflow": false,
           "offenders": [
-            "div.flex.flex-wrap",
-            "button.flex.items-center",
-            "svg",
-            "path",
-            "button.flex.items-center",
-            "span",
-            "svg",
-            "path"
+            "div.group/tabs-list.inline-flex",
+            "button#radix-_R_4hd1li_-trigger-working.relative.inline-flex",
+            "button#radix-_R_4hd1li_-trigger-viewed.relative.inline-flex",
+            "button#radix-_R_4hd1li_-trigger-ignored.relative.inline-flex",
+            "button#radix-_R_4hd1li_-trigger-archived.relative.inline-flex"
           ],
           "smallTargets": 1,
           "smallPrimary": 27,
@@ -106,7 +103,7 @@
             "tag": "button",
             "label": "Проект",
             "visibleRing": true,
-            "inView": false,
+            "inView": true,
             "size": [
               220,
               36
@@ -150,7 +147,7 @@
             "tag": "button",
             "label": "Открыть",
             "visibleRing": false,
-            "inView": true,
+            "inView": false,
             "size": [
               152,
               40
@@ -161,7 +158,7 @@
             "tag": "button",
             "label": "Хороший лид",
             "visibleRing": false,
-            "inView": false,
+            "inView": true,
             "size": [
               152,
               40
@@ -227,7 +224,7 @@
             "tag": "button",
             "label": "Сергей ПановТёплыйНовыйКто-нибудь работа",
             "visibleRing": true,
-            "inView": false,
+            "inView": true,
             "size": [
               304,
               151
@@ -325,8 +322,8 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 864,
-          "cls": 0.086,
+          "lcp": 228,
+          "cls": 0.5,
           "inp": 32,
           "interactions": [
             "field",
@@ -340,11 +337,11 @@
         "failedReq": [],
         "ok": false,
         "issues": [
-          "A7 horizontal overflow: div.flex.flex-wrap, button.flex.items-center, svg, path, button.flex.items-center, span, svg, path",
           "A4 1 standalone controls < 24px",
           "A4 27 primary buttons < 44px on mobile",
           "A10 1 inputs < 16px on mobile (iOS zoom)",
-          "C2 14 focused elements without visible ring"
+          "C2 14 focused elements without visible ring",
+          "E7 CLS 0.5 > 0.1"
         ]
       },
       "768x1024": {
@@ -911,9 +908,9 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 844,
-          "cls": 0.024,
-          "inp": 32,
+          "lcp": 312,
+          "cls": 0.02,
+          "inp": 40,
           "interactions": [
             "field",
             "cta"
@@ -1303,7 +1300,7 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              577,
+              603,
               17
             ],
             "covered": false
@@ -1336,7 +1333,7 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              256,
+              268,
               17
             ],
             "covered": false
@@ -1542,8 +1539,8 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 964,
-          "cls": 0.25,
+          "lcp": 316,
+          "cls": 0.249,
           "inp": 40,
           "interactions": [
             "field",
@@ -1560,7 +1557,7 @@
           "A4 18 standalone controls < 24px",
           "C2 14 focused elements without visible ring",
           "C2 1 focused elements covered by sticky UI",
-          "E7 CLS 0.25 > 0.1"
+          "E7 CLS 0.249 > 0.1"
         ]
       }
     }

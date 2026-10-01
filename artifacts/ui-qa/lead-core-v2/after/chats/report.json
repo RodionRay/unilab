@@ -1,6 +1,6 @@
 {
   "base": "http://127.0.0.1:8011",
-  "started": "2026-10-01T06:46:25.876Z",
+  "started": "2026-10-01T07:08:52.613Z",
   "routes": {
     "/app?view=chats": {
       "390x844": {
@@ -151,8 +151,8 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 852,
-          "cls": 0.028,
+          "lcp": 220,
+          "cls": 0.141,
           "inp": 24,
           "interactions": [
             "field"
@@ -168,7 +168,8 @@
           "A4 1 standalone controls < 24px",
           "A4 8 primary buttons < 44px on mobile",
           "A10 1 inputs < 16px on mobile (iOS zoom)",
-          "C2 4 focused elements without visible ring"
+          "C2 4 focused elements without visible ring",
+          "E7 CLS 0.141 > 0.1"
         ]
       },
       "768x1024": {
@@ -561,9 +562,9 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 816,
-          "cls": 0.013,
-          "inp": 24,
+          "lcp": 180,
+          "cls": 0.011,
+          "inp": 32,
           "interactions": [
             "field"
           ],
@@ -917,7 +918,7 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              577,
+              603,
               17
             ],
             "covered": false
@@ -950,7 +951,7 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              256,
+              268,
               17
             ],
             "covered": false
@@ -1024,8 +1025,8 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 852,
-          "cls": 0.013,
+          "lcp": 296,
+          "cls": 0.008,
           "inp": 24,
           "interactions": [
             "field"
@@ -1044,6 +1045,6 @@
       }
     }
   },
-  "failures": 8,
+  "failures": 9,
   "visualFailures": 0
 }

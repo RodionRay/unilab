@@ -1,6 +1,6 @@
 {
   "base": "http://127.0.0.1:8011",
-  "started": "2026-10-01T06:44:45.940Z",
+  "started": "2026-10-01T11:29:42.919Z",
   "routes": {
     "/app?view=ai": {
       "390x844": {
@@ -12,7 +12,7 @@
             "span.aiw-tab-count"
           ],
           "smallTargets": 1,
-          "smallPrimary": 30,
+          "smallPrimary": 28,
           "smallInputs": 0,
           "imgsNoDims": 0,
           "imgsBroken": 0,
@@ -22,7 +22,7 @@
           "main": true,
           "nav": true,
           "unlabeled": 0,
-          "stickyPct": 27,
+          "stickyPct": 14,
           "bodyBg": "rgb(25, 25, 25)",
           "bodyFont": "\"PP Mori\", \"Plus Jakarta Sans\", Helvetica, Arial, sans-serif",
           "fontsLoaded": "loaded",
@@ -120,6 +120,17 @@
           },
           {
             "tag": "button",
+            "label": "27 лидов: открыть раздел «Лиды»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              95,
+              26
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
             "label": "Обойти сейчас",
             "visibleRing": true,
             "inView": true,
@@ -142,7 +153,7 @@
           },
           {
             "tag": "button",
-            "label": "СтарыеСтарше глубины просмотра проекта.2",
+            "label": "Старше 7 днейСтарше глубины просмотра пр",
             "visibleRing": true,
             "inView": true,
             "size": [
@@ -153,12 +164,12 @@
           },
           {
             "tag": "button",
-            "label": "КороткиеКороче 12 символов: «+», «спасиб",
+            "label": "Короткие (меньше 12 символов)Ответы врод",
             "visibleRing": true,
             "inView": true,
             "size": [
               324,
-              46
+              68
             ],
             "covered": false
           },
@@ -235,7 +246,7 @@
             "inView": true,
             "size": [
               324,
-              61
+              57
             ],
             "covered": false
           },
@@ -246,7 +257,7 @@
             "inView": true,
             "size": [
               324,
-              61
+              57
             ],
             "covered": false
           },
@@ -267,8 +278,8 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              109,
-              40
+              83,
+              32
             ],
             "covered": false
           },
@@ -333,8 +344,8 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              103,
-              36
+              324,
+              27
             ],
             "covered": false
           },
@@ -344,8 +355,8 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              213,
-              40
+              324,
+              44
             ],
             "covered": false
           },
@@ -586,8 +597,8 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              189,
-              36
+              324,
+              27
             ],
             "covered": false
           },
@@ -619,8 +630,8 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              189,
-              36
+              324,
+              27
             ],
             "covered": false
           },
@@ -693,7 +704,7 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 2164,
+          "lcp": 1748,
           "cls": 0,
           "inp": 24,
           "interactions": [
@@ -708,7 +719,7 @@
         "ok": false,
         "issues": [
           "A4 1 standalone controls < 24px",
-          "A4 30 primary buttons < 44px on mobile"
+          "A4 28 primary buttons < 44px on mobile"
         ]
       },
       "768x1024": {
@@ -727,7 +738,7 @@
           "main": true,
           "nav": true,
           "unlabeled": 0,
-          "stickyPct": 119,
+          "stickyPct": 112,
           "bodyBg": "rgb(25, 25, 25)",
           "bodyFont": "\"PP Mori\", \"Plus Jakarta Sans\", Helvetica, Arial, sans-serif",
           "fontsLoaded": "loaded",
@@ -1067,6 +1078,17 @@
           },
           {
             "tag": "button",
+            "label": "27 лидов: открыть раздел «Лиды»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              103,
+              29
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
             "label": "Обойти сейчас",
             "visibleRing": true,
             "inView": true,
@@ -1089,7 +1111,7 @@
           },
           {
             "tag": "button",
-            "label": "СтарыеСтарше глубины просмотра проекта.2",
+            "label": "Старше 7 днейСтарше глубины просмотра пр",
             "visibleRing": true,
             "inView": true,
             "size": [
@@ -1100,7 +1122,7 @@
           },
           {
             "tag": "button",
-            "label": "КороткиеКороче 12 символов: «+», «спасиб",
+            "label": "Короткие (меньше 12 символов)Ответы врод",
             "visibleRing": true,
             "inView": true,
             "size": [
@@ -1182,7 +1204,7 @@
             "inView": true,
             "size": [
               415,
-              61
+              57
             ],
             "covered": false
           },
@@ -1193,7 +1215,7 @@
             "inView": true,
             "size": [
               415,
-              61
+              57
             ],
             "covered": false
           },
@@ -1214,8 +1236,8 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              109,
-              40
+              83,
+              32
             ],
             "covered": false
           },
@@ -1603,22 +1625,11 @@
               24
             ],
             "covered": false
-          },
-          {
-            "tag": "button",
-            "label": "",
-            "visibleRing": true,
-            "inView": true,
-            "size": [
-              32,
-              24
-            ],
-            "covered": false
           }
         ],
         "axe": null,
         "vitals": {
-          "lcp": 1980,
+          "lcp": 1308,
           "cls": 0,
           "inp": 32,
           "interactions": [
@@ -1651,7 +1662,7 @@
           "main": true,
           "nav": true,
           "unlabeled": 0,
-          "stickyPct": 121,
+          "stickyPct": 114,
           "bodyBg": "rgb(25, 25, 25)",
           "bodyFont": "\"PP Mori\", \"Plus Jakarta Sans\", Helvetica, Arial, sans-serif",
           "fontsLoaded": "loaded",
@@ -1991,6 +2002,17 @@
           },
           {
             "tag": "button",
+            "label": "27 лидов: открыть раздел «Лиды»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              126,
+              35
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
             "label": "Обойти сейчас",
             "visibleRing": true,
             "inView": true,
@@ -2013,7 +2035,7 @@
           },
           {
             "tag": "button",
-            "label": "СтарыеСтарше глубины просмотра проекта.2",
+            "label": "Старше 7 днейСтарше глубины просмотра пр",
             "visibleRing": true,
             "inView": true,
             "size": [
@@ -2024,7 +2046,7 @@
           },
           {
             "tag": "button",
-            "label": "КороткиеКороче 12 символов: «+», «спасиб",
+            "label": "Короткие (меньше 12 символов)Ответы врод",
             "visibleRing": true,
             "inView": true,
             "size": [
@@ -2106,7 +2128,7 @@
             "inView": true,
             "size": [
               405,
-              61
+              57
             ],
             "covered": false
           },
@@ -2117,7 +2139,7 @@
             "inView": true,
             "size": [
               405,
-              61
+              57
             ],
             "covered": false
           },
@@ -2138,8 +2160,8 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              109,
-              40
+              83,
+              32
             ],
             "covered": false
           },
@@ -2240,7 +2262,7 @@
               1063,
               64
             ],
-            "covered": true
+            "covered": false
           },
           {
             "tag": "textarea",
@@ -2527,22 +2549,11 @@
               24
             ],
             "covered": false
-          },
-          {
-            "tag": "button",
-            "label": "",
-            "visibleRing": true,
-            "inView": true,
-            "size": [
-              32,
-              24
-            ],
-            "covered": false
           }
         ],
         "axe": null,
         "vitals": {
-          "lcp": 1964,
+          "lcp": 1188,
           "cls": 0.03,
           "inp": 32,
           "interactions": [
@@ -2556,12 +2567,11 @@
         "failedReq": [],
         "ok": false,
         "issues": [
-          "A4 13 standalone controls < 24px",
-          "C2 1 focused elements covered by sticky UI"
+          "A4 13 standalone controls < 24px"
         ]
       }
     }
   },
-  "failures": 5,
+  "failures": 4,
   "visualFailures": 0
 }

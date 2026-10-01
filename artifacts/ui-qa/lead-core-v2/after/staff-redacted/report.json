@@ -1,6 +1,6 @@
 {
   "base": "http://127.0.0.1:8011",
-  "started": "2026-10-01T06:46:01.599Z",
+  "started": "2026-10-01T07:08:35.463Z",
   "routes": {
     "/app?view=ai": {
       "390x844": {
@@ -19,7 +19,7 @@
           "main": true,
           "nav": true,
           "unlabeled": 0,
-          "stickyPct": 27,
+          "stickyPct": 14,
           "bodyBg": "rgb(25, 25, 25)",
           "bodyFont": "\"PP Mori\", \"Plus Jakarta Sans\", Helvetica, Arial, sans-serif",
           "fontsLoaded": "loaded",
@@ -117,6 +117,17 @@
           },
           {
             "tag": "button",
+            "label": "27 лидов: открыть раздел «Лиды»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              95,
+              26
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
             "label": "Обойти сейчас",
             "visibleRing": true,
             "inView": true,
@@ -165,8 +176,8 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              103,
-              36
+              324,
+              27
             ],
             "covered": false
           },
@@ -176,8 +187,8 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              213,
-              40
+              324,
+              44
             ],
             "covered": false
           },
@@ -448,7 +459,7 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 2040,
+          "lcp": 464,
           "cls": 0,
           "inp": 32,
           "interactions": [
@@ -458,18 +469,12 @@
           "field": "text"
         },
         "states": null,
-        "consoleErrors": [
-          "Failed to load resource: the server responded with a status of 403 (Forbidden)"
-        ],
-        "failedReq": [
-          "403 http://127.0.0.1:8011/api/workspace"
-        ],
+        "consoleErrors": [],
+        "failedReq": [],
         "ok": false,
         "issues": [
           "A4 1 standalone controls < 24px",
-          "A4 21 primary buttons < 44px on mobile",
-          "E8 console errors: 1",
-          "E8 failed requests: 1"
+          "A4 21 primary buttons < 44px on mobile"
         ]
       },
       "768x1024": {
@@ -488,7 +493,7 @@
           "main": true,
           "nav": true,
           "unlabeled": 0,
-          "stickyPct": 119,
+          "stickyPct": 112,
           "bodyBg": "rgb(25, 25, 25)",
           "bodyFont": "\"PP Mori\", \"Plus Jakarta Sans\", Helvetica, Arial, sans-serif",
           "fontsLoaded": "loaded",
@@ -669,6 +674,17 @@
             "size": [
               64,
               28
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "27 лидов: открыть раздел «Лиды»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              103,
+              29
             ],
             "covered": false
           },
@@ -1005,7 +1021,7 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 1964,
+          "lcp": 404,
           "cls": 0.043,
           "inp": 32,
           "interactions": [
@@ -1015,17 +1031,11 @@
           "field": "text"
         },
         "states": null,
-        "consoleErrors": [
-          "Failed to load resource: the server responded with a status of 403 (Forbidden)"
-        ],
-        "failedReq": [
-          "403 http://127.0.0.1:8011/api/workspace"
-        ],
+        "consoleErrors": [],
+        "failedReq": [],
         "ok": false,
         "issues": [
-          "A4 6 standalone controls < 24px",
-          "E8 console errors: 1",
-          "E8 failed requests: 1"
+          "A4 6 standalone controls < 24px"
         ]
       },
       "1440x900": {
@@ -1044,7 +1054,7 @@
           "main": true,
           "nav": true,
           "unlabeled": 0,
-          "stickyPct": 121,
+          "stickyPct": 114,
           "bodyBg": "rgb(25, 25, 25)",
           "bodyFont": "\"PP Mori\", \"Plus Jakarta Sans\", Helvetica, Arial, sans-serif",
           "fontsLoaded": "loaded",
@@ -1230,6 +1240,17 @@
           },
           {
             "tag": "button",
+            "label": "27 лидов: открыть раздел «Лиды»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              126,
+              35
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
             "label": "Обойти сейчас",
             "visibleRing": true,
             "inView": true,
@@ -1303,7 +1324,7 @@
               1063,
               69
             ],
-            "covered": true
+            "covered": false
           },
           {
             "tag": "textarea",
@@ -1347,7 +1368,7 @@
               1063,
               64
             ],
-            "covered": true
+            "covered": false
           },
           {
             "tag": "button",
@@ -1501,7 +1522,7 @@
               524,
               64
             ],
-            "covered": true
+            "covered": false
           },
           {
             "tag": "textarea",
@@ -1512,7 +1533,7 @@
               524,
               64
             ],
-            "covered": true
+            "covered": false
           },
           {
             "tag": "input",
@@ -1561,9 +1582,9 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 2020,
+          "lcp": 604,
           "cls": 0.124,
-          "inp": 32,
+          "inp": 40,
           "interactions": [
             "field"
           ],
@@ -1571,23 +1592,16 @@
           "field": "text"
         },
         "states": null,
-        "consoleErrors": [
-          "Failed to load resource: the server responded with a status of 403 (Forbidden)"
-        ],
-        "failedReq": [
-          "403 http://127.0.0.1:8011/api/workspace"
-        ],
+        "consoleErrors": [],
+        "failedReq": [],
         "ok": false,
         "issues": [
           "A4 6 standalone controls < 24px",
-          "C2 4 focused elements covered by sticky UI",
-          "E8 console errors: 1",
-          "E8 failed requests: 1",
           "E7 CLS 0.124 > 0.1"
         ]
       }
     }
   },
-  "failures": 12,
+  "failures": 5,
   "visualFailures": 0
 }
