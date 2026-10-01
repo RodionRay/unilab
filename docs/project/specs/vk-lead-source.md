@@ -1,5 +1,5 @@
 ---
-status: clarified (owner answers 2026-10-01; plan review pending)
+status: approved (plan review APPROVE_WITH_CHANGES 2026-10-01, amendments AM-1..17 binding)
 size: full
 type: feature
 model: claude-opus-5-5 (effort: session)
@@ -119,14 +119,15 @@ Milestone M1 = read-only VK leads. Risks first.
 - **S0 spike (wave 0)** — `lib/vk/client.ts` minimal + script `scripts/vk-spike.mjs`: call each method with a real
   token, record sanitised responses to `tests/fixtures/vk/*.json`, document limits/errors in this spec (Surprises).
   Verify: script prints method → ok/error code. Owns: `lib/vk/`, `scripts/vk-spike.mjs`, `tests/fixtures/vk/`.
-- **T1 shared ingest refactor (wave 1)** — extract `ingestLeadCandidates` from `R` `scan_group` into
-  `lib/processes/lead-ingest.ts`; generalise `leadMessageFingerprint` to accept a `msgKey`. REQ-13, REQ-6.
-  Verify: `npm test` all green, no Telegram test changed. Owns: `R` (scan_group part), `lib/lead-filter.ts`, `lib/processes/`.
+- **T1 ingest seam (wave 1)** — pure `lib/processes/lead-ingest.ts::pickLeads({items:[{key,message,name,date}],
+  coreSettings, seen, aiRejects, depthCutoff, qualify})` → `{kept, rejectedIds, funnel}`; move `R::qualifyLeadsWithAi`
+  verbatim to `lib/processes/lead-ai.ts` (pure-move edit in `R`). Switching `scan_group` to `pickLeads` only if Telegram
+  tests stay unchanged. REQ-5, REQ-13. Verify: new unit tests + `npm test` green. Owns: `lib/processes/lead-*`, the move in `R`.
 - **T2 VK transport + client + pool (wave 1, [P] with T1)** — worker `vk_api.py` + `/vk-call` route (proxy, pacing,
-  error passthrough; Python unittest with a stub server); `lib/vk/client.ts` (version, error mapping, via `workerPost`),
+  error passthrough; Python unittest with a stub server); `lib/vk/client.ts` (version, error mapping, injected `post(path,body,ms)`; T3 wires `workerPost`),
   `lib/vk/pool.ts` (account pick, failover, daily caps, cooldown), `lib/vk/import.ts` (line parser), `lib/vk/parse.ts`
   (post/comment/board → candidate + D4 key + deep link), `lib/vk/url.ts`. REQ-1 (parse), 1a, 1b, 9, 10.
-  Verify: unit tests on fixtures. Owns: `lib/vk/*`, `telegram-worker/src/vk_api.py`, worker route map, `tests/vk-*`.
+  Verify: unit tests on fixtures. Owns: `lib/vk/*`, `telegram-worker/src/vk_api.py`, `worker-app.mjs::ROUTES['/vk-call']` + timeout, `check_account.py::run_action` `vk_call` branch, `tests/vk-*`, `telegram-worker/tests/test_vk_api.py`.
 - **T3 VK scan + storage + cron (wave 2)** — record kinds, `R` VK actions, `scan_vk_source` via T1 ingest, notify mark,
   auto-rescan loop. REQ-1..8. Verify: route-level tests with `tests/helpers/workspace-harness.ts` + mocked `fetch`
   (search + group, rerun = 0 new leads, concurrent run = 1 lead, error 5/6/14 paths). Owns: `R` VK actions, cron route.
@@ -137,6 +138,25 @@ Milestone M1 = read-only VK leads. Risks first.
   check with the owner's token.
 
 Dependency: S0 → T2 fixtures; T1 ∥ T2 → T3 → T4.
+
+## Plan review amendments (2026-10-01, binding; override text above on conflict)
+- AM-1 REQ-6: lead `id` = UUID-shaped hash(owner+msgKey) (version nibble set), insert `INSERT OR IGNORE`, count `meta.changes`.
+- AM-2 New REQ-14: deleting a VK lead tombstones its `msgKey` on its `vk_source`; ingest `seen` = union of all owner's vk_source tombstones; `R::rememberDeletedLead` VK branch.
+- AM-3 New REQ-15: lead zod + `scan-flow.ts::SERVER_OWNED.lead` gain `platform,msgKey,url,vkSourceId`; vk_source server-owned fields; `message` truncated to 8000 at ingest.
+- AM-4 `vk_account`/`vk_source` never in generic `kindSchema` save; actions handled before `kindSchema.parse`; proxy delete guard checks `vk_account.proxyId`.
+- AM-5 T1 = seam (`pickLeads` + verbatim move); `lib/lead-filter.ts` untouched (VK dedup = `msgKey` equality).
+- AM-6 T2 owns `check_account.py::run_action` branch + `ROUTES['/vk-call']`; client gets injected `post`.
+- AM-7 `/vk-call`: hard 45 s deadline in Python (unrun calls → `{code:-1,msg:'deadline'}`, retries count), host fixed `api.vk.com`, reuse `make_proxy`/`resolve_public_host`.
+- AM-8 REQ-9 by code: 6 → pause+retry same token; 9/14 → account cooldown (14: 60 min, no captcha solving); 29 → `searchBlockedUntil` next Moscow midnight for that method; 5/17/18 → account `error`, no proxy rotation; 15/30/203/212 → skip item/source, no failover.
+- AM-9 REQ-1b: one live scan per account (lease on `vk_account`).
+- AM-10 REQ-1: import in chunks ≤20 lines/request (UI loops); parser also accepts `oauth.vk.com/blank.html#access_token=…&user_id=…`; store `expires_in`, warn if ≠0.
+- AM-11 REQ-1a: per-proxy cap counts Telegram + VK accounts.
+- AM-12 REQ-8: `rescan_groups` also returns ≤3 due `vkSourceIds`; `tickOwner` interleaves, VK `SCAN_TIMEOUT` 60 s, threshold `left()≥70s`.
+- AM-13 REQ-5: AI-reject memory + metrics on `vk_source`, keyed by `msgKey`, filtered by `vkSourceId`.
+- AM-14 REQ-7: `notifyNewLeadsTelegram` input gains `platform,url`; line `[VK] … · <source>\n<url>` (T3).
+- AM-15 REQ-3: `extended=1`; community posts (`from_id<0`) named by `signer_id` else group name.
+- AM-16 A-3 evidence = dev.vk.com limits ≈1000/day (S0 confirms); A-7: tokens may be IP-bound → one fixed proxy per account.
+- AM-17 S0 records `groups.getById` 5.199 shape and whether `execute` is allowed (if yes, T2 may batch comments).
 
 ## Verification plan
 REQ-1..10, 13 → vitest (route + unit, fixtures from S0). REQ-11, 12 → ui-qa screenshots + e2e on stand.
