@@ -35,12 +35,13 @@ describe('buildDraftPrompt (REQ-17)', () => {
 });
 
 describe('buildGroupJudgePrompt', () => {
-  it('lists messages as escaped JSON data and caps examples at 10', () => {
+  it('lists messages and examples as escaped JSON data, newest 10 examples', () => {
     const many = Array.from({length: 14}, (_, i) => `пример ${i}`);
     const project = {...makeProject(), goodExamples: many, badExamples: many};
     const p = buildGroupJudgePrompt(project, [makeMessage(1, {message: 'a <b> "c"'})]);
     expect(p.user).toContain('\\u003cb>');
-    expect(p.system + p.user).not.toContain('пример 10');
+    expect(p.system + p.user).not.toContain('"пример 3"');
+    expect(p.user).toContain('"пример 13"');
   });
 });
 

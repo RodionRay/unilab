@@ -192,7 +192,6 @@ describe('runDmJudge (REQ-15, REQ-16)', () => {
   function dmDeps(messages: DmJudgeDeps['messages'], llm: JsonLlm | null, over: Partial<DmJudgeDeps> = {}): DmJudgeDeps {
     return {
       projects,
-      funnelProjectId: 'p1',
       messages,
       ownAccounts: {userIds: new Set(['999']), usernames: new Set(['ourbot'])},
       knownSenderIds: new Set(),
