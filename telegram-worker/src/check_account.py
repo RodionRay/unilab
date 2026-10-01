@@ -3107,17 +3107,24 @@ def is_account_deactivated(exc: BaseException) -> bool:
     return type(exc).__name__ in _DEACTIVATED_CLASSES or "USER_DEACTIVATED" in str(exc).upper()
 
 
-async def _control_blind_suspect(client, payload: dict[str, Any]) -> bool:
-    """Both group-independent controls answer «not occupied»: a soft sign of a deleted account.
+async def _control_outcome(client, payload: dict[str, Any]) -> str:
+    """Group-independent control: "ok" (@telegram resolved), "blind" (@telegram and @durov «not occupied»),
+    "unknown" (FloodWait / network on a control) or "skipped" (checkDeleted:false / @durov alone resolved).
 
     A deleted account still logs in, but other users see «Удалённый аккаунт» and it resolves no @username.
-    Only explicit «not occupied» counts; FloodWait / network on either control means «unknown» → False.
+    Only "ok" proves the account alive; the route clears block signs on nothing else.
     """
     if not payload.get("checkDeleted", True):
-        return False
-    if await _control_resolve_blind(client) is not True:
-        return False
-    return await _control_resolve_blind(client, DELETED_CONFIRM_USERNAME) is True
+        return "skipped"
+    first = await _control_resolve_blind(client)
+    if first is False:
+        return "ok"
+    if first is None:
+        return "unknown"
+    second = await _control_resolve_blind(client, DELETED_CONFIRM_USERNAME)
+    if second is None:
+        return "unknown"
+    return "blind" if second else "skipped"
 
 
 async def check_account(client, payload: dict[str, Any]) -> dict[str, Any]:
@@ -3147,9 +3154,18 @@ async def check_account(client, payload: dict[str, Any]) -> dict[str, Any]:
         }
     if profile.get("deleted"):
         return {"ok": False, "status": "deleted", "error": DELETED_SELF_ERROR, "profile": profile}
-    if await _control_blind_suspect(client, payload):
+    control = await _control_outcome(client, payload)
+    control_fields = {"controlOk": control == "ok", "controlUnknown": control == "unknown"}
+    if control == "blind":
         # Soft signal: the route excludes the account at once and confirms 'deleted' only on a later check.
-        return {"ok": False, "status": "active", "deletedSuspect": True, "error": CONTROL_BLIND_ERROR, "profile": profile}
+        return {
+            "ok": False,
+            "status": "active",
+            "deletedSuspect": True,
+            "error": CONTROL_BLIND_ERROR,
+            "profile": profile,
+            **control_fields,
+        }
     restriction = None
     if payload.get("checkRestrictions", True):
         restriction = await check_spambot(client)
@@ -3167,7 +3183,7 @@ async def check_account(client, payload: dict[str, Any]) -> dict[str, Any]:
         error = "Аккаунт заморожен"
     elif not profile.get("username") and profile.get("usernameError"):
         error = f"Без @username: {profile['usernameError']}"
-    return {"ok": status == "active", "status": status, "error": error, "profile": profile}
+    return {"ok": status == "active", "status": status, "error": error, "profile": profile, **control_fields}
 
 
 async def run_check(payload: dict[str, Any]) -> dict[str, Any]:

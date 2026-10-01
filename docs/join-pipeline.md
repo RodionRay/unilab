@@ -28,14 +28,18 @@ is never usable: `isAccountUsable`, `canPollDmInbox`, `join-flow.ts::evaluateAcc
 - Hard signals set `deleted` (worker `telegram-worker/src/check_account.py::check_account`): `get_me().deleted`, or a
   check that raises `USER_DEACTIVATED(_BAN)` (`is_account_deactivated` in `run_check`; other actions keep
   `classify_error`'s verdict).
-- Soft signal — @telegram AND @durov (`DELETED_CONFIRM_USERNAME`) both «not occupied» (`_control_blind_suspect`;
-  FloodWait / network on a control = unknown, no signal): the worker answers `status:'active', deletedSuspect:true`.
+- Soft signal — @telegram AND @durov (`DELETED_CONFIRM_USERNAME`) both «not occupied» (`_control_outcome` =
+  "blind"; FloodWait / network on a control = "unknown", no signal): the worker answers `status:'active', deletedSuspect:true`.
   `route.ts::saveControlBlindVerdict` stores the first-seen time in `controlBlindSince`; the account is out of every
   use at once (`isDeletedSuspect`), and becomes `deleted` only when a later check sees the same at least
   `DELETED_CONFIRM_AFTER_MS` (6 h) after the first. Payload `checkDeleted:false` skips the control resolve.
 - A blind join answer does not set `deleted`: it stamps `deletedSuspectAt` (`join-flow.ts::deletedSuspectPatch`).
-  «Перепроверить проблемные» (`needsAccountRecheck`, UI and `check_accounts mode:'problem'`) includes suspects; a
-  clean check clears the soft signs (`clearedSuspectPatch`). The accounts table shows «Не видит @telegram — не
+  «Перепроверить проблемные» (`needsAccountRecheck`, UI and `check_accounts mode:'problem'`) includes suspects.
+- Revival only on a positive control: a clean `active` check clears the soft signs (`clearedSuspectPatch`) and
+  revives `deleted` only when the worker's @telegram control resolved (`controlOk:true`, `_control_outcome` = "ok").
+  An inconclusive control (`controlUnknown`: FloodWait / network, or only @durov resolved, or a worker without the
+  field) keeps the soft signs, a blind error and `deleted`; a check that fails to connect (`disconnected` /
+  `proxy_error`, FloodWait included) keeps `deleted` too (`route.ts::keepDeletedAfterFailedCheck`). The accounts table shows «Не видит @telegram — не
   используется, перепроверка через N ч» (`suspectRecheckHours`).
 - An account form save never sets or clears `deleted` or the server-owned block fields `deletedSuspectAt`,
   `controlBlindSince`, `resolveBlindUntil` (`telegram-accounts.ts::keepServerOwnedAccountFields`, applied in the

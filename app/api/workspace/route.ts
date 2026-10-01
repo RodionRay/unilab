@@ -24,7 +24,7 @@ import {
 } from '@/lib/processes/scan-flow';
 import {appendLearnExamples,extractTermsFromHotMessages,mergeKeywords,mergeKeywordsPreferNew,parseKeywordCsv} from '@/lib/ai-keywords';
 import {sanitizeMinusTerms,scanStopTerms} from '@/lib/lead-stopwords';
-import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,DELETED_CONFIRM_AFTER_MS,accountTelegramBlock,isAccountJoinBlocked,isDeletedSuspect,type TelegramBlock,clearedSuspectPatch,keepServerOwnedAccountFields,needsAccountRecheck,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpChatCounters,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasMemberInviteQuota,hasMessageQuota,isAccountFlooded,isAccountUsable,isDayLimitCooldown,isDayLimitedFor,dayLimitCooldownKind,isOnCooldown,joinWaitSec,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
+import {ACCOUNT_STATUSES,BLIND_ERROR_PREFIX,DEFAULT_ACCOUNT_LIMITS,DELETED_CONFIRM_AFTER_MS,accountTelegramBlock,isAccountJoinBlocked,isDeletedSuspect,type TelegramBlock,clearedSuspectPatch,keepServerOwnedAccountFields,needsAccountRecheck,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpChatCounters,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasMemberInviteQuota,hasMessageQuota,isAccountFlooded,isAccountUsable,isDayLimitCooldown,isDayLimitedFor,dayLimitCooldownKind,isOnCooldown,joinWaitSec,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
 import {INVITE_SOFT_FAIL_LIMIT,interpretInviteWorkerResult,inviteAccountStillLive,inviteBatchLimit,inviteUserPatch} from '@/lib/processes/invite-tick';
 import {bracketLabel,formatRuWhen,inviteUserFailText,inviteUserOkText,normalizeStatusFilters,normalizeTgRef,pushTaskLog,pushTaskLogs,randomPauseSec} from '@/lib/audience-invite';
 import {canonicalizeTgUrl,duplicateReason,isDuplicateKind,telegramEntityKey} from '@/lib/record-identity';
@@ -771,6 +771,12 @@ async function saveControlBlindVerdict(owner:string,id:string,next:Record<string
  return {id,ok:false,status:verdict.status,deletedSuspect:!confirmed,error:verdict.error,proxyRotated:proxyRotated||undefined};
 }
 
+async function keepDeletedAfterFailedCheck(owner:string,id:string,data:Record<string,unknown>,err:string,proxyRotated:string){
+ const kept={...data,status:'deleted',checkingAt:''};
+ await database().prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(kept),owner,id,'account').run();
+ return {id,ok:false,status:'deleted',error:String(data.error||err).slice(0,500),proxyRotated:proxyRotated||undefined};
+}
+
 async function runAccountCheck(owner:string,id:string,opts?:{
  checkRestrictions?:boolean;
  ensureUsername?:boolean;
@@ -831,8 +837,21 @@ async function runAccountCheck(owner:string,id:string,opts?:{
     return saveControlBlindVerdict(owner,id,next,err,proxyRotated);
    }
    if(workerResult.ok||status==='active'){
-    const okNext={...next,status:'active',cooldownUntil:'',cooldownReason:'',error:'',...clearedSuspectPatch()};
+    // Only a positively resolved @telegram control proves the account alive; an inconclusive one (FloodWait,
+    // network, controlUnknown, an old worker) keeps 'deleted', the soft block signs and the blind error.
+    const proven=workerResult.controlOk===true;
+    const keepDeleted=!proven&&data.status==='deleted';
+    const keptError=!proven&&String(data.error||'').startsWith(BLIND_ERROR_PREFIX)?String(data.error):'';
+    const okNext={
+     ...next,
+     status:keepDeleted?'deleted':'active',
+     cooldownUntil:'',
+     cooldownReason:'',
+     error:keepDeleted?String(data.error||''):keptError,
+     ...(proven?clearedSuspectPatch():{}),
+    };
     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(okNext),owner,id,'account').run();
+    if(keepDeleted)return {id,ok:false,status:'deleted',error:okNext.error,profile,proxyRotated:proxyRotated||undefined};
     return {
      id,ok:true,status:'active',error:'',profile,
      proxyRotated:proxyRotated||undefined,
@@ -856,6 +875,10 @@ async function runAccountCheck(owner:string,id:string,opts?:{
     return {id,ok:false,status:next.status,error:next.error,profile,proxyRotated:proxyRotated||undefined};
    }
 
+   if(data.status==='deleted'&&(status==='disconnected'||status==='proxy_error')){
+    // A failed connect (FloodWait, network, proxy) proves nothing about a Telegram-deleted account: keep the verdict.
+    return keepDeletedAfterFailedCheck(owner,id,data,err||status,proxyRotated);
+   }
    if(status==='proxy_error'&&currentProxyId){
     await markProxyTelegramBad(owner,currentProxyId,err||'Ошибка прокси при подключении к Telegram');
    }
@@ -896,6 +919,7 @@ async function runAccountCheck(owner:string,id:string,opts?:{
    const msg=String((e as Error).message||e);
    lastError=msg;
    lastStatus='disconnected';
+   if(data.status==='deleted')return keepDeletedAfterFailedCheck(owner,id,data,msg,proxyRotated);
    const isTimeout=/timeout|AbortError|таймаут/i.test(msg);
    const looksProxy=/proxy|socks|ECONN|connection to telegram|прокси/i.test(msg);
    const sessionish=/сессия больше не действительн|session.*(revoked|invalid)|unauthorized|authkey/i.test(msg);

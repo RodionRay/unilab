@@ -13,7 +13,12 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import check_account as ca  # noqa: E402
-from telethon.errors import UserDeactivatedBanError, UserDeactivatedError, UsernameNotOccupiedError  # noqa: E402
+from telethon.errors import (  # noqa: E402
+    FloodWaitError,
+    UserDeactivatedBanError,
+    UserDeactivatedError,
+    UsernameNotOccupiedError,
+)
 from telethon.tl.functions.contacts import ResolveUsernameRequest  # noqa: E402
 
 CHECK_PAYLOAD = {"ensureUsername": False, "checkRestrictions": False}
@@ -29,8 +34,10 @@ class FakeClient:
         visible: frozenset[str],
         deleted: bool = False,
         me_error: Exception | None = None,
+        resolve_error: Exception | None = None,
     ) -> None:
         self.visible = visible
+        self.resolve_error = resolve_error
         self.deleted = deleted
         self.me_error = me_error
         self.resolved: list[str] = []
@@ -45,6 +52,8 @@ class FakeClient:
     async def __call__(self, request):
         if isinstance(request, ResolveUsernameRequest):
             self.resolved.append(request.username)
+            if self.resolve_error is not None:
+                raise self.resolve_error
             if request.username in self.visible:
                 return object()
             raise UsernameNotOccupiedError(request=request)
@@ -63,11 +72,32 @@ class CheckDeletedTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(res["deletedSuspect"])
         self.assertIn("@telegram", res["error"])
 
+    async def test_flood_wait_on_control_resolve_is_unknown_not_proof(self) -> None:
+        client = FakeClient(visible=frozenset(), resolve_error=FloodWaitError(request=None, capture=30))
+
+        res = await ca.check_account(client, CHECK_PAYLOAD)
+
+        self.assertEqual(res["status"], "active")
+        self.assertFalse(res.get("deletedSuspect", False))
+        self.assertTrue(res["controlUnknown"])
+        self.assertFalse(res["controlOk"])
+
+    async def test_network_error_on_control_resolve_is_unknown_not_proof(self) -> None:
+        client = FakeClient(visible=frozenset(), resolve_error=TimeoutError("resolve timed out"))
+
+        res = await ca.check_account(client, CHECK_PAYLOAD)
+
+        self.assertFalse(res.get("deletedSuspect", False))
+        self.assertTrue(res["controlUnknown"])
+        self.assertFalse(res["controlOk"])
+
     async def test_one_visible_control_username_keeps_account_active(self) -> None:
         res = await ca.check_account(FakeClient(visible=frozenset({"durov"})), CHECK_PAYLOAD)
 
         self.assertEqual(res["status"], "active")
         self.assertFalse(res.get("deletedSuspect", False))
+        # @telegram itself did not resolve: not a positive control, the route must keep the block signs.
+        self.assertFalse(res["controlOk"])
 
     async def test_healthy_account_stays_active(self) -> None:
         client = FakeClient(visible=HEALTHY)
@@ -76,6 +106,7 @@ class CheckDeletedTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(res["ok"])
         self.assertEqual(res["status"], "active")
+        self.assertTrue(res["controlOk"])
         self.assertEqual(client.resolved, ["telegram"])
 
     async def test_self_user_flagged_deleted_is_deleted(self) -> None:
@@ -89,6 +120,7 @@ class CheckDeletedTest(unittest.IsolatedAsyncioTestCase):
         res = await ca.check_account(client, {**CHECK_PAYLOAD, "checkDeleted": False})
 
         self.assertEqual(res["status"], "active")
+        self.assertFalse(res["controlOk"])
         self.assertEqual(client.resolved, [])
 
 

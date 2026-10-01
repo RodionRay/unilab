@@ -14,6 +14,7 @@ import {
   accountStatusTone,
   applyQuotaCooldownIfExhausted,
   canPollDmInbox,
+  isAccountJoinBlocked,
   isAccountUsable,
   keepServerOwnedAccountFields,
   moscowDayKey,
@@ -153,14 +154,56 @@ describe('маршрут: проверка, «слепой» join и чистк�
     expect(rec(DEAD_A).status).toBe('deleted');
   });
 
-  it('чистая проверка снимает признаки подозрения',async()=>{
-    await addAccount(LIVE,{deletedSuspectAt:new Date().toISOString(),controlBlindSince:new Date().toISOString()});
-    stubWorker(()=>({ok:true,status:'active',profile:{username:'live'}}));
+  it('чистая проверка с положительным контролем снимает все признаки подозрения',async()=>{
+    await addAccount(LIVE,{deletedSuspectAt:new Date().toISOString(),controlBlindSince:new Date().toISOString(),
+      resolveBlindUntil:new Date(Date.now()-HOUR).toISOString(),error:'Аккаунт не резолвит даже @telegram'});
+    stubWorker(()=>({ok:true,status:'active',controlOk:true,profile:{username:'live'}}));
 
     await POST(postRequest({action:'check_account',id:LIVE}));
 
-    expect(rec(LIVE)).toMatchObject({status:'active',deletedSuspectAt:'',controlBlindSince:''});
+    expect(rec(LIVE)).toMatchObject({status:'active',deletedSuspectAt:'',controlBlindSince:'',resolveBlindUntil:'',error:''});
     expect(isAccountUsable(rec(LIVE))).toBe(true);
+  });
+
+  it('проверка с неясным контролем (FloodWait на @telegram) не возвращает подозрительный аккаунт',async()=>{
+    const since=new Date(Date.now()-HOUR).toISOString();
+    await addAccount(DEAD_A,{deletedSuspectAt:since,controlBlindSince:since,error:'Аккаунт не резолвит даже @telegram'});
+    stubWorker(()=>({ok:true,status:'active',controlOk:false,controlUnknown:true,profile:{username:'x'}}));
+
+    await POST(postRequest({action:'check_account',id:DEAD_A}));
+
+    expect(rec(DEAD_A)).toMatchObject({deletedSuspectAt:since,controlBlindSince:since});
+    expect(isAccountJoinBlocked(rec(DEAD_A))).toBe(true);
+  });
+
+  it('проверка без положительного контроля не оживляет deleted',async()=>{
+    await addAccount(DEAD_A,{status:'deleted'});
+    stubWorker(()=>({ok:true,status:'active',controlOk:false,controlUnknown:true,profile:{username:'x'}}));
+
+    await POST(postRequest({action:'check_account',id:DEAD_A}));
+
+    expect(rec(DEAD_A).status).toBe('deleted');
+  });
+
+  it('положительный контроль оживляет deleted',async()=>{
+    await addAccount(DEAD_A,{status:'deleted'});
+    stubWorker(()=>({ok:true,status:'active',controlOk:true,profile:{username:'x'}}));
+
+    await POST(postRequest({action:'check_account',id:DEAD_A}));
+
+    expect(rec(DEAD_A).status).toBe('active');
+  });
+
+  it('сбой подключения при проверке (FloodWait/сеть) не перетирает deleted и подозрение',async()=>{
+    const since=new Date(Date.now()-HOUR).toISOString();
+    await addAccount(DEAD_A,{status:'deleted',deletedSuspectAt:since});
+    stubWorker(()=>({ok:false,status:'disconnected',error:'FloodWaitError: A wait of 60 seconds is required'}));
+
+    await POST(postRequest({action:'check_account',id:DEAD_A}));
+
+    const acc=rec(DEAD_A);
+    expect(acc).toMatchObject({status:'deleted',deletedSuspectAt:since,checkingAt:''});
+    expect(isAccountJoinBlocked(acc,Date.now()+2*HOUR)).toBe(true);
   });
 
   it('«слепой» ответ на вступление ставит аккаунт на перепроверку, а не удаляет его',async()=>{
