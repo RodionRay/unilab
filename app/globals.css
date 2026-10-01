@@ -5002,13 +5002,13 @@ button[data-slot="button"][data-variant="ghost"]:hover {
 /* Funnel ledger: the one bold place */
 .aiw-headline {
   margin: 0 0 6px;
-  max-width: 30ch;
+  max-width: 40ch;
   font-size: clamp(1.375rem, 1.1rem + 0.8vw, 1.875rem);
   font-weight: 500;
   line-height: 1.2;
   letter-spacing: -0.015em;
   color: var(--spike-text);
-  text-wrap: balance;
+  text-wrap: pretty;
 }
 .aiw-headline strong {
   font-weight: 700;
@@ -5028,8 +5028,8 @@ button[data-slot="button"][data-variant="ghost"]:hover {
 .aiw-alert {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-  padding: 12px 14px;
+  gap: 10px;
+  padding: 10px 12px;
   border: 1px solid var(--spike-border);
   border-radius: 12px;
 }
@@ -5049,8 +5049,8 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   color: var(--spike-warning);
 }
 .aiw-alert.is-error {
-  border-color: color-mix(in srgb, var(--spike-error) 35%, transparent);
-  background: var(--spike-error-light);
+  border-color: color-mix(in srgb, var(--spike-error) 25%, transparent);
+  background: color-mix(in srgb, var(--spike-error) 7%, transparent);
 }
 .aiw-alert.is-error > svg {
   color: var(--spike-error);
@@ -5082,16 +5082,17 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   grid-template-columns: minmax(0, 1fr) auto 16px;
   grid-template-areas: "label figures chev" "bar bar .";
   align-items: center;
-  gap: 8px 16px;
+  gap: 6px 16px;
   width: 100%;
   min-height: 44px;
-  padding: 12px 8px;
+  padding: 9px 8px;
   border: 0;
   border-radius: 10px;
   background: transparent;
   color: inherit;
   font: inherit;
   text-align: left;
+  position: relative;
 }
 button.aiw-row-main {
   cursor: pointer;
@@ -5118,6 +5119,14 @@ button.aiw-row-main {
   font-size: 0.75rem;
   line-height: 1.4;
   color: var(--spike-muted);
+}
+.aiw-row:not([data-open]) .aiw-row-hint {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 .aiw-row-figures {
   grid-area: figures;
@@ -5400,8 +5409,12 @@ button.aiw-row-main {
   padding-top: 16px;
   border-top: 1px solid var(--spike-border);
 }
+.aiw-draft-head > .min-w-0 {
+  flex: 1 1 220px;
+}
 .aiw-draft-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
@@ -5766,7 +5779,7 @@ button.aiw-row-main {
     gap: 20px;
   }
   .aiw-row-main {
-    padding: 12px 4px;
+    padding: 9px 4px;
   }
   .aiw-row:not([data-tone="total"]):not([data-tone="lead"]) .aiw-row-main {
     padding-left: 12px;
@@ -5774,18 +5787,13 @@ button.aiw-row-main {
   .aiw-samples {
     padding-left: 12px;
   }
-  .aiw-row-hint {
-    display: none;
-  }
-  .aiw-row[data-open] .aiw-row-hint {
-    display: block;
-  }
   .aiw-inline,
   .aiw-alert {
     flex-wrap: wrap;
   }
   .aiw-alert > button {
-    margin-left: 30px;
+    margin-left: 28px;
+    margin-right: auto;
   }
   .aiw-draft-actions > button,
   .aiw-savebar .aiw-draft-actions > button,
@@ -5811,6 +5819,22 @@ button.aiw-row-main {
   }
   .aiw-card-head {
     flex-wrap: nowrap;
+  }
+}
+
+@media (max-width: 599px) {
+  .aiw-switcher {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .aiw-tabs {
+    flex: 1 1 100%;
+  }
+  .aiw-tab {
+    padding: 0 12px;
+  }
+  .aiw-tab-name {
+    max-width: 16ch;
   }
 }
 
