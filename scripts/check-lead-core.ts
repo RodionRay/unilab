@@ -109,6 +109,27 @@ const cases: Case[] = [
     expectPass: false,
   },
   {
+    name: "off-topic кто пользуется: ипотека",
+    msg: "Коллеги, кто пользуется ипотекой сейчас, как ставки?",
+    expectPass: false,
+  },
+  {
+    name: "off-topic кто пользуется: эквайринг",
+    msg: "Кто пользуется Сбером для эквайринга?",
+    expectPass: false,
+  },
+  {
+    name: "off-topic кто пользуется: учёт финансов",
+    msg: "Кто пользуется телеграм ботом для учёта финансов?",
+    expectPass: false,
+  },
+  {
+    name: "soft + cyrillic tool + fit",
+    msg: "Кто пользовался МойСклад с Ozon? Как настроить выгрузку остатков?",
+    expectPass: true,
+    expectTemp: "warm",
+  },
+  {
     name: "weak plus alone",
     msg: "Цены на товары сегодня странные, срок поставки гуляет",
     expectPass: false,

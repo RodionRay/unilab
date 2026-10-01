@@ -19,9 +19,11 @@ export const LEAD_TEMPERATURE_LABELS: Record<LeadTemperature, string> = {
  * Покупательский intent: человек ИЩЕТ услугу/сервис/совет «что взять»,
  * а не просто болтает про маркетплейс.
  * НЕ включать сюда темы продукта (автоматизация/интеграция) — иначе ловятся обычные реплики.
+ * «кто пользуется X» — buyer только для латинского названия инструмента (MPstats); кириллица
+ * («ипотекой», «Сбером», «мойсклад») — мягкий вопрос, warm только через совпадения с настройками.
  */
 const BUYER_INTENT_RE =
-  /(?:^|[^\p{L}])(?:(?:ищу|ищем)\s+(?:сервис|подрядчик\w*|интегратор\w*|разработчик\w*|агентство|инструмент\w*|программ\w*|crm|решени\w*|платформ\w*)|нуж(?:ен|на|но|ны)\s+(?:сервис|подрядчик\w*|интегратор\w*|разработчик\w*|агентство|инструмент\w*|программ\w*|crm|решени\w*)|требуется\s+(?:сервис|подрядчик\w*|интегратор\w*)|подскаж(?:ите|и)\s+(?:сервис|crm|инструмент|платформ|чем\s+вести|как\s+вести)|посоветуйте\s+(?:сервис|crm|инструмент|платформ)|у\s+кого\s+(?:брать|заказывать)\s+(?:сервис|crm)|кто\s+(?:пользовался|пользуется)\s+\w+|как\s+(?:настроить|подключить|внедрить|автоматизировать)\s+(?:остат|синхрон|цен|отзыв|1с|мойсклад|кабинет)|готовы?\s+(?:купить|оплатить|внедрить)\s+(?:сервис|решени|подписк)|(?:пришлите|нужно|нужен|скиньте|запросите)\s+(?:кп|коммерческ)|на\s+демо|нужна?\s+crm|ищу\s+crm)/iu;
+  /(?:^|[^\p{L}])(?:(?:ищу|ищем)\s+(?:сервис|подрядчик[\p{L}\p{N}]*|интегратор[\p{L}\p{N}]*|разработчик[\p{L}\p{N}]*|агентство|инструмент[\p{L}\p{N}]*|программ[\p{L}\p{N}]*|crm|решени[\p{L}\p{N}]*|платформ[\p{L}\p{N}]*)|нуж(?:ен|на|но|ны)\s+(?:сервис|подрядчик[\p{L}\p{N}]*|интегратор[\p{L}\p{N}]*|разработчик[\p{L}\p{N}]*|агентство|инструмент[\p{L}\p{N}]*|программ[\p{L}\p{N}]*|crm|решени[\p{L}\p{N}]*)|требуется\s+(?:сервис|подрядчик[\p{L}\p{N}]*|интегратор[\p{L}\p{N}]*)|подскаж(?:ите|и)\s+(?:сервис|crm|инструмент|платформ|чем\s+вести|как\s+вести)|посоветуйте\s+(?:сервис|crm|инструмент|платформ)|у\s+кого\s+(?:брать|заказывать)\s+(?:сервис|crm)|кто\s+(?:пользовался|пользуется)\s+[a-z][a-z0-9]*(?![\p{L}\p{N}])|как\s+(?:настроить|подключить|внедрить|автоматизировать)\s+(?:остат|синхрон|цен|отзыв|1с|мойсклад|кабинет)|готовы?\s+(?:купить|оплатить|внедрить)\s+(?:сервис|решени|подписк)|(?:пришлите|нужно|нужен|скиньте|запросите)\s+(?:кп|коммерческ)|на\s+демо|нужна?\s+crm|ищу\s+crm)/iu;
 
 /** Мягкий вопрос — только вместе с product-fit / сильным плюсом. */
 const SOFT_ASK_RE =
@@ -33,17 +35,17 @@ const BROADCAST_AD_RE =
 
 /** Тема продукта Uniseller: учёт/синхрон/цены/отзывы/кабинеты/1С. */
 const PRODUCT_FIT_RE =
-  /(?:остатк|синхрон|мой\s*склад|мойсклад|\b1с\b|управлен\w*\s+цен|автоответ\w*\s+на\s+отзыв|ответ\w*\s+на\s+отзыв|нескольк\w*\s+кабинет|едином?\s+окн|каталог\s+товар|заказы?\s+с\s+(?:вб|wb|озон)|интеграц\w*\s+(?:с\s+)?(?:1с|мойсклад|маркетплейс)|автоматиз\w*\s+(?:остат|заказ|цен|отзыв))/iu;
+  /(?:остатк|синхрон|мой\s*склад|мойсклад|(?<![\p{L}\p{N}])1с(?![\p{L}\p{N}])|управлен[\p{L}\p{N}]*\s+цен|автоответ[\p{L}\p{N}]*\s+на\s+отзыв|ответ[\p{L}\p{N}]*\s+на\s+отзыв|нескольк[\p{L}\p{N}]*\s+кабинет|едином?\s+окн|каталог\s+товар|заказы?\s+с\s+(?:вб|wb|озон)|интеграц[\p{L}\p{N}]*\s+(?:с\s+)?(?:1с|мойсклад|маркетплейс)|автоматиз[\p{L}\p{N}]*\s+(?:остат|заказ|цен|отзыв))/iu;
 
 /** Маркетплейс-контекст (фон чата, сам по себе не лид). */
 const MP_CONTEXT_RE =
-  /(?:\bвб\b|\bwb\b|wildberries|вайлдберр|озон|\bozon\b|яндекс\s*маркет|megamarket|мегамаркет|фбс|фбо|fbs|fbo|пвз|селлер|маркетплейс|мойсклад|\b1с\b|юнит.?эконом|биддер|фулфилмент|fulfillment)/iu;
+  /(?:(?<![\p{L}\p{N}])вб(?![\p{L}\p{N}])|\bwb\b|wildberries|вайлдберр|озон|\bozon\b|яндекс\s*маркет|megamarket|мегамаркет|фбс|фбо|fbs|fbo|пвз|селлер|маркетплейс|мойсклад|(?<![\p{L}\p{N}])1с(?![\p{L}\p{N}])|юнит.?эконом|биддер|фулфилмент|fulfillment)/iu;
 
 const SPAM_RE =
   /(?:нужн[ыа]\s*деньг|деньги\s+прямо\s+сейчас|займ|кредит\s+онлайн|пиши[,.]?\s*могу\s+помочь|накрутк|купл[юи]\s+аккаунт|продам\s+аккаунт|ваканси|резюме|ищу\s+работ)/iu;
 
 const SERVICE_AD_RE =
-  /(?:матриц[аыеу]\s+судьб|судьб\w*\s+матриц|таро|гадан\w*|астролог|нумеролог|эзотерик|руны\b|натальн\w*\s+карт|разбор\s+матриц|(?:писать|пишите|пиши|напишите)\s*@|tg\s*@|передано\s+через\s*@|есть\s+отзывы\s*[)）]|занимаюсь\s+(?:разбором|гадан|эзотери|таро)|принимаю\s+заказ|услуги\s+гадан)/iu;
+  /(?<![\p{L}\p{N}])(?:матриц[аыеу]\s+судьб|судьб[\p{L}\p{N}]*\s+матриц|таро|гадан[\p{L}\p{N}]*|астролог|нумеролог|эзотерик|руны(?![\p{L}\p{N}])|натальн[\p{L}\p{N}]*\s+карт|разбор\s+матриц|(?:писать|пишите|пиши|напишите)\s*@|tg\s*@|передано\s+через\s*@|есть\s+отзывы\s*[)）]|занимаюсь\s+(?:разбором|гадан|эзотери|таро)|принимаю\s+заказ|услуги\s+гадан)/iu;
 
 /** Слишком общие плюс-слова — не считаем совпадением. */
 export const WEAK_PLUS_TERMS = new Set([
@@ -69,12 +71,106 @@ export const WEAK_PLUS_TERMS = new Set([
   "fbo",
 ]);
 
+/** Core and worker both consider at most this many stop terms (the same ordered head of the list). */
+export const MAX_MINUS_TERMS = 120;
+
 export function splitTerms(raw: string): string[] {
   return raw
     .split(/[,;\n]+/)
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean)
-    .slice(0, 120);
+    .slice(0, MAX_MINUS_TERMS);
+}
+
+/** Minus terms shorter than this are ignored: "нал"/"бот"-class fragments are noise. */
+export const MIN_MINUS_TERM_LENGTH = 3;
+/** Longer terms are ignored: they are pasted messages, not stop-words, and cost regex time. */
+export const MAX_MINUS_TERM_LENGTH = 100;
+
+/** ё→е on both sides, so "объём" and "объем" are the same stop-word. */
+export function normalizeYo(text: string): string {
+  return text.replace(/ё/g, "е").replace(/Ё/g, "Е");
+}
+
+const minusPatternCache = new Map<string, RegExp>();
+
+function minusTermPattern(term: string): RegExp {
+  const cached = minusPatternCache.get(term);
+  if (cached) return cached;
+  const phrase = term
+    .split(/\s+/)
+    .map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("\\s+");
+  // Word-start match: "нал" must not hit "канал", "бот" must not hit "работа".
+  const re = new RegExp(`(?<![\\p{L}\\p{N}])${phrase}`, "iu");
+  if (minusPatternCache.size > 2000) minusPatternCache.clear();
+  minusPatternCache.set(term, re);
+  return re;
+}
+
+/**
+ * First minus term found at a word start in `text` (phrases match as a phrase), else "".
+ * Only the first MAX_MINUS_TERMS non-empty terms count; returned term is lower-cased, ё→е.
+ * Mirrors telegram-worker/src/check_account.py::find_minus_hit (shared fixture tests/fixtures/minus-match.json).
+ */
+export function findMinusHit(text: string, terms: readonly string[]): string {
+  const body = normalizeYo(text || "");
+  const head = terms
+    .map((raw) => normalizeYo(String(raw || "").trim().toLowerCase()))
+    .filter(Boolean)
+    .slice(0, MAX_MINUS_TERMS);
+  for (const term of head) {
+    if (term.length < MIN_MINUS_TERM_LENGTH || term.length > MAX_MINUS_TERM_LENGTH) continue;
+    if (minusTermPattern(term).test(body)) return term;
+  }
+  return "";
+}
+
+/** Russian noun/adjective endings stripped from plus-word words (longest first). */
+const WORD_ENDINGS = [
+  "иями", "ями", "ами", "ией", "иям", "иях", "ого", "его", "ему", "ому", "ыми", "ими",
+  "ах", "ях", "ия", "ие", "ий", "ии", "ию", "ью", "ов", "ев", "ей", "ом", "ем", "ам", "ям",
+  "ой", "ый", "ая", "яя", "ое", "ее", "ые", "ую", "юю", "ых", "их",
+  "а", "я", "о", "е", "ы", "и", "у", "ю", "ь", "й",
+];
+/** A stem never gets shorter than this ("цены" → "цен", not "це"). */
+const MIN_STEM_LENGTH = 3;
+const CYRILLIC_WORD_RE = /^[а-я]+$/;
+
+/** Stem of one lower-cased word: Cyrillic words lose one inflection ending, others stay as is. */
+export function stemWord(word: string): string {
+  if (!CYRILLIC_WORD_RE.test(word)) return word;
+  for (const end of WORD_ENDINGS) {
+    if (word.endsWith(end) && word.length - end.length >= MIN_STEM_LENGTH) {
+      return word.slice(0, -end.length);
+    }
+  }
+  return word;
+}
+
+const plusPatternCache = new Map<string, RegExp>();
+
+function plusTermPattern(term: string): RegExp {
+  const cached = plusPatternCache.get(term);
+  if (cached) return cached;
+  const words = normalizeYo(term.toLowerCase()).trim().split(/\s+/).filter(Boolean);
+  const phrase = words
+    .map((w) => stemWord(w).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("[\\p{L}\\p{N}]*\\s+");
+  // Every word matches at a word start by its stem: "остатки" hits "остатков", "склад" misses "мойсклад".
+  const re = new RegExp(`(?<![\\p{L}\\p{N}])${phrase}`, "iu");
+  if (plusPatternCache.size > 2000) plusPatternCache.clear();
+  plusPatternCache.set(term, re);
+  return re;
+}
+
+/**
+ * Plus-word / signal / criteria hit in a lower-cased body: word-start stem match, ё→е on both sides.
+ * Mirrors telegram-worker/src/check_account.py::plus_term_hit (shared fixture tests/fixtures/lead-match.json).
+ */
+export function plusTermHit(body: string, term: string): boolean {
+  if (!term.trim()) return false;
+  return plusTermPattern(term).test(normalizeYo(body));
 }
 
 export function strongPlusTerms(raw: string): string[] {
@@ -85,16 +181,17 @@ export function normalizeLeadMessage(text: string, max = 120): string {
   return (text || "").replace(/\s+/g, " ").trim().slice(0, max).toLowerCase();
 }
 
+/**
+ * Dedupe key of a scanned message: `groupId:tgMsgId` when Telegram gave an id, so an edited
+ * message keeps its key; text-based only for messages without an id (manual leads).
+ */
 export function leadMessageFingerprint(
   message: string,
   groupId = "",
   tgMsgId = "",
 ): string {
-  return `${groupId || ""}:${tgMsgId || ""}:${normalizeLeadMessage(message)}`;
-}
-
-export function hasLeadIntent(text: string): boolean {
-  return BUYER_INTENT_RE.test(text || "") || SOFT_ASK_RE.test(text || "");
+  if (tgMsgId) return `${groupId || ""}:${tgMsgId}`;
+  return `${groupId || ""}::${normalizeLeadMessage(message)}`;
 }
 
 /** Жёсткий покупательский запрос услуги/инструмента. */
@@ -120,71 +217,6 @@ export function looksLikeServiceAd(text: string): boolean {
     SPAM_RE.test(text || "") ||
     BROADCAST_AD_RE.test(text || "")
   );
-}
-
-/**
- * Кандидат в лиды только если ищет сервис/инструмент.
- * Делегирует в ядро (lib/lead-core) для единого порога score.
- */
-export function messageMatchesLeadFilter(
-  text: string,
-  settings: LeadFilterSettings & {
-    avoidTopics?: string;
-    leadCriteria?: string;
-    hotSignals?: string;
-    product?: string;
-  },
-): boolean {
-  // lazy import avoided — re-export thin wrappers below after core exists
-  const body = (text || "").toLowerCase();
-  if (body.length < 16) return false;
-  if (looksLikeServiceAd(text || "")) return false;
-  const minus = splitTerms(settings.minusKeywords || "");
-  if (minus.some((m) => m.length >= 3 && body.includes(m))) return false;
-
-  const strong = strongPlusTerms(settings.keywords || "");
-  const strongHits = strong.filter((p) => body.includes(p)).length;
-  const buyer = hasBuyerIntent(text);
-  const soft = hasSoftAsk(text);
-  const fit = hasProductFit(text);
-  const criteriaHits = splitTerms(settings.leadCriteria || "")
-    .concat(splitTerms(settings.hotSignals || ""))
-    .filter((t) => t.length >= 4 && body.includes(t) && !WEAK_PLUS_TERMS.has(t)).length;
-
-  if (buyer && (fit || strongHits >= 1 || criteriaHits >= 1)) return true;
-  if (buyer && /сервис|crm|инструмент|платформ|подряд|демо|внедр/i.test(text)) return true;
-  if (soft && (fit || strongHits >= 1 || criteriaHits >= 1)) return true;
-  return false;
-}
-
-/**
- * Без AI — через те же сигналы, что ядро (buyer/soft + fit).
- */
-export function classifyLeadTemperature(
-  text: string,
-  settings: LeadFilterSettings & {
-    leadCriteria?: string;
-    hotSignals?: string;
-    product?: string;
-    avoidTopics?: string;
-  },
-): LeadTemperature | null {
-  if (!messageMatchesLeadFilter(text, settings)) return null;
-
-  const body = (text || "").toLowerCase();
-  const strong = strongPlusTerms(settings.keywords || "");
-  const hits = strong.filter((p) => body.includes(p)).length;
-  const buyer = hasBuyerIntent(text);
-  const fit = hasProductFit(text);
-  const soft = hasSoftAsk(text);
-  const criteriaHits = splitTerms(settings.leadCriteria || "")
-    .concat(splitTerms(settings.hotSignals || ""))
-    .filter((t) => t.length >= 4 && body.includes(t) && !WEAK_PLUS_TERMS.has(t)).length;
-
-  if (buyer && (fit || hits >= 1 || criteriaHits >= 1)) return "hot";
-  if (buyer) return "warm";
-  if (soft && (fit || hits >= 1 || criteriaHits >= 1)) return "warm";
-  return null;
 }
 
 export function parseLeadTemperature(raw: unknown): LeadTemperature {

@@ -44,9 +44,6 @@ const rule=(anyOf:readonly CrmAccessKey[],mutates=true):ActionRule=>({anyOf,muta
 export const ACTION_RULES:Readonly<Record<string,ActionRule>>={
  draft:rule(LEADS),
  mark_lead_viewed:rule(LEADS),
- set_lead_training_exclude:rule(LEADS),
- bulk_set_lead_training_exclude:rule(LEADS),
- reject_lead_stopwords:rule(LEADS),
  send_lead_message:rule(LEADS),
  poll_dm_replies:rule(['chats','leads']),
 
@@ -72,7 +69,6 @@ export const ACTION_RULES:Readonly<Record<string,ActionRule>>={
 
  rebuild_product:rule(AI),
  train_from_hot:rule(AI),
- train_from_ignored:rule(AI),
  preview_lead_core:rule(AI,false),
  test_notify:rule(['settings']),
 

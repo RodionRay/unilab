@@ -1,7 +1,7 @@
 "use client";
-import {useState,useEffect,useCallback,useRef,useMemo,Suspense} from 'react';
+import {useState,useEffect,useCallback,useRef,useMemo,Suspense,type ReactNode} from 'react';
 import {useSearchParams} from 'next/navigation';
-import {Users,Radio,Shield,Sparkles,Plus,ArrowRight,Search,ChevronRight,ExternalLink,Pencil,Trash2,Check,Upload,Plug,Loader2,LogOut,RefreshCw,X,CloudUpload,FileArchive,Ban,ImagePlus,UserRound,Shuffle,UserPlus,Database,ScrollText,History,FilterX,Send,MessageSquare,Timer,Network,Gauge,AlertTriangle,BarChart3,Folder,CircleX} from 'lucide-react';
+import {Users,Radio,Shield,Sparkles,Plus,ArrowRight,Search,ChevronRight,ExternalLink,Pencil,Trash2,Check,Upload,Plug,Loader2,LogOut,RefreshCw,X,CloudUpload,FileArchive,ImagePlus,UserRound,Shuffle,UserPlus,Database,ScrollText,History,Send,MessageSquare,Timer,Network,Gauge,AlertTriangle,BarChart3,Folder,CircleX} from 'lucide-react';
 import {Button} from '@/components/ui/button';
 import {OverviewDashboard} from '@/components/product/overview-dashboard';
 import {LeadCorePanel} from '@/components/product/lead-core-panel';
@@ -23,11 +23,12 @@ import {Dialog,DialogContent,DialogHeader,DialogTitle,DialogDescription} from '@
 import {Select,SelectTrigger,SelectValue,SelectContent,SelectItem} from '@/components/ui/select';
 import {Table,TableHeader,TableRow,TableHead,TableBody,TableCell,SortableTableHead,SortHeaderButton} from '@/components/ui/table';
 import {AlertDialog,AlertDialogContent,AlertDialogHeader,AlertDialogTitle,AlertDialogDescription,AlertDialogFooter,AlertDialogCancel,AlertDialogAction} from '@/components/ui/alert-dialog';
-import {Tabs,TabsList,TabsTrigger} from '@/components/ui/tabs';
+import {Tabs,TabsList,TabsTrigger,TabsContent} from '@/components/ui/tabs';
 import {Skeleton} from '@/components/ui/skeleton';
-import {Empty,EmptyHeader,EmptyTitle,EmptyDescription} from '@/components/ui/empty';
+import {Empty,EmptyHeader,EmptyTitle,EmptyDescription,EmptyContent} from '@/components/ui/empty';
 import {Toaster} from 'sonner';
 import {toast} from '@/lib/workspace-notifications';
+import {markLeadOpened} from '@/lib/lead-conversation';
 import {SidebarProvider,Sidebar,SidebarHeader,SidebarContent,SidebarFooter,SidebarInset,SidebarTrigger} from '@/components/ui/sidebar';
 import {parseProxyLine,parseProxyLines,type ProxyProtocol} from '@/lib/proxy-line';
 import {accountPhoneKey,canonicalizeTgUrl,duplicateReason,findDuplicate,proxyIdentityKey,telegramEntityKey} from '@/lib/record-identity';
@@ -57,15 +58,21 @@ import {
 import {
   GROUP_CATALOG,
   GROUP_NICHE_LABELS,
-  MARKET_SECTIONS,
   catalogStats,
   isCatalogPlaceholderUrl,
-  marketVerifiedCount,
   nichesFromProjectText,
-  searchGroupCatalog,
-  type CatalogHit,
-  type GroupNiche,
 } from '@/lib/group-catalog';
+import {
+  buildRecommendedView,
+  bulkJoinConfirmText,
+  chatsLabel,
+  formatCountRu,
+  leadsLabel,
+  nicheFallbackGate,
+  projectCatalogCandidates,
+  subscribersLabel,
+  type RecommendedRow,
+} from '@/lib/catalog-recommend';
 import {
   LEAD_TEMPERATURE_LABELS,
   type LeadTemperature,
@@ -87,6 +94,7 @@ import {
 } from '@/lib/audience-invite';
 import {useTableSort} from '@/hooks/useTableSort';
 import type {SortValueType} from '@/lib/table-sort';
+import {leadVisibleInTab} from '@/lib/lead-search';
 
 type Kind='account'|'proxy'|'group'|'lead'|'settings'|'audience_task'|'invite_task'|'mailing_task';
 type RecordItem={id:string;kind:Kind;data:any;hasSecret:boolean;created:string};
@@ -99,7 +107,7 @@ const defaults:any={
   account:{name:'',phone:'',proxyId:'',status:'setup',format:'manual',sessionMode:'keep',limits:{...DEFAULT_ACCOUNT_LIMITS,memberInvite:40},cooldownUntil:'',firstName:'',lastName:'',username:'',about:'',hasPhoto:false,error:''},
   proxy:{name:'',host:'',port:'1080',protocol:'socks5',username:'',status:'inactive',exitIp:'',lastChecked:'',checkError:''},
   group:{name:'',url:'',accountId:'',status:'setup',error:'',membership:'none',joinedAt:'',joinState:'',joinStateAt:'',joinStateError:'',leadsTotal:0,leadsHot:0,leadsWarm:0,leadsCold:0,scanMatched:0,rating:0,lastScanned:'',scanLog:[]},
-  lead:{name:'',message:'',source:'Вручную',status:'new',temperature:'warm',draft:'',tgMsgId:'',groupId:'',reason:'',viewed:false,viewedAt:'',excludeFromTraining:false,senderId:'',senderUsername:'',senderAccessHash:'',messageKind:'',peerId:'',replyToMsgId:'',replies:[],conversationOpen:false,conversationAt:'',incomingLastText:'',needsManager:false,mailingTaskId:'',accountId:''},
+  lead:{name:'',message:'',source:'Вручную',status:'new',temperature:'warm',draft:'',tgMsgId:'',groupId:'',reason:'',viewed:false,viewedAt:'',senderId:'',senderUsername:'',senderAccessHash:'',messageKind:'',peerId:'',replyToMsgId:'',replies:[],conversationOpen:false,conversationAt:'',incomingLastText:'',needsManager:false,mailingTaskId:'',accountId:''},
   settings:{
     name:'Мой бизнес',
     model:'deepseek-chat',
@@ -126,8 +134,6 @@ AI будет использовать этот текст для отбора �
     autoRescanEnabled:true,
     autoRescanMinutes:30,
     lastAutoRescanAt:'',
-    lastMinusAdded:[],
-    lastMinusAddedAt:'',
     rescanLog:[],
     scanDepthDays:7,
     profileName:'',
@@ -334,6 +340,9 @@ function formatGroupSyncAt(raw:string){
   return new Date(t).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
 }
 
+type CatalogTab='recommended'|'joined';
+const CATALOG_TABS:readonly {id:CatalogTab;label:string}[]=[{id:'recommended',label:'Рекомендуем'},{id:'joined',label:'Вступили'}];
+
 const JOIN_QUEUE_KEY='unilab.joinQueue.v1';
 type JoinQItem={id:string;name:string;status:'queued'|'waiting'|'joining'|'scanning'|'done'|'error'|'need_url';waitSec?:number;waitTotal?:number;error?:string;added?:number};
 
@@ -467,20 +476,15 @@ function WorkspaceHome(){
   const [accountCheckProgress,setAccountCheckProgress]=useState<{done:number;total:number;active:number}|null>(null);
   const [catalogOpen,setCatalogOpen]=useState(false);
   const [catalogQuery,setCatalogQuery]=useState('');
-  const [catalogNiche,setCatalogNiche]=useState<GroupNiche|null>(null);
+  /** Row keys (RecommendedRow.key) ticked for bulk join. */
   const [catalogSelected,setCatalogSelected]=useState<string[]>([]);
   const [catalogAccountId,setCatalogAccountId]=useState('');
-  const [catalogHideAdded,setCatalogHideAdded]=useState(true);
-  const [catalogMarket,setCatalogMarket]=useState<string>('all');
-  const [catalogTab,setCatalogTab]=useState<'links'|'topics'>('links');
-  const [catalogSearching,setCatalogSearching]=useState(false);
-  const [catalogHits,setCatalogHits]=useState<CatalogHit[]>([]);
-  const [catalogSearchTick,setCatalogSearchTick]=useState(0);
+  const [catalogTab,setCatalogTab]=useState<CatalogTab>('recommended');
+  const [catalogConfirmOpen,setCatalogConfirmOpen]=useState(false);
   const [onboardAfterSave,setOnboardAfterSave]=useState(false);
   const [aiMeta,setAiMeta]=useState<{provider?:string;hasEnvKey?:boolean}|null>(null);
   const [lastLeadFunnel,setLastLeadFunnel]=useState<{worker?:number;core?:number;matched?:number;added?:number}|null>(null);
   const [leadGroupFilter,setLeadGroupFilter]=useState('all');
-  const [leadSelected,setLeadSelected]=useState<string[]>([]);
   const [groupFilter,setGroupFilter]=useState<'all'|'need'|'joined'|'pending'|'error'>('all');
   const [groupSelected,setGroupSelected]=useState<string[]>([]);
   const [bulkAccountId,setBulkAccountId]=useState('');
@@ -546,6 +550,7 @@ function WorkspaceHome(){
   /** Задачи, которые пользователь только что поставил на паузу — poller не трогает до play */
   const pausedTasksRef=useRef(new Set<string>());
   const lastInboxPollAt=useRef(0);
+  const replySendKeyRef=useRef<{leadId:string;mode:string;text:string;key:string}|null>(null);
 
   const refreshStaff=useCallback(async()=>{
     try{
@@ -652,7 +657,7 @@ function WorkspaceHome(){
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[records]);
-  const navigate=(name:NavName)=>{setView(name);setQuery('');setFilter('all');setLeadGroupFilter('all');setLeadSelected([]);setAccountSelected([]);setGroupFilter('all');setGroupSelected([]);setAudienceSearch('');setInviteSearch('');setMailingSearch('')};
+  const navigate=(name:NavName)=>{setView(name);setQuery('');setFilter('all');setLeadGroupFilter('all');setAccountSelected([]);setGroupFilter('all');setGroupSelected([]);setAudienceSearch('');setInviteSearch('');setMailingSearch('')};
   const openTask=(kind:'audience_task'|'invite_task'|'mailing_task',item?:RecordItem)=>{
     setInviteWizardStep(item?2:1);
     setModal({kind,item});
@@ -668,7 +673,6 @@ function WorkspaceHome(){
   const goLeads=(opts?:{groupId?:string;filter?:string})=>{
     setView('Лиды');
     setQuery('');
-    setLeadSelected([]);
     setLeadGroupFilter(opts?.groupId||'all');
     setFilter(opts?.filter||'all');
   };
@@ -707,10 +711,9 @@ function WorkspaceHome(){
   const list=(kind:Kind)=>records.filter(r=>r.kind===kind);
   const settings=list('settings')[0];
   const aiKeyReady=!!(settings?.hasSecret||aiMeta?.hasEnvKey);
-  const freshLeads=list('lead').filter(r=>!r.data.viewed&&!r.data.excludeFromTraining);
-  const viewedLeads=list('lead').filter(r=>!!r.data.viewed&&!r.data.excludeFromTraining);
-  const excludedLeads=list('lead').filter(r=>!!r.data.excludeFromTraining);
-  const chatLeads=list('lead').filter(r=>(!!r.data.draft||!!r.data.conversationOpen)&&!r.data.excludeFromTraining);
+  const freshLeads=list('lead').filter(r=>!r.data.viewed);
+  const viewedLeads=list('lead').filter(r=>!!r.data.viewed);
+  const chatLeads=list('lead').filter(r=>(!!r.data.draft||!!r.data.conversationOpen));
   const freshChats=chatLeads.filter(r=>!r.data.viewed);
   const viewedChats=chatLeads.filter(r=>!!r.data.viewed);
 
@@ -735,7 +738,7 @@ function WorkspaceHome(){
   const navBadges=useMemo(()=>{
     // Только непрочитанные ответы клиента — не все открытые переписки
     // Бейдж «Переписки» — только needsManager (непрочитанный ответ клиента)
-    const needManager=list('lead').filter(r=>!!r.data.needsManager&&!r.data.excludeFromTraining).length;
+    const needManager=list('lead').filter(r=>!!r.data.needsManager).length;
     const groups=list('group').filter(r=>{
       const d=r.data||{};
       return d.status==='error'||d.membership==='pending'||JOIN_BUSY.has(String(d.joinState||''));
@@ -783,9 +786,15 @@ function WorkspaceHome(){
   // Автообход лидов крутит tg-worker → /api/cron/auto-rescan (24/7, без открытого кабинета).
   // Здесь только кнопка «Собрать лиды» и отображение статуса.
 
-  /** Poller: сбор аудитории + инвайтинг пока кабинет открыт */
+  /** Poller: сбор аудитории + инвайтинг пока кабинет открыт (фоном задачи тикает и tg-worker → /api/cron/tasks-tick) */
   useEffect(()=>{
     if(!telegramConnected)return;
+    // busy/waiting несут актуальную строку с сервера — показываем прогресс серверного раннера;
+    // skipped применяем только для финальных статусов, чтобы не затереть свежий running устаревшим paused
+    const syncFromServer=(id:string,r:{skipped?:boolean;task?:Record<string,unknown>})=>{
+      if(r.skipped&&r.task?.status!=='completed'&&r.task?.status!=='error')return;
+      applyTickTask(id,r.task);
+    };
     const tick=async()=>{
       if(taskPollLock.current)return;
       // autoRescan/join не стопят тики задач — иначе сбор/инвайт простаивают минутами
@@ -799,7 +808,7 @@ function WorkspaceHome(){
         for(const t of runningAudience){
           try{
             const r=await api({action:'tick_audience',id:t.id});
-            if(r.busy||r.skipped)continue;
+            if(r.busy||r.skipped||r.waiting){syncFromServer(t.id,r);continue}
             applyTickTask(t.id,r.task);
             if(r.joined)toast.message(`${displayTgHandle(t.data.url||'')}: вступили в источник`);
             if(r.task?.status==='completed')toast.success(`Сбор завершён: ${displayTgHandle(t.data.url||'')} · ${r.task.collected||0}`);
@@ -809,7 +818,7 @@ function WorkspaceHome(){
         for(const t of runningInvite){
           try{
             const r=await api({action:'tick_invite',id:t.id});
-            if(r.busy||r.skipped||r.waiting)continue;
+            if(r.busy||r.skipped||r.waiting){syncFromServer(t.id,r);continue}
             applyTickTask(t.id,r.task);
             if(r.completed)toast.success(`Инвайт завершён: ${displayTgHandle(t.data.targetUrl||'')}`);
           }catch(e){toast.error(`Инвайт: ${String((e as Error).message||e).slice(0,100)}`)}
@@ -817,8 +826,7 @@ function WorkspaceHome(){
         for(const t of runningMailing){
           try{
             const r=await api({action:'tick_mailing',id:t.id});
-            // skipped/busy — не затираем локальный running устаревшим paused
-            if(r.skipped||r.busy||r.waiting)continue;
+            if(r.skipped||r.busy||r.waiting){syncFromServer(t.id,r);continue}
             applyTickTask(t.id,r.task);
             if(r.stopped){
               toast.error(r.task?.error||`Рассылка остановлена: ${t.data.name||''}`);
@@ -829,7 +837,8 @@ function WorkspaceHome(){
         }
         }
         try{
-          if(Date.now()-lastInboxPollAt.current>15_000){
+          // Скрытые вкладки не опрашивают входящие; параллельные опросы сервер отсекает lease
+          if(document.visibilityState==='visible'&&Date.now()-lastInboxPollAt.current>15_000){
             lastInboxPollAt.current=Date.now();
             const inbox=await api({action:'poll_dm_replies'});
             if(inbox?.opened>0){
@@ -1515,34 +1524,56 @@ function WorkspaceHome(){
     setDetail(item);
     setChatMode('dm');
     setChatText(item.data.draft||'');
-    const alreadyViewed=!!item.data.viewed;
-    const needsManager=!!item.data.needsManager;
-    if(alreadyViewed&&!needsManager)return;
-    const viewedAt=item.data.viewedAt||new Date().toISOString();
-    setRecords(prev=>prev.map(r=>r.id===item.id?{...r,data:{...r.data,viewed:true,viewedAt,needsManager:false}}:r));
-    setDetail(d=>d&&d.id===item.id?{...d,data:{...d.data,viewed:true,viewedAt,needsManager:false}}:d);
+    const patch=markLeadOpened(item.data,new Date().toISOString());
+    if(!patch)return;
+    const before={viewed:item.data.viewed,viewedAt:item.data.viewedAt,needsManager:item.data.needsManager};
+    setRecords(prev=>prev.map(r=>r.id===item.id?{...r,data:{...r.data,...patch}}:r));
+    setDetail(d=>d&&d.id===item.id?{...d,data:{...d.data,...patch}}:d);
     try{
       await api({action:'mark_lead_viewed',id:item.id});
-    }catch{/* не блокируем просмотр */}
+    }catch(e){
+      // Просмотр не блокируем, но и не показываем «просмотрено», если сервер не записал (403 у наблюдателя)
+      setRecords(prev=>prev.map(r=>r.id===item.id?{...r,data:{...r.data,...before}}:r));
+      setDetail(d=>d&&d.id===item.id?{...d,data:{...d.data,...before}}:d);
+      toast.error(`Отметка «просмотрено» не сохранена: ${(e as Error).message}`);
+    }
   }
 
-  async function sendLeadReply(){
+  /** Один ключ на одно сообщение: повтор после таймаута узнаётся сервером и не уходит дублем. */
+  function replySendKey(leadId:string,mode:string,text:string){
+    const cur=replySendKeyRef.current;
+    if(cur&&cur.leadId===leadId&&cur.mode===mode&&cur.text===text)return cur.key;
+    const key=crypto.randomUUID();
+    replySendKeyRef.current={leadId,mode,text,key};
+    return key;
+  }
+
+  async function sendLeadReply(force=false){
     if(!detail||!chatText.trim())return;
     if(!telegramConnected){toast.error('Запустите: npm run dev');return}
+    const text=chatText.trim();
+    const mode=chatMode;
+    const clientMsgId=replySendKey(detail.id,mode,text);
     setBusy(true);
     try{
-      const r=await api({action:'send_lead_message',id:detail.id,mode:chatMode,text:chatText.trim()});
-      const next={...detail,data:r.lead||{...detail.data,draft:chatText,replies:[...(detail.data.replies||[]),{text:chatText,mode:chatMode,at:new Date().toISOString(),ok:true,error:'',link:r.link||'',messageId:r.messageId||''}]}};
-      setDetail(next);
+      const r=await api({action:'send_lead_message',id:detail.id,mode,text,clientMsgId,force});
+      if(r.lead)setDetail({...detail,data:r.lead});
       await refresh();
       toast.success(
-        chatMode==='dm'
+        mode==='dm'
           ?'Отправлено в личку'
           :(r.link?'Отправлено в чат — ссылка на ответ сохранена':'Отправлено в чат'),
       );
+      replySendKeyRef.current=null;
       setChatText('');
     }catch(e){
-      toast.error((e as Error).message);
+      const err=e as Error&{status?:number;data?:{unknown?:boolean;lead?:RecordItem['data']}};
+      if(err.data?.lead)setDetail({...detail,data:err.data.lead});
+      if(err.data?.unknown){
+        toast.error(err.message,{action:{label:'Отправить ещё раз',onClick:()=>{void sendLeadReply(true)}}});
+      }else{
+        toast.error(err.message);
+      }
       await refresh();
     }finally{setBusy(false)}
   }
@@ -1663,74 +1694,12 @@ function WorkspaceHome(){
     finally{setBusy(false)}
   }
 
-  async function setLeadTrainingExclude(item:RecordItem,exclude:boolean){
-    setBusy(true);
-    try{
-      const r=await api({action:'set_lead_training_exclude',id:item.id,exclude});
-      const next=r.lead||{...item.data,excludeFromTraining:exclude,viewed:exclude?true:item.data.viewed};
-      setRecords(prev=>prev.map(row=>row.id===item.id?{...row,data:{...row.data,...next}}:row));
-      setDetail(d=>d&&d.id===item.id?{...d,data:{...d.data,...next}}:d);
-      setLeadSelected(prev=>prev.filter(id=>id!==item.id));
-      toast.success(exclude?'Лид исключён из обучения и следующих поисков':'Лид снова учитывается');
-    }catch(e){toast.error((e as Error).message)}
-    finally{setBusy(false)}
-  }
-
-  /** Не лид → сразу стоп-слова в минус + исключить из учёта */
-  async function rejectLeadToStopwords(item:RecordItem){
-    setBusy(true);
-    try{
-      const r=await api({action:'reject_lead_stopwords',id:item.id});
-      await refresh();
-      const added=Array.isArray(r.minusAdded)?r.minusAdded.filter(Boolean):[];
-      if(added.length){
-        toast.success(`В стоп-слова AI: ${added.slice(0,6).join(', ')}${added.length>6?'…':''}`);
-      }else{
-        toast.message('Лид скрыт. Новых стоп-слов не вышло (уже были в минусе).');
-      }
-      setDetail(null);
-    }catch(e){toast.error((e as Error).message)}
-    finally{setBusy(false)}
-  }
-
-  async function bulkExcludeSelected(exclude=true){
-    if(!leadSelected.length)return;
-    setBusy(true);
-    try{
-      const r=await api({action:'bulk_set_lead_training_exclude',ids:leadSelected,exclude});
-      const selected=new Set(leadSelected);
-      const now=new Date().toISOString();
-      setRecords(prev=>prev.map(row=>{
-        if(!selected.has(row.id)||row.kind!=='lead')return row;
-        return {...row,data:{...row.data,excludeFromTraining:exclude,...(exclude&&!row.data.viewed?{viewed:true,viewedAt:now}:{})}};
-      }));
-      setDetail(d=>d&&selected.has(d.id)?{...d,data:{...d.data,excludeFromTraining:exclude,...(exclude?{viewed:true}:{})}}:d);
-      setLeadSelected([]);
-      toast.success(exclude?`Исключено из обучения: ${r.updated||leadSelected.length}`:`Снято исключение: ${r.updated||leadSelected.length}`);
-    }catch(e){toast.error((e as Error).message)}
-    finally{setBusy(false)}
-  }
-
-  function toggleLeadSelected(id:string,on:boolean){
-    setLeadSelected(prev=>on?Array.from(new Set([...prev,id])):prev.filter(x=>x!==id));
-  }
-
   async function trainFromHot(){
     setBusy(true);
     try{
       const r=await api({action:'train_from_hot'});
       await refresh();
-      toast.success(`Обучение: +${r.plusAdded||0} плюс, +${r.minusAdded||0} минус по ${r.trainedOn} горячим`);
-    }catch(e){toast.error((e as Error).message)}
-    finally{setBusy(false)}
-  }
-
-  async function trainFromIgnored(){
-    setBusy(true);
-    try{
-      const r=await api({action:'train_from_ignored'});
-      await refresh();
-      toast.success(`Стоп-слова: +${r.minusAdded||0} из ${r.trainedOn} игнорированных`);
+      toast.success(`Обучение: +${r.plusAdded||0} плюс-слов по ${r.trainedOn} горячим`);
     }catch(e){toast.error((e as Error).message)}
     finally{setBusy(false)}
   }
@@ -2369,20 +2338,14 @@ function WorkspaceHome(){
     }finally{setBusy(false)}
   }
 
-  function openCatalog(preferredMarket?:string){
-    // Полная база / «В базе» — без сужения AI в «Маркетплейсы».
-    const hasDb=list('group').length>0;
-    const marketId=preferredMarket||(hasDb?'db':'all');
-    setCatalogMarket(marketId);
-    setCatalogNiche(null);
-    setCatalogHideAdded(false);
-    setCatalogTab('links');
+  /** Opens «Найти чаты с клиентами» on «Рекомендуем», or on «Вступили» when nothing is left to recommend. */
+  function openCatalog(){
+    setCatalogTab(!catalogFullView.recommended.length&&catalogFullView.joined.length?'joined':'recommended');
     setCatalogQuery('');
     setCatalogSelected([]);
+    setCatalogConfirmOpen(false);
     setCatalogAccountId(list('account').filter(a=>isAccountWorkable(a.data))[0]?.id||'');
     setCatalogOpen(true);
-    setCatalogSearching(true);
-    setCatalogSearchTick(t=>t+1);
   }
 
   /** Одним запросом залить весь каталог в «Группы и каналы» текущего кабинета. */
@@ -2493,25 +2456,8 @@ function WorkspaceHome(){
     finally{setBusy(false)}
   }
 
-  function selectCatalogNiche(n:GroupNiche|null){
-    setCatalogNiche(n);
-    setCatalogSelected([]);
-    setCatalogSearching(true);
-    setCatalogSearchTick(t=>t+1);
-  }
-
-  function selectMarket(marketId:string){
-    setCatalogMarket(marketId);
-    setCatalogNiche(null);
-    setCatalogSelected([]);
-    setCatalogTab('links');
-    setCatalogSearching(true);
-    setCatalogSearchTick(t=>t+1);
-  }
-
   /** Сохранить чаты каталога в «Группы и каналы». join=true — сразу фоновое вступление. */
-  async function saveCatalogGroupsToDb(overrideIds?:string[],opts?:{join?:boolean}){
-    const selectedIds=overrideIds?.length?overrideIds:catalogSelected;
+  async function saveCatalogGroupsToDb(selectedIds:string[],opts?:{join?:boolean}){
     const picks=GROUP_CATALOG.filter(g=>selectedIds.includes(g.id));
     const ready=picks.filter(g=>g.verified&&g.url&&!isCatalogPlaceholderUrl(g.url));
     const needLink=picks.filter(g=>!g.verified||!g.url||isCatalogPlaceholderUrl(g.url));
@@ -2586,15 +2532,13 @@ function WorkspaceHome(){
           throw e;
         }
       }
-      setCatalogSelected(prev=>prev.filter(id=>!selectedIds.includes(id)));
       await refresh();
+      // The dialog stays open on join: the row flips to «В очереди», which is the answer to «куда вступили».
       if(doJoin&&toJoin.length){
-        setCatalogOpen(false);
         void startBackgroundJoins(toJoin);
-        toast.message(`Сразу вступаем: ${toJoin.length} чат(ов) в фоне`);
+        toast.message(`Вступаем в фоне: ${chatsLabel(toJoin.length)}`);
       }else if(doJoin&&ready.length&&!needLink.length){
         toast.message('Выбранные чаты уже подключены');
-        setCatalogOpen(false);
       }else if(!doJoin){
         toast.success(added?`В базу добавлено: ${added}`:`Уже в базе · показано ${ready.length}`);
         navigate('Группы и каналы');
@@ -2618,34 +2562,66 @@ function WorkspaceHome(){
     finally{setBusy(false)}
   }
 
-  async function addCatalogGroups(overrideIds?:string[]){
-    return saveCatalogGroupsToDb(overrideIds,{join:true});
+  async function addCatalogGroups(ids:string[]){
+    return saveCatalogGroupsToDb(ids,{join:true});
   }
 
-  /** Клик по чату в каталоге = сразу вступить (без отдельной кнопки на карточке группы). */
-  function joinCatalogNow(catalogId:string){
-    if(!catalogAccountId){toast.error('Выберите аккаунт для вступления');return}
-    if(!telegramConnected){toast.error('Запустите: npm run dev');return}
-    void addCatalogGroups([catalogId]);
+  /**
+   * Join recommended rows with the dialog's account: catalog chats are saved and queued, workspace groups get the
+   * account when they have none and are queued. Nothing else joins: the owner's click is the queue.
+   */
+  async function joinRecommended(rows:readonly RecommendedRow[]){
+    const actionable=rows.filter(r=>r.status==='join');
+    if(!actionable.length)return;
+    if(!catalogAccountId){toast.error('Нет рабочего аккаунта — подключите аккаунт в «Аккаунты»');return}
+    if(!telegramConnected){toast.error('Воркер не запущен — вступить сейчас нельзя');return}
+    setCatalogSelected(prev=>prev.filter(k=>!actionable.some(r=>r.key===k)));
+    const workspace=actionable.filter(r=>r.source==='workspace');
+    const catalogIds=actionable.filter(r=>r.source==='catalog').map(r=>r.id);
+    if(workspace.length){
+      setBusy(true);
+      try{
+        let saved=0;
+        for(const r of workspace){
+          const rec=list('group').find(g=>g.id===r.id);
+          if(!rec||rec.data.accountId)continue;
+          await api({action:'save',kind:'group',id:rec.id,data:cleanGroupSaveData({...rec.data,accountId:catalogAccountId})});
+          saved++;
+        }
+        if(saved)await refresh();
+      }catch(e){
+        toast.error((e as Error).message);
+        return;
+      }finally{setBusy(false)}
+      void startBackgroundJoins(workspace.map(r=>({id:r.id,name:r.name})));
+    }
+    if(catalogIds.length)await addCatalogGroups(catalogIds);
+  }
+
+  /** «Собрать лиды со всех»: force-rescan every joined group (same server action as the groups page). */
+  function collectLeadsFromJoined(){
+    setCatalogOpen(false);
+    navigate('Группы и каналы');
+    void (async()=>{
+      setBusy(true);
+      try{
+        const r=await api({action:'rescan_groups',force:true});
+        toast.message(`Переобход: ${r.queued||0} групп`);
+        await refresh();
+      }catch(e){toast.error((e as Error).message)}
+      finally{setBusy(false)}
+    })();
   }
 
   const currentKind=kinds[view];
   const displayed=records.filter(r=>{
     if(r.kind!==(currentKind||'lead'))return false;
     if(view==='Переписки'&&!r.data.draft&&!r.data.conversationOpen)return false;
-    if(currentKind==='lead'&&(view==='Лиды'||view==='Переписки')){
-      if(filter==='ignored'){
-        if(!r.data.excludeFromTraining)return false;
-      }else if(r.data.excludeFromTraining){
-        return false;
-      }else if(filter==='viewed'){
-        if(!r.data.viewed)return false;
-      }else if(r.data.viewed){
-        return false;
-      }
+    const leadTabs=currentKind==='lead'&&(view==='Лиды'||view==='Переписки');
+    if(leadTabs){
+      if(!leadVisibleInTab(r.data,filter))return false;
       if(view==='Лиды'&&leadGroupFilter!=='all'&&r.data.groupId!==leadGroupFilter)return false;
-    }
-    if(filter!=='all'&&filter!=='viewed'&&filter!=='ignored'){
+    }else if(filter!=='all'&&filter!=='viewed'){
       if(currentKind==='lead'){
         if(filter==='hot'||filter==='warm'||filter==='cold'){
           if((r.data.temperature||'warm')!==filter)return false;
@@ -2693,7 +2669,7 @@ function WorkspaceHome(){
     if(currentKind==='lead'){
       if(key==='name')return r.data.name||'';
       if(key==='temperature')return LEAD_TEMPERATURE_LABELS[(r.data.temperature||'warm') as LeadTemperature]||r.data.temperature;
-      if(key==='status')return r.data.excludeFromTraining?'Не для обучения':(r.data.status||'');
+      if(key==='status')return r.data.status||'';
       if(key==='source')return r.data.source||'';
       if(key==='created')return r.created;
     }
@@ -2737,71 +2713,199 @@ function WorkspaceHome(){
   const changeLimit=(key:'invite'|'message'|'chat'|'memberInvite',value:string)=>setForm((f:any)=>({...f,limits:{...(f.limits||DEFAULT_ACCOUNT_LIMITS),[key]:value}}));
   const field=(key:string,label:string,type='text',placeholder='')=><label className="field">{label}<Input type={type} value={form[key]??''} placeholder={placeholder} onChange={e=>change(key,e.target.value)} required={!['username','source','firstName','lastName','about','projectUrl','audience'].includes(key)} maxLength={key==='phone'?16:key==='projectUrl'?500:250}/></label>;
 
-  useEffect(()=>{
-    if(!catalogOpen)return;
-    setCatalogSearching(true);
-    const handle=window.setTimeout(()=>{
-      if(catalogMarket==='db'){
-        const q=catalogQuery.trim().toLowerCase();
-        const groups=list('group');
-        const hits=groups
-          .map(r=>{
-            const url=String(r.data.url||'');
-            const name=String(r.data.name||'Без названия');
-            const hay=`${name} ${url}`.toLowerCase();
-            const matched=!q||hay.includes(q);
-            const joined=r.data.membership==='joined'||!!r.data.joinedAt;
-            return {
-              id:`db:${r.id}`,
-              name,
-              url,
-              verified:!!url&&!isCatalogPlaceholderUrl(url),
-              description:joined?'В кабинете · можно сканировать лиды':'В кабинете · нужно вступить',
-              audience:String(r.data.source||'workspace'),
-              niches:[] as GroupNiche[],
-              searchHint:url||'Нет ссылки',
-              score:joined?20:10,
-              matched,
-              overlap:0,
-              recordId:r.id,
-            };
-          })
-          .filter(h=>h.matched)
-          .sort((a,b)=>b.score-a.score||a.name.localeCompare(b.name,'ru'));
-        setCatalogHits(hits as any);
-        setCatalogSearching(false);
-        return;
-      }
-      const section=MARKET_SECTIONS.find(m=>m.id===catalogMarket);
-      const niches=catalogNiche
-        ?[catalogNiche]
-        :(section?.niches?.length?section.niches:[]);
-      const hits=searchGroupCatalog({
-        query:catalogQuery,
-        niches,
-        mergeProject:false,
-        onlyMatched:niches.length>0,
-      });
-      setCatalogHits(hits);
-      setCatalogSearching(false);
-    },220);
-    return()=>window.clearTimeout(handle);
-  },[catalogOpen,catalogQuery,catalogNiche,catalogMarket,catalogSearchTick,records]);
+  // «Найти чаты с клиентами»: project niches → catalog candidates → recommended / joined split (lib/catalog-recommend.ts).
+  const catalogProject=useMemo(()=>{
+    const s=list('settings')[0]?.data||defaults.settings;
+    return projectCatalogCandidates([s.product,s.audience,s.keywords,s.leadCriteria,s.name,s.pains,s.valueProps,s.hotSignals]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[records]);
+  // Recommendation gate: dev has no stored relevance, so a group is recommended when its chat is a project-niche
+  // catalog chat. Swap for the relevance gate (joinGateFor) where groups carry joinRelevance.
+  const catalogGate=useMemo(()=>nicheFallbackGate(catalogProject.groups,catalogProject.niches),[catalogProject]);
+  const catalogFullView=useMemo(
+    ()=>buildRecommendedView({groups:list('group'),catalog:catalogProject.groups,gateOf:catalogGate}),
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+    [records,catalogProject,catalogGate],
+  );
+  const catalogView=useMemo(
+    ()=>catalogQuery.trim()
+      ?buildRecommendedView({groups:list('group'),catalog:catalogProject.groups,gateOf:catalogGate,query:catalogQuery})
+      :catalogFullView,
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+    [catalogQuery,catalogFullView],
+  );
+  const catalogActionable=catalogView.recommended.filter(r=>r.status==='join');
+  const catalogPicked=catalogFullView.recommended.filter(r=>r.status==='join'&&catalogSelected.includes(r.key));
+  const catalogAllPicked=catalogActionable.length>0&&catalogActionable.every(r=>catalogSelected.includes(r.key));
+  const catalogNoProject=!catalogProject.niches.length&&!catalogFullView.recommended.some(r=>r.source==='workspace');
+  const catalogJoinBlocked=!list('account').some(a=>isAccountWorkable(a.data))
+    ?'Нет рабочего аккаунта'
+    :!catalogAccountId?'Выберите аккаунт':!telegramConnected?'Воркер не запущен':'';
+  const catalogAccountName=list('account').find(a=>a.id===catalogAccountId)?.data.name||'';
+  const catalogConfirm=bulkJoinConfirmText({names:catalogPicked.map(r=>r.name),accountName:catalogAccountName});
+  const catalogScannable=catalogFullView.joined.filter(j=>!j.pending).length;
 
-  const existingGroupUrlSet=new Set(list('group').map(r=>telegramEntityKey(r.data.url)).filter(Boolean));
-  const catalogMarketNiches=MARKET_SECTIONS.find(m=>m.id===catalogMarket)?.niches||[];
-  const catalogBaseHits=catalogHits.filter(h=>{
-    if(catalogMarket==='db')return true;
-    if(!catalogHideAdded)return true;
-    if(!h.url)return true;
-    return !existingGroupUrlSet.has(telegramEntityKey(h.url));
-  });
-  const catalogLinkHits=catalogBaseHits.filter(h=>h.verified&&h.url&&!isCatalogPlaceholderUrl(h.url));
-  const catalogTopicHits=catalogBaseHits.filter(h=>!h.verified||!h.url||isCatalogPlaceholderUrl(h.url));
-  const catalogVisibleHits=catalogTab==='links'?catalogLinkHits:catalogTopicHits;
-  const catalogHiddenAdded=catalogHits.filter(h=>h.url&&existingGroupUrlSet.has(telegramEntityKey(h.url))).length;
-  const catalogReadyCount=catalogLinkHits.length;
-  const catalogActiveMarket=MARKET_SECTIONS.find(m=>m.id===catalogMarket);
+  function toggleCatalogRows(keys:readonly string[],on:boolean){
+    setCatalogSelected(prev=>on?[...new Set([...prev,...keys])]:prev.filter(k=>!keys.includes(k)));
+  }
+
+  /** Muted second line of a row: parts joined by «·», empty parts skipped (no dangling separators). */
+  const renderCatalogMeta=(parts:readonly ReactNode[])=>{
+    const shown=parts.filter(p=>p!==null&&p!==undefined&&p!==false&&p!=='');
+    return (
+      <p className="catalog-row-meta">
+        {shown.map((p,i)=><span key={i}>{i>0&&<span className="catalog-sep" aria-hidden="true">·</span>}{p}</span>)}
+      </p>
+    );
+  };
+
+  const renderCatalogNoHits=()=>(
+    <Empty className="catalog-empty">
+      <EmptyHeader>
+        <EmptyTitle>Ничего не нашли по «{catalogQuery.trim()}»</EmptyTitle>
+        <EmptyDescription>Ищем по названию и @ссылке чата.</EmptyDescription>
+      </EmptyHeader>
+      <EmptyContent><Button variant="outline" onClick={()=>setCatalogQuery('')}>Сбросить</Button></EmptyContent>
+    </Empty>
+  );
+
+  const openAiSettings=()=>{setCatalogOpen(false);navigate('AI-ассистент')};
+
+  const renderCatalogRecommended=()=>{
+    if(catalogNoProject){
+      return (
+        <Empty className="catalog-empty">
+          <EmptyHeader>
+            <EmptyTitle>Опишите продукт в настройках AI — подберём чаты</EmptyTitle>
+            <EmptyDescription>Чаты подбираем по нишам из описания продукта и аудитории. Пока описания нет — рекомендовать нечего.</EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent className="catalog-empty-actions">
+            <Button onClick={openAiSettings}><Sparkles size={15}/>Открыть настройки AI</Button>
+            <Button variant="ghost" onClick={()=>{setCatalogOpen(false);openManualGroup()}}><Plus size={15}/>Своя группа</Button>
+          </EmptyContent>
+        </Empty>
+      );
+    }
+    if(!catalogFullView.recommended.length){
+      return catalogFullView.joined.length?(
+        <Empty className="catalog-empty">
+          <EmptyHeader>
+            <EmptyTitle>Во все рекомендованные уже вступили</EmptyTitle>
+            <EmptyDescription>Лиды собираем в чатах из списка «Вступили».</EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent><Button variant="outline" onClick={()=>setCatalogTab('joined')}>Открыть «Вступили»</Button></EmptyContent>
+        </Empty>
+      ):(
+        <Empty className="catalog-empty">
+          <EmptyHeader>
+            <EmptyTitle>Под описание проекта чатов не нашли</EmptyTitle>
+            <EmptyDescription>Уточните продукт и аудиторию в настройках AI или добавьте свою группу.</EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent className="catalog-empty-actions"><Button variant="outline" onClick={openAiSettings}>Открыть настройки AI</Button></EmptyContent>
+        </Empty>
+      );
+    }
+    if(!catalogView.recommended.length)return renderCatalogNoHits();
+    const actionableKeys=catalogActionable.map(r=>r.key);
+    return (
+      <>
+        {catalogActionable.length>0&&(
+          <div className="catalog-list-head">
+            <label className="catalog-check-label">
+              <span className="catalog-check">
+                <Checkbox checked={catalogAllPicked} onCheckedChange={v=>toggleCatalogRows(actionableKeys,v===true)}/>
+              </span>
+              Выбрать все {formatCountRu(catalogActionable.length)}
+            </label>
+            {catalogPicked.length>0&&(
+              <button type="button" className="catalog-clear" onClick={()=>setCatalogSelected([])}>
+                Снять выбор · {formatCountRu(catalogPicked.length)}
+              </button>
+            )}
+          </div>
+        )}
+        <ul className="catalog-rows" aria-label="Рекомендуем">
+          {catalogView.recommended.map(r=>{
+            const checked=r.status==='join'&&catalogSelected.includes(r.key);
+            return (
+              <li key={r.key} className={`catalog-row${checked?' is-checked':''}`}>
+                <span className="catalog-row-check">
+                  {r.status==='join'&&(
+                    <label className="catalog-check">
+                      <Checkbox checked={checked} aria-label={`Выбрать «${r.name}»`} onCheckedChange={v=>toggleCatalogRows([r.key],v===true)}/>
+                    </label>
+                  )}
+                </span>
+                <div className="catalog-row-main">
+                  <p className="catalog-row-name" title={r.name}>{r.name}</p>
+                  {renderCatalogMeta([
+                    r.handle,
+                    r.subscribers?<span className="catalog-num">{subscribersLabel(r.subscribers)}</span>:null,
+                    r.reason,
+                  ])}
+                </div>
+                <div className="catalog-row-action">
+                  {r.status==='join'?(
+                    <Button size="sm" variant="outline" className="catalog-join" disabled={busy||!!catalogJoinBlocked} onClick={()=>void joinRecommended([r])}>Вступить</Button>
+                  ):(
+                    <span className="catalog-row-state">{r.status==='queued'?'В очереди':'Вступаем…'}</span>
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+        {catalogFullView.hiddenCount>0&&!catalogQuery.trim()&&(
+          <p className="catalog-hidden-note">
+            Скрыли {chatsLabel(catalogFullView.hiddenCount)} не по теме проекта — они остаются в «Группы и каналы».
+          </p>
+        )}
+      </>
+    );
+  };
+
+  const renderCatalogJoined=()=>{
+    if(!catalogFullView.joined.length){
+      return (
+        <Empty className="catalog-empty">
+          <EmptyHeader>
+            <EmptyTitle>Пока ни в один чат не вступили</EmptyTitle>
+            <EmptyDescription>Отметьте чаты в «Рекомендуем» — вступим в фоне и начнём собирать лиды.</EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent><Button variant="outline" onClick={()=>setCatalogTab('recommended')}>Открыть «Рекомендуем»</Button></EmptyContent>
+        </Empty>
+      );
+    }
+    if(!catalogView.joined.length)return renderCatalogNoHits();
+    return (
+      <ul className="catalog-rows" aria-label="Вступили">
+        {catalogView.joined.map(j=>{
+          const rec=list('group').find(g=>g.id===j.id);
+          const scannedAt=formatGroupSyncAt(j.lastScanned);
+          return (
+            <li key={j.key} className="catalog-row no-check">
+              <div className="catalog-row-main">
+                <p className="catalog-row-name" title={j.name}>{j.name}</p>
+                {renderCatalogMeta(j.pending?[
+                  j.handle,
+                  <span key="p" className="catalog-row-state">Заявка подана</span>,
+                ]:[
+                  j.handle,
+                  <span key="l" className={j.leadsTotal?'catalog-num':undefined}>{leadsLabel(j.leadsTotal)}</span>,
+                  scannedAt?`скан ${scannedAt}`:'ещё не сканировали',
+                ])}
+              </div>
+              <div className="catalog-row-action">
+                {!j.pending&&rec&&(
+                  <Button size="sm" variant="ghost" disabled={busy||!telegramConnected} onClick={()=>{setCatalogOpen(false);void scanGroup(rec)}}>Скан лидов</Button>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    );
+  };
 
   const EmptyLeads=()=> (
     <Empty className="empty-state border-0">
@@ -2827,17 +2931,9 @@ function WorkspaceHome(){
   );
 
   const renderLeads=(items:RecordItem[])=>{
-    const allOn=items.length>0&&items.every(r=>leadSelected.includes(r.id));
     return items.length?(
     <>
       <div className="leads-list-cols">
-        <label className="inline-flex items-center justify-center">
-          <Checkbox
-            checked={allOn}
-            onCheckedChange={v=>setLeadSelected(v===true?items.map(r=>r.id):[])}
-            aria-label="Выбрать все лиды"
-          />
-        </label>
         <SortHeaderButton columnKey="name" sortKey={sortKey} sortDir={sortDir} onSort={onSort}>Лид</SortHeaderButton>
         <SortHeaderButton columnKey="temperature" sortKey={sortKey} sortDir={sortDir} onSort={onSort}>Темп.</SortHeaderButton>
         <SortHeaderButton columnKey="status" sortKey={sortKey} sortDir={sortDir} onSort={onSort}>Статус</SortHeaderButton>
@@ -2845,13 +2941,7 @@ function WorkspaceHome(){
         <SortHeaderButton columnKey="created" sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="justify-self-end">Дата</SortHeaderButton>
       </div>
       {items.map(r=>(
-    <div className={`lead-row ${leadSelected.includes(r.id)?'selected':''} ${r.data.excludeFromTraining?'ignored':''}`} key={r.id}>
-      <Checkbox
-        checked={leadSelected.includes(r.id)}
-        onCheckedChange={v=>toggleLeadSelected(r.id,v===true)}
-        aria-label={`Выбрать ${r.data.name}`}
-        className="mt-1 shrink-0"
-      />
+    <div className="lead-row" key={r.id}>
       <button className="text-left flex-1 min-w-0" onClick={()=>openLead(r)}>
         <div className="flex gap-3 items-center flex-wrap">
           <span className="row-title">{r.data.name}</span>
@@ -2859,7 +2949,6 @@ function WorkspaceHome(){
           {statusBadge(r.data.status)}
           {r.data.needsManager&&<span className="badge warning">Клиент ответил</span>}
           {!r.data.needsManager&&r.data.conversationOpen&&<span className="badge success">Переписка</span>}
-          {r.data.excludeFromTraining&&<span className="badge neutral">Не для обучения</span>}
         </div>
         <p className="mt-2 text-[14px] leading-6 line-clamp-2 muted">
           {r.data.incomingLastText||r.data.message}
@@ -2872,28 +2961,6 @@ function WorkspaceHome(){
       </button>
       <div className="flex flex-col gap-1 shrink-0">
         <Button variant="ghost" onClick={()=>openLead(r)}>Открыть<ChevronRight size={16}/></Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={busy}
-          title={r.data.excludeFromTraining?'Вернуть в учёт':'Не учитывать в обучении'}
-          onClick={()=>setLeadTrainingExclude(r,!r.data.excludeFromTraining)}
-        >
-          <Ban size={15}/>
-          {r.data.excludeFromTraining?'Вернуть':'Не учитывать'}
-        </Button>
-        {!r.data.excludeFromTraining&&(
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={busy}
-            title="Не лид → стоп-слова"
-            onClick={()=>rejectLeadToStopwords(r)}
-          >
-            <FilterX size={15}/>
-            Стоп
-          </Button>
-        )}
       </div>
     </div>
   ))}
@@ -2917,7 +2984,7 @@ function WorkspaceHome(){
             <Button disabled={busy} onClick={()=>void importFullCatalogToDb()}>
               <Database size={16}/>Залить все в базу ({catalogStats().uniqueUrls})
             </Button>
-            <Button variant="outline" onClick={()=>openCatalog('all')}><Search size={16}/>Открыть каталог</Button>
+            <Button variant="outline" onClick={()=>openCatalog()}><Search size={16}/>Открыть каталог</Button>
             <Button variant="outline" onClick={openManualGroup}><Plus size={16}/>Ссылка</Button>
           </div>
         </Empty>
@@ -3015,8 +3082,8 @@ function WorkspaceHome(){
     );
   };
 
-  const allLeads=list('lead').filter(r=>!r.data.excludeFromTraining);
-  const draftLeads=list('lead').filter(r=>(!!r.data.draft||!!r.data.conversationOpen)&&!r.data.excludeFromTraining);
+  const allLeads=list('lead');
+  const draftLeads=list('lead').filter(r=>(!!r.data.draft||!!r.data.conversationOpen));
   const groupsAll=list('group');
   const groupsJoined=groupsAll.filter(g=>g.data.membership==='joined'||!!g.data.joinedAt);
   const groupsNeedJoin=groupsAll.filter(groupNeedsJoin);
@@ -3168,7 +3235,7 @@ function WorkspaceHome(){
                     disabled={busy}
                     onClick={()=>void importFullCatalogToDb()}
                   >Залить каталог ({catalogStats().uniqueUrls})</Button>
-                  <Button onClick={openCatalog}><Search size={16}/>Поиск по темам</Button>
+                  <Button onClick={()=>openCatalog()}><Search size={16}/>Поиск по темам</Button>
                 </>
               ):view==='Настройки'||view==='Сбор аудитории'||view==='Инвайтинг'||view==='Рассылка'||view==='Уведомления'||view==='Сотрудники'?null:(
                 <Button onClick={()=>open(currentKind||'group',currentKind==='settings'?settings:undefined)}>
@@ -3376,7 +3443,7 @@ function WorkspaceHome(){
               </div>
               {view==='Переписки'?(
                 <div className="flex flex-wrap items-center gap-3">
-                  <Tabs value={filter==='viewed'?'viewed':'all'} onValueChange={(v)=>{setFilter(v);setLeadSelected([])}}>
+                  <Tabs value={filter==='viewed'?'viewed':'all'} onValueChange={(v)=>setFilter(v)}>
                     <TabsList>
                       <TabsTrigger value="all">Новые{freshChats.length?` (${freshChats.length})`:''}</TabsTrigger>
                       <TabsTrigger value="viewed">Просмотренные{viewedChats.length?` (${viewedChats.length})`:''}</TabsTrigger>
@@ -3412,7 +3479,7 @@ function WorkspaceHome(){
                       ))}
                     </SelectContent>
                   </Select>
-                  <Tabs value={filter} onValueChange={(v)=>{setFilter(v);setLeadSelected([])}}>
+                  <Tabs value={filter} onValueChange={(v)=>setFilter(v)}>
                     <TabsList>
                       <TabsTrigger value="all">Все</TabsTrigger>
                       <TabsTrigger value="hot">Горячие</TabsTrigger>
@@ -3421,7 +3488,6 @@ function WorkspaceHome(){
                       <TabsTrigger value="new">Новые</TabsTrigger>
                       <TabsTrigger value="working">В работе</TabsTrigger>
                       <TabsTrigger value="viewed">Просмотренные{viewedLeads.length?` (${viewedLeads.length})`:''}</TabsTrigger>
-                      <TabsTrigger value="ignored">Игнор{excludedLeads.length?` (${excludedLeads.length})`:''}</TabsTrigger>
                       <TabsTrigger value="archived">Архив</TabsTrigger>
                     </TabsList>
                   </Tabs>
@@ -3522,32 +3588,6 @@ function WorkspaceHome(){
                 {autoRescanRunning?' · идёт…':''}.
               </div>
             )}
-            {currentKind==='lead'&&leadSelected.length>0&&(
-              <div className="lead-bulk-bar">
-                <span>Выбрано: <strong>{leadSelected.length}</strong></span>
-                <div className="flex flex-wrap gap-2">
-                  <Button size="sm" disabled={busy} onClick={()=>bulkExcludeSelected(true)}>
-                    <Ban size={14}/>Не учитывать в обучении
-                  </Button>
-                  {filter==='ignored'&&(
-                    <Button size="sm" variant="outline" disabled={busy} onClick={()=>bulkExcludeSelected(false)}>
-                      Вернуть в учёт
-                    </Button>
-                  )}
-                  <Button size="sm" variant="outline" disabled={busy} onClick={()=>setLeadSelected(sortedList.map(r=>r.id))}>
-                    Выбрать все
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={()=>setLeadSelected([])}>Снять</Button>
-                </div>
-              </div>
-            )}
-            {currentKind==='lead'&&!leadSelected.length&&sortedList.length>0&&(
-              <div className="lead-bulk-hint">
-                <Button size="sm" variant="outline" onClick={()=>setLeadSelected(sortedList.map(r=>r.id))}>
-                  Выбрать все ({sortedList.length})
-                </Button>
-              </div>
-            )}
             {accountCheckProgress&&currentKind==='account'&&(
               <div className="status-note" role="status">
                 Аккаунты {accountCheckProgress.done} / {accountCheckProgress.total} · активных {accountCheckProgress.active}
@@ -3578,7 +3618,7 @@ function WorkspaceHome(){
                 <div className="groups-page">
                   <div className="groups-top">
                     <div className="groups-top-actions">
-                      <Button onClick={openCatalog} disabled={busy}><Search size={15}/>Найти темы</Button>
+                      <Button onClick={()=>openCatalog()} disabled={busy}><Search size={15}/>Найти темы</Button>
                       <Button variant="outline" onClick={openManualGroup}><Plus size={15}/>Ссылка</Button>
                       <Button variant="outline" onClick={openMassGroups} disabled={busy}><Upload size={15}/>Массово</Button>
                       <Button
@@ -4081,19 +4121,6 @@ function WorkspaceHome(){
                     </div>
                     <div className="ai-filter-card minus">
                       <h3>Стоп / минус-слова</h3>
-                      {Array.isArray(settings?.data?.lastMinusAdded)&&settings.data.lastMinusAdded.length>0&&(
-                        <div className="ai-last-minus">
-                          <div className="ai-last-minus-title">
-                            Только что из лидов
-                            {settings.data.lastMinusAddedAt?` · ${new Date(settings.data.lastMinusAddedAt).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}`:''}
-                          </div>
-                          <div className="kw-list">
-                            {settings.data.lastMinusAdded.map((t:string)=>(
-                              <span className="kw minus is-new" key={`new-${t}`}>{t}</span>
-                            ))}
-                          </div>
-                        </div>
-                      )}
                       <div className="kw-list">
                         {(settings?.data.minusKeywords||defaults.settings.minusKeywords).split(/[,;\n]+/).filter(Boolean).map((t:string)=>(
                           <span className="kw minus" key={t}>{t.trim()}</span>
@@ -4118,9 +4145,6 @@ function WorkspaceHome(){
                   <div className="flex flex-col gap-2">
                     <Button disabled={busy||!aiKeyReady} onClick={rebuildProduct}><RefreshCw size={15}/>Пересобрать продукт + обход</Button>
                     <Button variant="outline" disabled={busy} onClick={trainFromHot}><Sparkles size={15}/>Обучить на горячих лидах</Button>
-                    <Button variant="outline" disabled={busy||!excludedLeads.length} onClick={trainFromIgnored}>
-                      <Ban size={15}/>Обучить на игноре → стоп-слова{excludedLeads.length?` (${excludedLeads.length})`:''}
-                    </Button>
                     <Button variant="outline" disabled={busy} onClick={async()=>{setBusy(true);try{const r=await rescanAllGroups({force:true});toast.success(`Обход: ${r.scanned} групп, +${r.added} лидов`)}catch(e){toast.error((e as Error).message)}finally{setBusy(false)}}}><Search size={15}/>Обход групп сейчас</Button>
                     <Button variant="outline" onClick={()=>{navigate('Группы и каналы');openCatalog()}}><Search size={15}/>Поиск тем</Button>
                   </div>
@@ -4138,9 +4162,7 @@ function WorkspaceHome(){
                     <li><strong>Строгий AI-шлюз</strong> — лид показывается только если сообщение прошло все правила ассистента; лучше меньше, чем шум.</li>
                     <li><strong>Подробный продукт</strong> — чем точнее описание и критерии, тем точнее отбор hot/warm.</li>
                     <li><strong>Клик по подсказкам</strong> — добавляйте плюс/минус в настройках одним нажатием.</li>
-                    <li><strong>В стоп-слова</strong> — сообщение не лид: сразу в минус-фильтр + скрыть из списка.</li>
-                    <li><strong>Не учитывать</strong> — шум без новых стоп-слов; потом можно «Обучить на игноре».</li>
-                    <li><strong>Обучение на горячих</strong> — после 5–10 hot нажмите «Обучить», исключённые лиды не участвуют.</li>
+                    <li><strong>Обучение на горячих</strong> — после 5–10 hot нажмите «Обучить»: плюс-слова и примеры из горячих лидов.</li>
                     <li><strong>Пересборка → обход</strong> — после правок продукта сразу сканируем группы под новые правила.</li>
                     <li><strong>Автообход</strong> — круглосуточно через tg-worker (кабинет открывать не нужно).</li>
                     <li><strong>Стоп-слова жёстко</strong> — вакансии и накрутка отсекаются до и внутри AI.</li>
@@ -4782,288 +4804,99 @@ function WorkspaceHome(){
         </DialogContent>
       </Dialog>
 
-      <Dialog open={catalogOpen} onOpenChange={setCatalogOpen}>
-        <DialogContent className="catalog-dialog max-h-[92vh] overflow-hidden flex flex-col sm:max-w-4xl p-0 gap-0">
-          <DialogHeader className="px-6 pt-5 pb-4 border-b border-[var(--spike-border)] shrink-0">
+      <Dialog open={catalogOpen} onOpenChange={o=>{setCatalogOpen(o);if(!o)setCatalogConfirmOpen(false)}}>
+        <DialogContent className="catalog-dialog">
+          <DialogHeader className="catalog-head">
             <DialogTitle>Найти чаты с клиентами</DialogTitle>
-            <DialogDescription>
-              «В базе» — ваши группы для сбора лидов. «Все чаты» — полный каталог ({catalogStats().uniqueUrls} ссылок). «Залить в базу» добавит их в «Группы и каналы».
+            <DialogDescription className="catalog-lede">
+              {catalogFullView.recommended.length
+                ?`Подобрали ${chatsLabel(catalogFullView.recommended.length)} под ваш проект. Вступаем только в те, что вы отметите.`
+                :'Вступаем только в те чаты, что вы отметите.'}
             </DialogDescription>
           </DialogHeader>
-
-          <div className="catalog-layout flex-1 min-h-0 overflow-hidden">
-            <aside className="catalog-side">
-              <p className="catalog-step-label">Рынок</p>
-              <div className="catalog-side-list">
-                {MARKET_SECTIONS.map(m=>(
-                  <button
-                    key={m.id}
-                    type="button"
-                    className={`catalog-side-item ${catalogMarket===m.id?'active':''}`}
-                    onClick={()=>selectMarket(m.id)}
-                  >
-                    <strong>{m.title} <em className="opacity-70 font-normal">· {m.id==='db'?list('group').length:marketVerifiedCount(m.id)}</em></strong>
-                    <span>{m.hint}</span>
-                  </button>
+          <Tabs value={catalogTab} onValueChange={v=>setCatalogTab(v as CatalogTab)} className="catalog-body">
+            <div className="catalog-toolbar">
+              <TabsList className="catalog-tabs" aria-label="Чаты">
+                {CATALOG_TABS.map(t=>(
+                  <TabsTrigger key={t.id} value={t.id}>
+                    {t.label}<b>{formatCountRu(t.id==='recommended'?catalogFullView.recommended.length:catalogFullView.joined.length)}</b>
+                  </TabsTrigger>
                 ))}
-              </div>
+              </TabsList>
+              <label className="catalog-search">
+                <Search size={16} aria-hidden="true"/>
+                <Input
+                  type="search"
+                  placeholder="Найти в списке"
+                  aria-label="Найти в списке"
+                  value={catalogQuery}
+                  onChange={e=>setCatalogQuery(e.target.value)}
+                />
+              </label>
+            </div>
+            <TabsContent value="recommended" className="catalog-panel">{renderCatalogRecommended()}</TabsContent>
+            <TabsContent value="joined" className="catalog-panel">{renderCatalogJoined()}</TabsContent>
+          </Tabs>
 
-              {catalogMarket!=='db'&&(
+          <div className="catalog-foot">
+            {catalogTab==='recommended'?(
               <>
-              <p className="catalog-step-label mt-4">Ниша</p>
-              <div className="catalog-side-list catalog-niche-list">
-                <button
-                  type="button"
-                  className={`catalog-niche-btn ${catalogNiche===null?'active':''}`}
-                  onClick={()=>selectCatalogNiche(null)}
-                >Все ниши</button>
-                {catalogMarketNiches.map(n=>(
-                  <button
-                    key={n}
-                    type="button"
-                    className={`catalog-niche-btn ${catalogNiche===n?'active':''}`}
-                    onClick={()=>selectCatalogNiche(n)}
-                  >{GROUP_NICHE_LABELS[n]}</button>
-                ))}
-              </div>
-
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                className="mt-3 w-full"
-                onClick={()=>{
-                  const s=list('settings')[0]?.data||defaults.settings;
-                  const auto=nichesFromProjectText(s.product,s.audience,s.keywords,s.leadCriteria,s.name,s.pains,s.valueProps,s.hotSignals);
-                  if(!auto.length){toast.message('В AI нет явных ниш — выберите рынок вручную');return}
-                  let best={id:MARKET_SECTIONS.find(m=>m.niches.length)?.id||'all',score:0};
-                  for(const m of MARKET_SECTIONS){
-                    if(!m.niches.length)continue;
-                    const score=m.niches.filter(n=>auto.includes(n)).length;
-                    if(score>best.score)best={id:m.id,score};
-                  }
-                  setCatalogMarket(best.id);
-                  setCatalogNiche(null);
-                  setCatalogTab('links');
-                  setCatalogSearching(true);
-                  setCatalogSearchTick(t=>t+1);
-                }}
-              ><Sparkles size={14}/>Подобрать по AI</Button>
-              </>
-              )}
-              {catalogMarket==='db'&&(
-                <Button
-                  type="button"
-                  size="sm"
-                  className="mt-3 w-full"
-                  disabled={busy}
-                  onClick={()=>void importFullCatalogToDb()}
-                ><Database size={14}/>Дозалить каталог ({catalogStats().uniqueUrls})</Button>
-              )}
-            </aside>
-
-            <div className="catalog-main">
-              <div className="catalog-main-toolbar">
-                <div className="relative flex-1 min-w-[180px]">
-                  <Search className="absolute left-3 top-2.5 text-[var(--spike-muted)]" size={16}/>
-                  <Input
-                    className="pl-9"
-                    placeholder="Уточнить поиск…"
-                    value={catalogQuery}
-                    onChange={e=>{setCatalogQuery(e.target.value);setCatalogSearching(true);setCatalogSearchTick(t=>t+1)}}
-                  />
-                  {catalogSearching&&<Loader2 className="absolute right-3 top-2.5 animate-spin text-[var(--spike-primary)]" size={16}/>}
-                </div>
-                <label className="catalog-toggle">
-                  <Checkbox
-                    checked={catalogHideAdded}
-                    disabled={catalogMarket==='db'}
-                    onCheckedChange={v=>setCatalogHideAdded(v===true)}
-                  />
-                  Скрыть добавленные
-                </label>
-              </div>
-
-              <div className="catalog-params">
-                <span className="catalog-param">{catalogActiveMarket?.title||'—'}</span>
-                <span className="catalog-param-sep">/</span>
-                <span className="catalog-param accent">{catalogMarket==='db'?'Ваш кабинет':(catalogNiche?GROUP_NICHE_LABELS[catalogNiche]:'Все ниши')}</span>
-                <span className="small-note ml-auto">{catalogSearching?'Ищем…':`${catalogVisibleHits.length} результатов · база ${catalogStats().uniqueUrls}`}</span>
-              </div>
-
-              <div className="catalog-tabs">
-                <button type="button" className={catalogTab==='links'?'active':''} onClick={()=>{setCatalogTab('links');setCatalogSelected([])}}>
-                  {catalogMarket==='db'?'Группы':'Со ссылкой'} <em>{catalogLinkHits.length}</em>
-                </button>
-                {catalogMarket!=='db'&&(
-                <button type="button" className={catalogTab==='topics'?'active':''} onClick={()=>{setCatalogTab('topics');setCatalogSelected([])}}>
-                  Темы без ссылки <em>{catalogTopicHits.length}</em>
-                </button>
-                )}
-              </div>
-
-              {catalogTab==='topics'&&catalogVisibleHits.length>0&&(
-                <div className="flex flex-wrap items-center justify-between gap-2 px-1">
-                  <label className="inline-flex items-center gap-2 text-sm cursor-pointer">
-                    <Checkbox
-                      checked={catalogVisibleHits.length>0&&catalogVisibleHits.every(g=>catalogSelected.includes(g.id))}
-                      onCheckedChange={v=>setCatalogSelected(v===true?catalogVisibleHits.map(g=>g.id):[])}
-                      aria-label="Выбрать все темы"
+                <div className="catalog-foot-account">
+                  <label className="catalog-foot-pick">
+                    <span>С аккаунта</span>
+                    <Pick
+                      value={catalogAccountId}
+                      onChange={setCatalogAccountId}
+                      options={accountsActive.map(r=>({id:r.id,name:r.data.name}))}
+                      placeholder={accountsActive.length?'Выберите аккаунт':'Нет рабочих аккаунтов'}
                     />
-                    Выбрать все ({catalogVisibleHits.length})
                   </label>
-                  {catalogSelected.length>0&&(
-                    <button type="button" className="text-sm text-[var(--spike-muted)] hover:text-[var(--spike-text)]" onClick={()=>setCatalogSelected([])}>
-                      Снять ({catalogSelected.length})
-                    </button>
+                  {catalogJoinBlocked&&<p className="catalog-foot-hint" role="status">{catalogJoinBlocked}</p>}
+                </div>
+                <div className="catalog-foot-actions">
+                  {!catalogNoProject&&(
+                    <Button variant="ghost" disabled={busy} onClick={()=>{setCatalogOpen(false);openManualGroup()}}><Plus size={15}/>Своя группа</Button>
+                  )}
+                  {catalogPicked.length>0&&(
+                    <Button disabled={busy||!!catalogJoinBlocked} onClick={()=>setCatalogConfirmOpen(true)}>
+                      Вступить в {chatsLabel(catalogPicked.length)}
+                    </Button>
                   )}
                 </div>
-              )}
-
-              <label className="field catalog-account">
-                Аккаунт
-                <Pick value={catalogAccountId} onChange={setCatalogAccountId} options={accountsActive.map(r=>({id:r.id,name:r.data.name}))} placeholder={accountsActive.length?'Для фонового вступления':'Нет рабочих аккаунтов'}/>
-              </label>
-
-              <div className="catalog-results">
-                {catalogSearching&&!catalogVisibleHits.length?(
-                  <div className="catalog-searching">
-                    <Loader2 className="animate-spin" size={18}/>
-                    <span>Ищем чаты по параметрам…</span>
-                  </div>
-                ):catalogVisibleHits.length?catalogVisibleHits.map(g=>{
-                  const canJoin=g.verified&&!!g.url&&!isCatalogPlaceholderUrl(g.url);
-                  const checked=catalogSelected.includes(g.id);
-                  const dbId=catalogMarket==='db'&&String(g.id).startsWith('db:')?String(g.id).slice(3):'';
-                  const dbRec=dbId?list('group').find(x=>x.id===dbId):undefined;
-                  const dbJoined=!!(dbRec&&(dbRec.data.membership==='joined'||dbRec.data.joinedAt));
-                  return (
-                    <div key={g.id} className={`catalog-card ${checked?'is-checked':''} ${canJoin?'has-link':''}`}>
-                      {catalogTab==='topics'?(
-                        <Checkbox
-                          checked={checked}
-                          onCheckedChange={v=>{
-                            setCatalogSelected(prev=>v===true?(prev.includes(g.id)?prev:[...prev,g.id]):prev.filter(id=>id!==g.id));
-                          }}
-                        />
-                      ):null}
-                      <span className="min-w-0 flex-1">
-                        <span className="catalog-card-title">
-                          {g.name}
-                          {canJoin?<span className="badge success">t.me</span>:<span className="badge neutral">нужен инвайт</span>}
-                          {dbJoined&&<span className="badge success">вступили</span>}
-                        </span>
-                        <span className="text-sm muted block mt-1">{g.description}</span>
-                        <span className="small-note block mt-1">{g.audience}</span>
-                        <span className="small-note block mt-1 font-medium text-[var(--spike-primary)]">{canJoin?g.url:g.searchHint}</span>
-                      </span>
-                      {catalogMarket==='db'&&dbRec?(
-                        dbJoined?(
-                          <Button
-                            size="sm"
-                            disabled={busy||!telegramConnected}
-                            onClick={()=>{setCatalogOpen(false);void scanGroup(dbRec)}}
-                          >Скан лидов</Button>
-                        ):(
-                          <Button
-                            size="sm"
-                            disabled={busy||!telegramConnected||!dbRec.data.accountId}
-                            onClick={()=>{setCatalogOpen(false);void joinGroup(dbRec)}}
-                          >Вступить</Button>
-                        )
-                      ):canJoin?(
-                        <Button
-                          size="sm"
-                          disabled={busy||!catalogAccountId}
-                          onClick={()=>joinCatalogNow(g.id)}
-                        >Вступить</Button>
-                      ):(
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={busy}
-                          onClick={()=>{
-                            setCatalogOpen(false);
-                            setForm({...defaults.group,name:g.name,url:'',accountId:catalogAccountId,status:'setup',error:''});
-                            setModal({kind:'group'});
-                            setOnboardAfterSave(true);
-                            toast.message('Вставьте t.me — после сохранения вступим сами');
-                          }}
-                        >Ссылка</Button>
-                      )}
-                    </div>
-                  );
-                }):(
-                  <p className="muted text-sm py-6">
-                    {catalogMarket==='db'
-                      ? 'В кабинете пока нет групп — нажмите «Дозалить каталог» или откройте «Все чаты».'
-                      : catalogTab==='links'&&catalogTopicHits.length
-                      ? 'Нет готовых ссылок в этой нише — откройте «Темы без ссылки» или смените нишу.'
-                      : catalogHiddenAdded&&catalogHideAdded
-                        ? 'В этой нише всё уже добавлено. Снимите «Скрыть добавленные» или выберите другую нишу.'
-                        : 'Пусто. Выберите другой рынок или нишу.'}
-                  </p>
-                )}
-              </div>
-            </div>
-          </div>
-
-          <div className="px-6 py-4 border-t border-[var(--spike-border)] flex flex-wrap gap-2 shrink-0">
-            {catalogMarket==='db'?(
-              <>
-                <Button
-                  disabled={busy||!telegramConnected||!list('group').filter(g=>g.data.membership==='joined'||g.data.joinedAt).length}
-                  onClick={()=>{
-                    setCatalogOpen(false);
-                    navigate('Группы и каналы');
-                    void (async()=>{
-                      setBusy(true);
-                      try{
-                        const r=await api({action:'rescan_groups',force:true});
-                        toast.message(`Переобход: ${r.queued||0} групп`);
-                        await refresh();
-                      }catch(e){toast.error((e as Error).message)}
-                      finally{setBusy(false)}
-                    })();
-                  }}
-                >Собрать лиды со вступивших</Button>
-                <Button variant="outline" disabled={busy} onClick={()=>void importFullCatalogToDb()}>
-                  Дозалить каталог ({catalogStats().uniqueUrls})
-                </Button>
-                <Button variant="ghost" onClick={()=>selectMarket('all')}>Все чаты каталога</Button>
-              </>
-            ):catalogTab==='links'?(
-              <>
-                <Button
-                  disabled={busy||!catalogReadyCount}
-                  variant="default"
-                  onClick={()=>catalogMarket==='all'?void importFullCatalogToDb():saveCatalogGroupsToDb(catalogLinkHits.map(g=>g.id),{join:false})}
-                >{busy?'Сохраняем…':catalogMarket==='all'?`Залить весь каталог (${catalogStats().uniqueUrls})`:`Залить в базу (${catalogReadyCount})`}</Button>
-                <Button
-                  disabled={busy||!catalogReadyCount||!catalogAccountId}
-                  variant="outline"
-                  onClick={()=>addCatalogGroups(catalogLinkHits.map(g=>g.id))}
-                >{busy?'Вступаем…':`Вступить во все (${catalogReadyCount})`}</Button>
               </>
             ):(
-              <Button
-                variant="outline"
-                disabled={busy||!catalogSelected.length}
-                onClick={()=>{
-                  const first=GROUP_CATALOG.find(g=>catalogSelected.includes(g.id));
-                  if(!first)return;
-                  setCatalogOpen(false);
-                  setForm({...defaults.group,name:first.name,url:'',accountId:catalogAccountId,status:'setup',error:''});
-                  setModal({kind:'group'});
-                  setOnboardAfterSave(true);
-                  toast.message(`Вставьте t.me для «${first.name}» — вступим сразу после сохранения`);
-                }}
-              >Вставить ссылку и вступить</Button>
+              <>
+                <div className="catalog-foot-account">
+                  {!telegramConnected&&<p className="catalog-foot-hint" role="status">Воркер не запущен</p>}
+                </div>
+                <div className="catalog-foot-actions">
+                  {catalogScannable>0&&(
+                    <Button disabled={busy||!telegramConnected} onClick={collectLeadsFromJoined}>
+                      Собрать лиды со всех · {formatCountRu(catalogScannable)}
+                    </Button>
+                  )}
+                </div>
+              </>
             )}
-            <Button variant="ghost" disabled={busy} onClick={()=>{setCatalogOpen(false);openManualGroup()}}><Plus size={15}/>Своя группа</Button>
           </div>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={catalogConfirmOpen} onOpenChange={o=>{if(!busy)setCatalogConfirmOpen(o)}}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{catalogConfirm.title}</AlertDialogTitle>
+            <AlertDialogDescription>{catalogConfirm.names}</AlertDialogDescription>
+            <p className="text-sm text-[var(--spike-muted)]">{catalogConfirm.risk}</p>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Отмена</AlertDialogCancel>
+            <AlertDialogAction onClick={()=>{setCatalogConfirmOpen(false);void joinRecommended(catalogPicked)}}>
+              {catalogConfirm.action}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <Dialog open={!!detail} onOpenChange={o=>{if(!o){setDetail(null);setChatText('')}}}>
         <DialogContent className="max-h-[92vh] overflow-hidden flex flex-col sm:max-w-2xl p-0 gap-0">
@@ -5100,7 +4933,7 @@ function WorkspaceHome(){
               const incoming=rep.from==='client';
               return (
               <div className={`chat-bubble ${incoming?'in':'out'} ${!incoming&&!rep.ok?'fail':''}`} key={`${rep.at}-${i}`}>
-                <span className="chat-meta">{incoming?'Клиент · входящее':(rep.mode==='dm'?'Личка':'В чат')} · {new Date(rep.at).toLocaleString('ru-RU')}{!incoming&&!rep.ok?' · ошибка':''}</span>
+                <span className="chat-meta">{incoming?'Клиент · входящее':(rep.mode==='dm'?'Личка':'В чат')} · {new Date(rep.at).toLocaleString('ru-RU')}{!incoming&&!rep.ok?(rep.status==='pending'?' · отправляется':rep.status==='unknown'?' · не подтверждено':' · ошибка'):''}</span>
                 <p>{rep.text}</p>
                 {rep.error&&<p className="chat-err">{rep.error}</p>}
                 {href&&rep.ok&&(
@@ -5132,32 +4965,13 @@ function WorkspaceHome(){
               placeholder={chatMode==='dm'?'Личное сообщение клиенту…':'Ответ в группу (reply)…'}
             />
             <div className="flex flex-wrap gap-2">
-              <Button disabled={busy||!chatText.trim()} onClick={sendLeadReply}>
+              <Button disabled={busy||!chatText.trim()} onClick={()=>{void sendLeadReply()}}>
                 {busy?<Loader2 className="animate-spin" size={15}/>:null}
                 {chatMode==='dm'?'Отправить в ЛС':'Отправить в чат'}
               </Button>
               <Button variant="outline" disabled={busy} onClick={async()=>{if(!detail)return;await draft(detail);const updated=records.find(r=>r.id===detail.id)||detail;setChatText(prev=>prev||updated.data.draft||'')}}>
                 <Sparkles size={15}/>Черновик AI
               </Button>
-              <Button
-                variant={detail?.data.excludeFromTraining?'outline':'ghost'}
-                disabled={busy||!detail}
-                onClick={()=>detail&&setLeadTrainingExclude(detail,!detail.data.excludeFromTraining)}
-              >
-                <Ban size={15}/>
-                {detail?.data.excludeFromTraining?'Вернуть в учёт':'Не учитывать'}
-              </Button>
-              {!detail?.data.excludeFromTraining&&(
-                <Button
-                  variant="outline"
-                  disabled={busy||!detail}
-                  title="Пометить как не лид и добавить стоп-слова из сообщения"
-                  onClick={()=>detail&&rejectLeadToStopwords(detail)}
-                >
-                  <FilterX size={15}/>
-                  В стоп-слова
-                </Button>
-              )}
               <Button variant="outline" disabled={!chatText} onClick={async()=>{try{await navigator.clipboard.writeText(chatText);toast.success('Скопировано')}catch{toast.error('Не удалось скопировать')}}}>Копировать</Button>
               <Button variant="ghost" onClick={()=>{if(detail){open('lead',detail);setDetail(null)}}}>Правки</Button>
               <Button variant="ghost" onClick={()=>{setDeleting(detail);setDetail(null)}}><Trash2 size={15}/></Button>
