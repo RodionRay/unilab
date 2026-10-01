@@ -1,7 +1,7 @@
 /**
  * Guards the lead stop-lists (minusKeywords / avoidTopics) against auto-learning pollution.
  *
- * Auto-learning (train_from_hot / train_from_ignored / reject_lead_stopwords) used to append the
+ * Auto-learning (the removed train_from_ignored / reject_lead_stopwords, LLM minus in rebuild_product) used to append the
  * product's own vocabulary ("остатков", "озон", "селлер", "нал", "бот" …) to the stop-lists, and
  * every scan then dropped exactly the messages we look for. A minus candidate is rejected here when
  * it is short, generic, marketplace context, or overlaps the positive settings of the assistant.

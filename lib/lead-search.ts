@@ -4,7 +4,6 @@ export type LeadTabData = {
   status?: string;
   temperature?: string;
   viewed?: boolean;
-  excludeFromTraining?: boolean;
 };
 
 /** Tabs that are an inbox: an opened (viewed) lead leaves them and moves to «Просмотренные». */
@@ -16,8 +15,6 @@ const TEMPERATURE_TABS = new Set(["hot", "warm", "cold"]);
  * temperature and status tabs («Горячие», «Тёплые», «В работе», «Архив») keep viewed leads.
  */
 export function leadVisibleInTab(lead: LeadTabData, tab: string): boolean {
-  if (tab === "ignored") return !!lead.excludeFromTraining;
-  if (lead.excludeFromTraining) return false;
   if (tab === "viewed") return !!lead.viewed;
   if (INBOX_TABS.has(tab) && lead.viewed) return false;
   if (tab === "all") return true;
