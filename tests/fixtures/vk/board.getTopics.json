@@ -1,0 +1,9 @@
+{
+  "_synthetic": "Hand-written from VK API 5.199 docs (dev.vk.com), not a live response; spike S0 replaces it with a sanitised live one.",
+  "response": {
+    "count": 1,
+    "items": [
+      {"id": 4400, "title": "Ищу исполнителя", "created": 1789000000, "created_by": 700700, "updated": 1790002000, "updated_by": 700700, "is_closed": 0, "is_fixed": 0, "comments": 2}
+    ]
+  }
+}

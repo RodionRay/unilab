@@ -1,0 +1,10 @@
+{
+  "_synthetic": "Hand-written from VK API 5.199 docs (dev.vk.com), not a live response; spike S0 replaces it with a sanitised live one.",
+  "invalid_token": {"error": {"error_code": 5, "error_msg": "User authorization failed: invalid access_token (4).", "request_params": [{"key": "method", "value": "users.get"}]}},
+  "too_many_rps": {"error": {"error_code": 6, "error_msg": "Too many requests per second", "request_params": []}},
+  "flood": {"error": {"error_code": 9, "error_msg": "Flood control", "request_params": []}},
+  "captcha": {"error": {"error_code": 14, "error_msg": "Captcha needed", "captcha_sid": "000000000000", "captcha_img": "https://api.vk.com/captcha.php?sid=000000000000", "request_params": []}},
+  "rate_limit": {"error": {"error_code": 29, "error_msg": "Rate limit reached", "request_params": []}},
+  "access_denied": {"error": {"error_code": 15, "error_msg": "Access denied: group is private", "request_params": []}},
+  "group_access": {"error": {"error_code": 203, "error_msg": "Access to group denied: access to the group is denied", "request_params": []}}
+}

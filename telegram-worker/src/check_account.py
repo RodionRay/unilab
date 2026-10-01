@@ -3138,6 +3138,10 @@ async def run_action(payload: dict[str, Any]) -> dict[str, Any]:
             return await run_check(payload)
         if action == "check_proxy":
             return await check_proxy_alive(payload)
+        if action == "vk_call":
+            from vk_api import run_batch
+
+            return await asyncio.to_thread(run_batch, payload, make_proxy=make_proxy)
 
         work = acquire_work_dir()
         client = None

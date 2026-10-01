@@ -1,0 +1,23 @@
+{
+  "_synthetic": "Hand-written from VK API 5.199 docs (dev.vk.com), not a live response; spike S0 replaces it with a sanitised live one.",
+  "response": {
+    "count": 3,
+    "current_level_count": 2,
+    "can_post": true,
+    "show_reply_button": true,
+    "items": [
+      {"id": 31, "from_id": 700500, "date": 1790001100, "text": "Мне тоже нужен сайт, кто делает недорого?", "post_id": 9001, "owner_id": -22000, "parents_stack": [],
+        "thread": {"count": 1, "items": [
+          {"id": 33, "from_id": -22000, "date": 1790001200, "text": "Напишите нам в сообщения сообщества", "post_id": 9001, "owner_id": -22000, "parents_stack": [31]}
+        ], "can_post": true, "show_reply_button": true}},
+      {"id": 32, "from_id": 700600, "date": 1790001150, "text": "", "post_id": 9001, "owner_id": -22000, "parents_stack": [], "deleted": true}
+    ],
+    "profiles": [
+      {"id": 700500, "first_name": "Мария", "last_name": "Комментова"},
+      {"id": 700600, "first_name": "DELETED", "last_name": ""}
+    ],
+    "groups": [
+      {"id": 22000, "name": "Нишевая группа", "screen_name": "niche_test", "is_closed": 0, "type": "page"}
+    ]
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "_synthetic": "Hand-written from VK API 5.199 docs (dev.vk.com), not a live response; spike S0 replaces it with a sanitised live one.",
+  "response": {
+    "items": [
+      {"id": 501, "owner_id": -11000, "from_id": -11000, "date": 1790000000, "post_type": "post", "text": "Ищу подрядчика на настройку CRM, бюджет до 50 тысяч", "signer_id": 700200, "comments": {"count": 2}},
+      {"id": 502, "owner_id": -11000, "from_id": -11000, "date": 1790000100, "post_type": "post", "text": "Нужен специалист по рекламе в VK, подскажите кого-нибудь", "comments": {"count": 0}},
+      {"id": 77, "owner_id": 700300, "from_id": 700300, "date": 1790000200, "post_type": "post", "text": "Кто может посоветовать бухгалтера на аутсорс?", "comments": {"count": 1}},
+      {"id": 78, "owner_id": 700300, "from_id": 700300, "date": 1790000300, "post_type": "post", "text": "", "comments": {"count": 0}}
+    ],
+    "count": 4,
+    "total_count": 120,
+    "next_from": "4/-11000_502",
+    "profiles": [
+      {"id": 700200, "first_name": "Пётр", "last_name": "Подписной"},
+      {"id": 700300, "first_name": "Анна", "last_name": "Поиск"}
+    ],
+    "groups": [
+      {"id": 11000, "name": "Бизнес-клуб Тест", "screen_name": "biz_test", "is_closed": 0, "type": "group"}
+    ]
+  }
+}

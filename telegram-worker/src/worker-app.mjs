@@ -40,7 +40,11 @@ export const ROUTES = Object.freeze({
   "/inbox-dms": "inbox",
   "/update-profile": "update_profile",
   "/upload-photo": "upload_photo",
+  "/vk-call": "vk_call",
 });
+
+/** Above vk_api.py DEADLINE_S (45 s) plus Python start-up, so the batch answers itself. */
+export const VK_CALL_TIMEOUT_MS = 60_000;
 
 const LONG_ACTIONS = new Set(["upload_photo", "collect", "invite"]);
 
@@ -48,6 +52,7 @@ const LONG_ACTIONS = new Set(["upload_photo", "collect", "invite"]);
 export function timeoutForAction(action) {
   if (action === "check") return 28_000;
   if (action === "check_proxy") return 18_000;
+  if (action === "vk_call") return VK_CALL_TIMEOUT_MS;
   return LONG_ACTIONS.has(action) ? 180_000 : 120_000;
 }
 
