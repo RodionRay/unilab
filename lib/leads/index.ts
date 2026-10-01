@@ -27,6 +27,8 @@ export {
 export {
   upsertScanDay,
   readFunnel,
+  pruneScanDays,
+  SCAN_DAY_RETENTION_DAYS,
   mergeScanDay,
   aggregateFunnel,
   scanDayId,

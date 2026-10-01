@@ -386,6 +386,33 @@ describe('lead core v2 · workspace route',()=>{
       expect(f.body.funnel.samples.judgeSkipped[0].reason).toBe('daily_cap');
     });
 
+    it('a retry reserves the daily cap again: no room → no second paid call',async()=>{
+      setSettings({judgeDailyCap:25});
+      workerMessages=messages(20);
+      workerCursor='119';
+      judge=()=>new Response('down',{status:500});
+
+      await scan();
+
+      expect(calls.judge).toHaveLength(1);
+      expect(record(GROUP_ID).scanCursor).toBe('99');
+      const day=new Date().toISOString().slice(0,10);
+      expect(record(`judge-day:${OWNER}:${day}`).count).toBe(20);
+    });
+
+    it('a retry within the cap is charged for its messages',async()=>{
+      setSettings({judgeDailyCap:100});
+      workerMessages=messages(5);
+      let n=0;
+      judge=()=>++n===1?new Response('down',{status:500}):{score:90};
+
+      await scan();
+
+      expect(calls.judge).toHaveLength(2);
+      expect(scanLeads()).toHaveLength(5);
+      expect(record(`judge-day:${OWNER}:${new Date().toISOString().slice(0,10)}`).count).toBe(10);
+    });
+
     it('comment ids never reach the cursor',async()=>{
       vi.stubEnv('AI_API_KEY','');
       workerMessages=[msg(9000,undefined,{messageKind:'comment'})];
@@ -413,6 +440,24 @@ describe('lead core v2 · workspace route',()=>{
       expect(f.body.funnel.runs).toHaveLength(2);
       expect(f.body.dm.counts.fetched).toBe(0);
       expect(rows('scan_day')).toHaveLength(1);
+    });
+
+    it('a scan prunes the owner\'s scan_day rows older than 30 days, not other owners\' rows',async()=>{
+      const day=(daysAgo:number)=>new Date(Date.now()-daysAgo*86400000).toISOString().slice(0,10);
+      const insert=(owner:string,id:string,d:string)=>testDb().sqlite.prepare("INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,'scan_day',?,NULL,?)")
+        .run(id,owner,JSON.stringify({projectId:'p',day:d,counts:{},samples:{},runs:[]}),nowIso());
+      insert(OWNER,'scan-day:old-a',day(31));
+      insert(OWNER,'scan-day:old-b',day(90));
+      insert(OWNER,'scan-day:keep',day(29));
+      insert('owner-2','scan-day:foreign-old',day(90));
+      workerMessages=messages(1);
+
+      await scan();
+
+      const ids=(testDb().sqlite.prepare("SELECT id FROM records WHERE kind='scan_day'").all() as {id:string}[]).map(r=>r.id);
+      expect(ids).not.toContain('scan-day:old-a');
+      expect(ids).not.toContain('scan-day:old-b');
+      expect(ids).toEqual(expect.arrayContaining(['scan-day:keep','scan-day:foreign-old']));
     });
 
     it('rejects days other than 1 or 7',async()=>{
@@ -558,6 +603,17 @@ describe('lead core v2 · workspace route',()=>{
 
       expect(r.body.about).toBe('Остатки без ошибок');
       expect(calls.other[0]!.user).toContain('Уникальный продукт XYZ');
+    });
+  });
+
+  describe('REQ-15 own-account id is server-owned',()=>{
+    it('a generic save of an account keeps tgUserId',async()=>{
+      patchRecord(ACCOUNT_ID,{tgUserId:'424242'});
+
+      const r=await post({action:'save',kind:'account',id:ACCOUNT_ID,data:{name:'Farm 1 renamed',phone:'+79990001122',tgUserId:'1'}});
+
+      expect(r.status).toBe(200);
+      expect(record(ACCOUNT_ID)).toMatchObject({name:'Farm 1 renamed',tgUserId:'424242'});
     });
   });
 

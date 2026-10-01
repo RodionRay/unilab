@@ -4,7 +4,7 @@
  * Message texts are never logged.
  */
 
-import { aiChatText, deepseekJsonText, jsonLlmFrom, type JsonLlm, type TextLlm } from "@/lib/ai-client";
+import { AiJsonError, aiChatText, deepseekJsonText, jsonLlmFrom, type ChatPrompt, type JsonLlm, type TextLlm } from "@/lib/ai-client";
 import type { D1LikeDatabase } from "@/lib/db";
 import { leadReplies, type LeadData } from "@/lib/lead-conversation";
 import { leadMessageFingerprint } from "@/lib/lead-filter";
@@ -12,12 +12,14 @@ import {
   generateDraft,
   HOT_SCORE,
   runDmJudge,
+  pruneScanDays,
   runGroupScan,
   upsertScanDay,
   type DmMessage,
   type DraftKind,
   type DraftLead,
   type GroupScanResult,
+  type JudgeGate,
   type NewLead,
   type ProjectRow,
   type ScanDelta,
@@ -30,8 +32,31 @@ export const AUTO_DRAFTS_PER_RUN = 3;
 
 export type InsertedLead = { id: string; lead: NewLead };
 
-export function judgeLlm(apiKey: string): JsonLlm | null {
-  return apiKey ? jsonLlmFrom(deepseekJsonText({ apiKey }), 1) : null;
+/** Items in the prompt's `<data>` JSON array (messages / DM senders the call judges). */
+export function judgedUnits(prompt: ChatPrompt): number {
+  const start = prompt.user.indexOf("<data>");
+  const end = prompt.user.indexOf("</data>");
+  if (start < 0 || end <= start) return 1;
+  try {
+    const items: unknown = JSON.parse(prompt.user.slice(start + "<data>".length, end));
+    return Array.isArray(items) ? Math.max(1, items.length) : 1;
+  } catch {
+    return 1;
+  }
+}
+
+/**
+ * Judge LLM (35 s, one retry). A retry is a second paid call, so it reserves the daily judge cap
+ * again for the same messages; without room the batch fails (`judgeError`) and the cursor rewinds.
+ */
+export function judgeLlm(apiKey: string, gate?: JudgeGate): JsonLlm | null {
+  if (!apiKey) return null;
+  const beforeRetry = gate
+    ? async (prompt: ChatPrompt) => {
+        if (!(await gate(judgedUnits(prompt)))) throw new AiJsonError("AI: daily judge cap reached before retry", 1);
+      }
+    : undefined;
+  return jsonLlmFrom(deepseekJsonText({ apiKey }), 1, beforeRetry);
 }
 
 export function draftLlm(apiKey: string): TextLlm {
@@ -76,10 +101,14 @@ async function insertLeads(db: D1LikeDatabase, owner: string, leads: readonly Ne
   return out;
 }
 
-/** A funnel row that cannot be written must not fail the scan that already stored its leads. */
+/**
+ * Writes today's funnel row and prunes the owner's rows past retention. A funnel failure must not
+ * fail the scan that already stored its leads.
+ */
 async function recordFunnel(db: D1LikeDatabase, owner: string, projectId: string, delta: ScanDelta, nowMs: number): Promise<void> {
   try {
     await upsertScanDay(db, owner, projectId, delta, nowMs);
+    await pruneScanDays(db, owner, nowMs);
   } catch (e) {
     logError("scan_day", e);
   }
@@ -109,6 +138,7 @@ export type GroupScanOutcome = { scan: GroupScanResult; inserted: InsertedLead[]
 export async function scanGroupLeads(db: D1LikeDatabase, input: GroupScanInput): Promise<GroupScanOutcome> {
   const { owner, group, project, nowMs } = input;
   const known = await loadKnownLeads(db, owner);
+  const gate = judgeGate(db, owner, input.settings, nowMs);
   const scan = await runGroupScan({
     projectId: project.id,
     project: project.project,
@@ -122,8 +152,8 @@ export async function scanGroupLeads(db: D1LikeDatabase, input: GroupScanInput):
     },
     worker: input.worker,
     knownFingerprints: known.fingerprints,
-    llm: judgeLlm(input.apiKey),
-    gate: judgeGate(db, owner, input.settings, nowMs),
+    llm: judgeLlm(input.apiKey, gate),
+    gate,
     now: () => nowMs,
     notifyEnabled: !!input.settings.notifyEnabled,
   });
@@ -177,14 +207,15 @@ export async function judgeInboxDms(db: D1LikeDatabase, input: DmPassInput): Pro
     loadKnownLeads(db, owner),
     loadOwnAccounts(db, owner),
   ]);
+  const gate = judgeGate(db, owner, settings, nowMs);
   const run = await runDmJudge({
     projects,
     messages: input.messages,
     ownAccounts,
     knownSenderIds: known.senderIds,
     aiRejected: settings.dmAiRejected,
-    llm: judgeLlm(input.apiKey),
-    gate: judgeGate(db, owner, settings, nowMs),
+    llm: judgeLlm(input.apiKey, gate),
+    gate,
     now: () => nowMs,
     notifyEnabled: !!settings.notifyEnabled,
   });

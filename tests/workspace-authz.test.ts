@@ -152,3 +152,44 @@ describe('workspace API: владелец без изменений',()=>{
     expect(JSON.parse(row.data).notifyBotToken).toBe('');
   });
 });
+
+describe('lead core v2: тексты лидов не уходят сотруднику без раздела «Лиды»',()=>{
+  const SECRET_TEXT='Ищу сервис остатков, мой телефон +79990000000';
+  const settingsOnly={...Object.fromEntries(Object.keys(ALL_CRM_ACCESS).map(k=>[k,false])),ai:true,settings:true} as CrmAccess;
+  async function seedProject(){
+    login(OWNER);
+    const created=await POST(postRequest({action:'project_create',data:{name:'P',goodExamples:[SECRET_TEXT],badExamples:[SECRET_TEXT]}}));
+    const id=(await created.json() as {id:string}).id;
+    testDb().sqlite.prepare("INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,'scan_day',?,NULL,?)")
+      .run(`scan-day:${id}:${new Date().toISOString().slice(0,10)}`,OWNER,JSON.stringify({projectId:id,day:new Date().toISOString().slice(0,10),counts:{leads:1},samples:{leads:[{text:SECRET_TEXT}]},runs:['r']}),new Date().toISOString());
+    return id;
+  }
+
+  it('ai/settings без leads: GET, funnel и project_update без примеров и сэмплов',async()=>{
+    const id=await seedProject();
+    addMember('ai-1','manager',settingsOnly);login('ai-1');
+
+    const records=await visibleRecords();
+    const funnel=await (await POST(postRequest({action:'funnel',projectId:id,days:1}))).json() as Record<string,unknown>;
+    const upd=await (await POST(postRequest({action:'project_update',id,patch:{minScore:60}}))).json() as Record<string,unknown>;
+    const wipe=await POST(postRequest({action:'project_update',id,patch:{goodExamples:[]}}));
+
+    expect(records.some(r=>r.kind==='project')).toBe(true);
+    expect(JSON.stringify(records)).not.toContain(SECRET_TEXT);
+    expect(JSON.stringify(funnel)).not.toContain(SECRET_TEXT);
+    expect((funnel.funnel as {counts:{leads:number}}).counts.leads).toBe(1);
+    expect(JSON.stringify(upd)).not.toContain(SECRET_TEXT);
+    expect(wipe.status).toBe(403);
+  });
+
+  it('с разделом «Лиды» примеры и сэмплы видны',async()=>{
+    const id=await seedProject();
+    addMember('lead-1','manager',{...settingsOnly,leads:true});login('lead-1');
+
+    const funnel=await (await POST(postRequest({action:'funnel',projectId:id,days:1}))).json();
+
+    expect(JSON.stringify(await visibleRecords())).toContain(SECRET_TEXT);
+    expect(JSON.stringify(funnel)).toContain(SECRET_TEXT);
+  });
+});
+

@@ -1,6 +1,6 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {z} from 'zod';
-import {AI_JSON_TIMEOUT_MS, AiJsonError, aiChatJson, parseAiJson} from '@/lib/ai-client';
+import {AI_JSON_TIMEOUT_MS, AiJsonError, aiChatJson, jsonLlmFrom, parseAiJson} from '@/lib/ai-client';
 
 const schema = z.object({ok: z.boolean()});
 
@@ -52,3 +52,26 @@ describe('parseAiJson', () => {
     expect(() => parseAiJson(schema, '{"ok":1}')).toThrow(/schema/i);
   });
 });
+
+describe('jsonLlmFrom beforeRetry', () => {
+  it('runs the hook before each retry; a throwing hook stops without a second call', async () => {
+    const text = vi.fn(async () => 'not json');
+    const hook = vi.fn(async () => {
+      throw new Error('cap');
+    });
+
+    await expect(jsonLlmFrom(text, 1, hook)(schema, {system: 's', user: 'u'})).rejects.toThrow('cap');
+
+    expect(text).toHaveBeenCalledTimes(1);
+    expect(hook).toHaveBeenCalledWith({system: 's', user: 'u'});
+  });
+
+  it('a passing hook lets the retry run', async () => {
+    const text = vi.fn().mockResolvedValueOnce('bad').mockResolvedValueOnce('{"ok":true}');
+    const hook = vi.fn(async () => {});
+
+    await expect(jsonLlmFrom(text, 1, hook)(schema, {system: 's', user: 'u'})).resolves.toEqual({ok: true});
+    expect(hook).toHaveBeenCalledTimes(1);
+  });
+});
+

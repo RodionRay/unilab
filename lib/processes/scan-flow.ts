@@ -65,8 +65,9 @@ export function addLeadTombstone(list: unknown, tgMsgId: string): string[] {
  * REQ-L10 / REQ-L7 / lead core v2 REQ-24: fields the server owns; a client save (stale copy or
  * zod-stripped) never overwrites or introduces them. Lead: conversation, sender, scan and judge data.
  * Group: scan lock, cursor, memories, project. Settings: DM inbox cursor and DM AI-reject memory.
+ * Account: Telegram user id.
  */
-const SERVER_OWNED: Record<"lead" | "group" | "settings", readonly string[]> = {
+const SERVER_OWNED: Record<"lead" | "group" | "settings" | "account", readonly string[]> = {
   lead: [
     "replies", "needsManager", "incomingLastText", "conversationOpen", "conversationAt",
     "coreScore", "notifyPending", "notifiedAt", "notifyAttempts", "notifyClaimUntil",
@@ -76,6 +77,8 @@ const SERVER_OWNED: Record<"lead" | "group" | "settings", readonly string[]> = {
   ],
   group: ["scanLockUntil", "scanLockToken", "scanCursor", "aiRejected", "leadTombstones", "projectId"],
   settings: ["inboxPollCursor", "dmAiRejected"],
+  // Telegram id from the account check: own-account DMs are never leads (lead core v2 REQ-15).
+  account: ["tgUserId"],
 };
 
 function isServerOwnedKind(kind: string): kind is keyof typeof SERVER_OWNED {

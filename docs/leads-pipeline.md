@@ -37,7 +37,8 @@ are no keyword / intent regexes on the lead path; project keywords are only a hi
      sender+text (`duplicate`), word-start stop word (`stopword`);
    - `lib/leads/judge.ts::judgeMessages` — ascending ids, batches ≤20, ≤4 per scan, daily cap gate
      (`lead-store.ts::reserveDailyCap`, default 3000 messages/day, `settings.judgeDailyCap`), 35 s + 1 retry
-     (`lib/ai-client.ts::jsonLlmFrom`, `::deepseekJsonText`);
+     (`lib/ai-client.ts::jsonLlmFrom`, `::deepseekJsonText`); the retry reserves the cap again for the same
+     messages (`lib/processes/lead-scan.ts::judgeLlm`), no room → the batch fails as `judgeError`;
    - `isLead && score ≥ minScore` → lead (`hot` when score ≥ `HOT_SCORE` = 80); others → rejected and
      remembered in `group.aiRejected` (`lib/leads/reject-memory.ts`);
    - a failed or skipped batch stops judging: `scanCursor = first unjudged group/discussion id − 1`
@@ -59,7 +60,8 @@ judgeError, title, metrics, taskLog}` (cron `app/api/cron/auto-rescan/route.ts` 
 `route.ts::judgeUnmatchedDms` → `lead-scan.ts::judgeInboxDms` → `pipeline.ts::runDmJudge`:
 - own accounts dropped app-side (`lead-scan.ts::loadOwnAccounts`: account `username`, `tgUserId` stored by
   `route.ts::runAccountCheck`), senders that already are leads → `duplicate`;
-- ≤20 senders in one call with all active project cards (`lib/leads/dm-judge.ts::judgeDmSenders`);
+- ≤20 senders in one call with all active project cards (`lib/leads/dm-judge.ts::judgeDmSenders`; each card
+  clipped to 200 chars per field + 200 of keywords, `lib/leads/prompt.ts::DM_CARD_FIELD_MAX`);
   verdict `projectId` + score ≥ that project's `minScore` → lead `sourceKind:'dm'`, `conversationOpen:true`;
 - rejections remembered in `settings.dmAiRejected` (key `userId:lastMessageId`);
 - judge failure / skip is only counted; account inbox cursors and `inboxPollCursor` advance regardless.
@@ -71,7 +73,9 @@ Response adds `dmLeads` (number of DM leads created).
 `returned = skippedErrorApp + old + short + duplicate + stopword + judgeSkipped + judgeError + rejected + leads`.
 `judged` = messages the judge answered (`rejected + leads`). Each app step keeps the last 3 samples
 (text ≤200, `term` for stop words, `reason` for judge steps / skip reason `no_ai_key|daily_cap|blocked|batch_limit|sender_limit|no_project`);
-`runs` keeps the last 20 run lines. One row per project per UTC day (`funnel.ts::mergeScanDay`).
+`runs` keeps the last 20 run lines. One row per project per UTC day (`funnel.ts::mergeScanDay`). Retention: after each upsert the owner's
+`scan_day` rows with `day` older than 30 days are deleted, at most 100 per run
+(`lib/leads/funnel.ts::pruneScanDays`, called by `lib/processes/lead-scan.ts::recordFunnel`).
 
 ## Actions (POST `/api/workspace`, authz `lib/security/workspace-authz.ts::ACTION_RULES`)
 
@@ -89,6 +93,11 @@ Response adds `dmLeads` (number of DM leads created).
 | `send_lead_message` | unchanged | success clears `draft` + `draftKind` | leads |
 | `generate_account_about` | `{projectId?, notes?}` | `{ok,about,firstName,lastName,fromAi,projectId}` | accounts |
 | `import_catalog` / `save kind:'group'` (new) | `projectId?` | groups get that project, else the default | groups |
+
+Staff without `leads`/`chats` access (e.g. ai or settings only) never get lead/DM texts: funnel `samples`
+and project `goodExamples`/`badExamples` are emptied in GET and in project/funnel answers, and such staff
+cannot patch the examples (`lib/security/workspace-authz.ts::redactLeadTextFor`, `::canSeeLeadText`).
+Account `tgUserId` is server-owned (a generic account save keeps it).
 
 Every `projectId` is checked against the owner (`lead-store.ts::findOwnedProject`; foreign → 404).
 Removed (unknown → 400): `preview_lead_core`, `train_from_hot`, `train_from_ignored`,

@@ -15,6 +15,10 @@ export const MAX_SAMPLES = 3;
 export const MAX_RUNS = 20;
 export const SAMPLE_TEXT_MAX = 200;
 const UPSERT_ATTEMPTS = 5;
+/** `scan_day` rows older than this are deleted when a run writes its row. */
+export const SCAN_DAY_RETENTION_DAYS = 30;
+/** Rows deleted per run at most: pruning stays a bounded side step of a scan. */
+export const SCAN_DAY_PRUNE_LIMIT = 100;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export type ScanDayData = {
@@ -187,3 +191,20 @@ export async function readFunnel(
   const view = aggregateFunnel(res.results.map((r) => parseData(r.data)), days, nowMs);
   return { ...view, projectId };
 }
+
+/**
+ * Deletes the owner's `scan_day` rows whose day is older than `SCAN_DAY_RETENTION_DAYS` (at most
+ * `SCAN_DAY_PRUNE_LIMIT` per call, owner-scoped); returns how many rows went.
+ */
+export async function pruneScanDays(db: D1LikeDatabase, owner: string, nowMs: number): Promise<number> {
+  const cutoff = dayKey(nowMs - SCAN_DAY_RETENTION_DAYS * DAY_MS);
+  const res = await db
+    .prepare(
+      "DELETE FROM records WHERE owner=? AND kind='scan_day' AND id IN " +
+        "(SELECT id FROM records WHERE owner=? AND kind='scan_day' AND json_extract(data,'$.day')<? LIMIT ?)",
+    )
+    .bind(owner, owner, cutoff, SCAN_DAY_PRUNE_LIMIT)
+    .run();
+  return res.meta.changes;
+}
+
