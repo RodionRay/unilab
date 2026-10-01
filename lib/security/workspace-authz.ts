@@ -46,6 +46,7 @@ export const ACTION_RULES:Readonly<Record<string,ActionRule>>={
  mark_lead_viewed:rule(LEADS),
  send_lead_message:rule(LEADS),
  poll_dm_replies:rule(['chats','leads']),
+ poll_bot_updates:rule(['chats','leads']),
 
  check_proxy:rule(['proxies']),
  check_proxies:rule(['proxies']),

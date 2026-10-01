@@ -130,6 +130,7 @@ export function applySendOutcome(
     viewed: true,
     viewedAt: str(lead.viewedAt) || ctx.nowIso,
     conversationOpen: true,
+    conversationAt: str(lead.conversationAt) || ctx.nowIso,
     accountId: ctx.accountId,
     needsManager: false,
   };

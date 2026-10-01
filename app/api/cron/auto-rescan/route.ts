@@ -150,15 +150,17 @@ export async function POST(req: Request) {
   }
 
   const ticks: Record<string, unknown>[] = [];
-  for (const owner of owners.slice(0, 3)) {
+  const cookieOf = (owner: (typeof owners)[number]) =>
+    createSessionToken({ userId: owner.userId, email: owner.email, displayName: owner.name });
+  for (const owner of owners.slice(0, MAX_SCAN_OWNERS)) {
     if (left() < 80_000) break;
-    const cookie = await createSessionToken({
-      userId: owner.userId,
-      email: owner.email,
-      displayName: owner.name,
-    });
-    const one = await tickOwner(origin, cookie, force, left);
+    const one = await tickOwner(origin, await cookieOf(owner), force, left);
     ticks.push({ owner: owner.userId, ...one });
+  }
+  // Остальным владельцам — хотя бы входящие ЛС (ответы клиентов и уведомления не должны стоять)
+  for (const owner of owners.slice(MAX_SCAN_OWNERS)) {
+    if (left() < DM_POLL_TIMEOUT_MS + 10_000) break;
+    await pollDms(origin, await cookieOf(owner));
   }
 
   const sum = (key: string) =>
@@ -175,6 +177,18 @@ export async function POST(req: Request) {
     ms: Date.now() - started,
     at: new Date().toISOString(),
   });
+}
+
+/** Scans (joins, groups) only for the first owners per tick; the TICK budget does not fit more. */
+const MAX_SCAN_OWNERS = 3;
+const DM_POLL_TIMEOUT_MS = 90_000;
+
+async function pollDms(origin: string, cookie: string) {
+  try {
+    await workspace(origin, cookie, { action: "poll_dm_replies" }, DM_POLL_TIMEOUT_MS);
+  } catch {
+    /* ответы в ЛС — следующим тиком */
+  }
 }
 
 async function tickOwner(
@@ -206,6 +220,8 @@ async function tickOwner(
     );
     const settings = settingsRow?.data || {};
     if (!force && settings.autoRescanEnabled === false) {
+      // Автообход групп выключен, но входящие ЛС (ответы клиентов → «Переписки» и бот) опрашиваем всегда
+      await pollDms(origin, cookie);
       return {
         ok: true,
         skipped: true,
@@ -344,11 +360,7 @@ async function tickOwner(
       }
     }
 
-    try {
-      await workspace(origin, cookie, { action: "poll_dm_replies" }, 90_000);
-    } catch {
-      /* ответы в ЛС — следующим тиком */
-    }
+    await pollDms(origin, cookie);
 
     const summary =
       `Автообход: вступил ${joined}/${Math.min(rejoin.length, MAX_JOINS)}, ` +

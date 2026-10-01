@@ -545,6 +545,8 @@ function WorkspaceHome(){
   /** Задачи, которые пользователь только что поставил на паузу — poller не трогает до play */
   const pausedTasksRef=useRef(new Set<string>());
   const lastInboxPollAt=useRef(0);
+  const lastBotPollAt=useRef(0);
+  const deepLinkLead=useRef<string|null>(searchParams.get('lead'));
   const replySendKeyRef=useRef<{leadId:string;mode:string;text:string;key:string}|null>(null);
 
   const refreshStaff=useCallback(async()=>{
@@ -590,6 +592,18 @@ function WorkspaceHome(){
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[]);
   useEffect(()=>{persistWorkspaceView(view)},[view]);
+  // Ссылка «Открыть чат» из Telegram-бота: ?view=chats&lead=<id> открывает диалог лида один раз
+  useEffect(()=>{
+    const leadId=deepLinkLead.current;
+    if(!leadId||loading)return;
+    deepLinkLead.current=null;
+    const url=new URL(window.location.href);
+    url.searchParams.delete('lead');
+    window.history.replaceState(window.history.state,'',`${url.pathname}${url.search}${url.hash}`);
+    const item=records.find(r=>r.id===leadId&&r.kind==='lead');
+    if(item)void openLead(item);
+    else toast.error('Переписка не найдена — возможно, лид удалён');
+  },[loading,records]);
   useEffect(()=>{recordsRef.current=records},[records]);
   useEffect(()=>{busyRef.current=busy},[busy]);
 
@@ -840,6 +854,15 @@ function WorkspaceHome(){
               toast.success(`Клиент ответил — откройте «Переписки»: ${inbox.names?.slice(0,3).join(', ')||inbox.opened}`);
               await refresh();
             }
+          }
+        }catch{/* */}
+        try{
+          // Ответы менеджера из Telegram-бота → клиенту; фоновая вкладка реже (сервер держит lease)
+          const botEvery=document.visibilityState==='visible'?5_000:30_000;
+          if(Date.now()-lastBotPollAt.current>=botEvery){
+            lastBotPollAt.current=Date.now();
+            const bot=await api({action:'poll_bot_updates'});
+            if(bot?.sent>0)await refresh();
           }
         }catch{/* */}
       }finally{

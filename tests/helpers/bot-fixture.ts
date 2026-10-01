@@ -2,6 +2,7 @@ import {vi} from 'vitest';
 import type {WorkerCall} from './chats-fixture';
 
 /** One Telegram Bot API call seen by the stub: method name from the URL and the JSON body. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Bot API payloads are read field-by-field in assertions
 export type BotCall={method:string;body:Record<string,any>;url:string};
 export type BotHandler=(call:BotCall)=>unknown|Promise<unknown>;
 
