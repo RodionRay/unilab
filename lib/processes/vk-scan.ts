@@ -135,10 +135,18 @@ async function insertLeads(
   return {added, addedByTemp};
 }
 
+const STATE_KEY_RE = /^[A-Za-z]+$/;
+
+/** json_set path/value pairs; keys are spliced into SQL, so only plain letter keys pass. */
+export function sourceStateSets(keys: readonly string[]): string {
+  for (const k of keys) if (!STATE_KEY_RE.test(k)) throw new Error(`Unsafe VK source state key: ${JSON.stringify(k)}`);
+  return keys.map((k) => `'$.${k}',json(?)`).join(',');
+}
+
 /** Scan-owned fields only (json_set): a lead deletion writing tombstones meanwhile is never lost. */
 async function saveSourceState(deps: VkScanDeps, id: string, patch: Record<string, unknown>): Promise<void> {
   const keys = Object.keys(patch);
-  const sets = keys.map((k) => `'$.${k}',json(?)`).join(',');
+  const sets = sourceStateSets(keys);
   await deps.db
     .prepare(`UPDATE records SET data=json_set(data,${sets}) WHERE owner=? AND id=? AND kind=?`)
     .bind(...keys.map((k) => JSON.stringify(patch[k])), deps.owner, id, VK_SOURCE_KIND)
