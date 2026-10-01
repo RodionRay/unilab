@@ -5,7 +5,7 @@ import {Users,Radio,Shield,Sparkles,Plus,ArrowRight,Search,ChevronRight,External
 import {Button} from '@/components/ui/button';
 import {OverviewDashboard} from '@/components/product/overview-dashboard';
 import {AiWorkspace} from '@/components/product/ai/ai-workspace';
-import {canSeeGroups,canSeeLeadText,isInConversations,projectIdOf,projectsFrom} from '@/components/product/ai/model';
+import {canSeeGroups,canSeeLeadText,isInConversations,pluralRu,projectIdOf,projectsFrom} from '@/components/product/ai/model';
 import {useActiveProject} from '@/components/product/ai/use-active-project';
 import {WorkspaceNav,parseWorkspaceView,persistWorkspaceView,readStoredWorkspaceView,WORKSPACE_VIEW_PARAM,type NavName} from '@/components/product/workspace-nav';
 import {NotificationsBell,NotificationsPanel} from '@/components/product/notifications-center';
@@ -141,7 +141,8 @@ AI будет использовать этот текст для отбора �
     notifyChatId:'',
   },
 };
-const viewCopy:Record<string,string>={'Обзор':'Лиды, чаты и статус подключений — всё важное на одном экране.','Уведомления':'Журнал событий кабинета: сканы, вступления, ошибки и сохранения.','Лиды':'Новые запросы: просмотренные скрываются из общей сетки.','Переписки':'Ответы клиентов: откройте диалог — он уйдёт в «Просмотренные». Новый ответ клиента снова в «Новые».','Группы и каналы':'Поиск тем под AI → вступление → реальные лиды из чатов.','Аккаунты':'Статусы, дневные лимиты, отлёжка, прокси и группы — всё по каждому аккаунту.','Прокси':'host:port:user:password — список или по одному.','AI-ассистент':'Куда уходят сообщения из чатов проекта, черновики на одобрение и описание проекта для AI.','Сотрудники':'Роли, доступы к разделам CRM и приглашения коллег по ссылке.','Настройки':'Глубина скана, профиль кабинета и уведомления о лидах в Telegram-бота.'};
+const TELEGRAM_OFFLINE='Telegram не подключён — проверьте подключение в разделе «Аккаунты».';
+const viewCopy:Record<string,string>={'Обзор':'Лиды, чаты и статус подключений — всё важное на одном экране.','Уведомления':'Журнал событий кабинета: сканы, вступления, ошибки и сохранения.','Лиды':'Новые запросы: просмотренные скрываются из общей сетки.','Переписки':'Ответы клиентов: откройте диалог — он уйдёт в «Просмотренные». Новый ответ клиента снова в «Новые».','Группы и каналы':'Поиск тем под AI → вступление → реальные лиды из чатов.','Аккаунты':'Статусы, дневные лимиты, отлёжка, прокси и группы — всё по каждому аккаунту.','Прокси':'host:port:user:password — список или по одному.','AI-ассистент':'Сколько клиентов AI нашёл в ваших чатах и какие ответы ждут вашего одобрения.','Сотрудники':'Роли, доступы к разделам CRM и приглашения коллег по ссылке.','Настройки':'Глубина скана, профиль кабинета и уведомления о лидах в Telegram-бота.'};
 
 /** Дневные лимиты AI владельца (docs/leads-pipeline.md): оценки сообщений и черновики. */
 const DEFAULT_JUDGE_DAILY_CAP=3000;
@@ -462,6 +463,8 @@ function WorkspaceHome(){
   const [autoRescanRunning,setAutoRescanRunning]=useState(false);
   const [staffMembers,setStaffMembers]=useState<WorkspaceMember[]>([]);
   const [staffInvites,setStaffInvites]=useState<WorkspaceInvite[]>([]);
+  const [aiDirty,setAiDirty]=useState(false);
+  const [pendingLeave,setPendingLeave]=useState<(()=>void)|null>(null);
   const [workspaceMeta,setWorkspaceMeta]=useState<{isOwner:boolean;role:string;access:CrmAccess;ownerId:string}|null>(null);
   const [meInfo,setMeInfo]=useState<{userId:string;email:string;name:string}|null>(null);
   const [taskLog,setTaskLog]=useState<{title:string;log:any[]}|null>(null);
@@ -547,19 +550,25 @@ function WorkspaceHome(){
     if(bulkAccountId&&!usable.some(a=>a.id===bulkAccountId))setBulkAccountId(usable[0]?.id||'');
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[records]);
-  const navigate=(name:NavName)=>{setView(name);setQuery('');setFilter('all');setLeadGroupFilter('all');setAccountSelected([]);setGroupFilter('all');setGroupSelected([])};
-  const goLeads=(opts?:{groupId?:string;filter?:string})=>{
+  /** Single exit guard: an unsaved AI project card asks before any view switch. */
+  const leaveView=(target:NavName,apply:()=>void)=>{
+    if(aiDirty&&view==='AI-ассистент'&&target!==view){setPendingLeave(()=>apply);return}
+    apply();
+  };
+  useEffect(()=>{if(view!=='AI-ассистент')setAiDirty(false)},[view]);
+  const navigate=(name:NavName)=>leaveView(name,()=>{setView(name);setQuery('');setFilter('all');setLeadGroupFilter('all');setAccountSelected([]);setGroupFilter('all');setGroupSelected([])});
+  const goLeads=(opts?:{groupId?:string;filter?:string})=>leaveView('Лиды',()=>{
     setView('Лиды');
     setQuery('');
     setLeadGroupFilter(opts?.groupId||'all');
     setFilter(opts?.filter||'all');
-  };
-  const goChats=(filter:'all'|'need'|'joined'|'pending'|'error'='all')=>{
+  });
+  const goChats=(filter:'all'|'need'|'joined'|'pending'|'error'='all')=>leaveView('Группы и каналы',()=>{
     setView('Группы и каналы');
     setQuery('');
     setGroupFilter(filter);
     setGroupSelected([]);
-  };
+  });
   const open=(kind:Kind,item?:RecordItem)=>{
     const data={...defaults[kind],...item?.data};
     if(kind==='account'&&!item){
@@ -666,9 +675,11 @@ function WorkspaceHome(){
   // Автообход лидов крутит tg-worker → /api/cron/auto-rescan (24/7, без открытого кабинета).
   // Здесь только кнопка «Собрать лиды» и отображение статуса.
 
+  // Сотрудник без доступа к лидам получил бы 403 на каждый тик: опрос — только при праве видеть лиды.
+  const leadAccess=canSeeLeadText(workspaceMeta);
   /** Poller: ответы клиентов в личке, пока кабинет открыт */
   useEffect(()=>{
-    if(!telegramConnected)return;
+    if(!telegramConnected||!leadAccess)return;
     const tick=async()=>{
       if(inboxPollLock.current)return;
       // Скрытые вкладки не опрашивают входящие; параллельные опросы сервер отсекает lease
@@ -690,7 +701,7 @@ function WorkspaceHome(){
     const id=window.setInterval(()=>{void tick()},5_000);
     const first=window.setTimeout(()=>{void tick()},1_000);
     return()=>{window.clearInterval(id);window.clearTimeout(first)};
-  },[telegramConnected,refresh]);
+  },[telegramConnected,leadAccess,refresh]);
 
   /** Скан сразу после вступления: ретраи при лаге Telegram (need_join). */
   async function scanAfterJoin(id:string,name:string){
@@ -828,7 +839,7 @@ function WorkspaceHome(){
 
   async function sendLeadReply(force=false){
     if(!detail||!chatText.trim())return;
-    if(!telegramConnected){toast.error('Запустите: npm run dev');return}
+    if(!telegramConnected){toast.error(TELEGRAM_OFFLINE);return}
     const text=chatText.trim();
     const mode=chatMode;
     const clientMsgId=replySendKey(detail.id,mode,text);
@@ -1435,7 +1446,7 @@ function WorkspaceHome(){
   async function checkAccounts(mode:'all'|'problem'){
     const targets=list('account').filter(r=>mode==='all'||r.data.status!=='active');
     if(!targets.length){toast.message(mode==='problem'?'Нет проблемных аккаунтов':'Нет аккаунтов');return}
-    if(!telegramConnected){toast.error('Сначала запустите: npm run dev');return}
+    if(!telegramConnected){toast.error(TELEGRAM_OFFLINE);return}
     const queue=targets.slice(0,40);
     let done=0,active=0,rotated=0,refreshed=0;
     setAccountCheckProgress({done:0,total:queue.length,active:0});
@@ -1547,7 +1558,7 @@ function WorkspaceHome(){
       fixGroupUrl(item);
       return;
     }
-    if(!telegramConnected){toast.error('Запустите: npm run dev');return}
+    if(!telegramConnected){toast.error(TELEGRAM_OFFLINE);return}
     // Одна группа за клик, без очереди и ожиданий в браузере: отказ сервера (темп, дневной лимит) показываем как есть.
     if(joinLock.current){toast.message('Дождитесь окончания текущего вступления');return}
     joinLock.current=true;
@@ -1598,7 +1609,7 @@ function WorkspaceHome(){
 
   /** Вступить в обсуждение уже вступленного канала: тот же гейт темпа и дневного лимита на сервере. */
   async function joinDiscussion(item:RecordItem){
-    if(!telegramConnected){toast.error('Запустите: npm run dev');return}
+    if(!telegramConnected){toast.error(TELEGRAM_OFFLINE);return}
     if(joinLock.current){toast.message('Дождитесь окончания текущего вступления');return}
     joinLock.current=true;
     setJoinInFlight(true);
@@ -1628,7 +1639,7 @@ function WorkspaceHome(){
       fixGroupUrl(item);
       return;
     }
-    if(!telegramConnected){toast.error('Запустите: npm run dev');return}
+    if(!telegramConnected){toast.error(TELEGRAM_OFFLINE);return}
     setBusy(true);
     try{
       const res=await api({action:'scan_group',id:item.id});
@@ -2026,8 +2037,8 @@ function WorkspaceHome(){
   const renderLeads=(items:RecordItem[])=>{
     return items.length?(
     <>
-      <div className="leads-list-cols">
-        <span aria-hidden/>
+      {/* Row checkboxes are gone: the header drops their 28px gutter so «Лид» lines up with the row names. */}
+      <div className="leads-list-cols" style={{gridTemplateColumns:'minmax(0,1.8fr) auto auto minmax(100px,0.8fr) auto'}}>
         <SortHeaderButton columnKey="name" sortKey={sortKey} sortDir={sortDir} onSort={onSort}>Лид</SortHeaderButton>
         <SortHeaderButton columnKey="temperature" sortKey={sortKey} sortDir={sortDir} onSort={onSort}>Темп.</SortHeaderButton>
         <SortHeaderButton columnKey="status" sortKey={sortKey} sortDir={sortDir} onSort={onSort}>Статус</SortHeaderButton>
@@ -2469,10 +2480,10 @@ function WorkspaceHome(){
                       <TabsTrigger value="viewed">Просмотренные{viewedChats.length?` (${viewedChats.length})`:''}</TabsTrigger>
                     </TabsList>
                   </Tabs>
-                  <span className="badge neutral">{chatLeads.length} диалогов</span>
+                  <span className="badge neutral">{chatLeads.length} {pluralRu(chatLeads.length,'диалог','диалога','диалогов')}</span>
                 </div>
               ):currentKind==='lead'?(
-                <div className="flex flex-wrap items-center gap-3">
+                <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
                   <Button
                     disabled={busy||!telegramConnected||autoRescanRunning}
                     onClick={async()=>{
@@ -2500,7 +2511,7 @@ function WorkspaceHome(){
                         setActiveProjectId(v);
                       }}
                     >
-                      <SelectTrigger className="w-[220px]" aria-label="Проект"><SelectValue placeholder="Проект"/></SelectTrigger>
+                      <SelectTrigger className="w-[220px] max-w-full" aria-label="Проект"><SelectValue placeholder="Проект"/></SelectTrigger>
                       <SelectContent>
                         {projects.map(p=>(
                           <SelectItem key={p.id} value={p.id}>{p.data.name}</SelectItem>
@@ -2510,7 +2521,7 @@ function WorkspaceHome(){
                     </Select>
                   )}
                   <Select value={leadGroupFilter} onValueChange={setLeadGroupFilter}>
-                    <SelectTrigger className="w-[220px]" aria-label="Группа"><SelectValue placeholder="Группа"/></SelectTrigger>
+                    <SelectTrigger className="w-[220px] max-w-full" aria-label="Группа"><SelectValue placeholder="Группа"/></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">Все группы</SelectItem>
                       {list('group').filter(g=>leadProjectScope==='all'||!projects.length||projectIdOf(g.data,projects)===activeProjectId).map(g=>(
@@ -2518,7 +2529,7 @@ function WorkspaceHome(){
                       ))}
                     </SelectContent>
                   </Select>
-                  <Tabs value={filter} onValueChange={(v)=>setFilter(v)}>
+                  <Tabs className="min-w-0 max-w-full overflow-x-auto" value={filter} onValueChange={(v)=>setFilter(v)}>
                     <TabsList>
                       <TabsTrigger value="all">Все</TabsTrigger>
                       <TabsTrigger value="hot">Горячие</TabsTrigger>
@@ -2579,9 +2590,9 @@ function WorkspaceHome(){
             )}
             {currentKind==='lead'&&(
               <div className="status-note">
-                «Собрать лиды» — принудительный обход. Автообход круглосуточно через Telegram-воркер из npm run dev (каждые {settings?.data.autoRescanMinutes||30} мин на группу)
+                Автообход каждые {settings?.data.autoRescanMinutes||30} мин
                 {settings?.data.lastAutoRescanAt?` · последний ${new Date(settings.data.lastAutoRescanAt).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}`:''}
-                {autoRescanRunning?' · идёт…':''}.
+                {autoRescanRunning?' · идёт…':''}
               </div>
             )}
             {accountCheckProgress&&currentKind==='account'&&(
@@ -2988,6 +2999,9 @@ function WorkspaceHome(){
               onRefresh={refresh}
               onOpenThread={(id)=>{const item=records.find(r=>r.id===id);if(item)void openLead(item)}}
               onGoGroups={()=>goChats()}
+              onOpenSettings={()=>navigate('Настройки')}
+              onOpenLeads={()=>{setLeadProjectScope('active');goLeads()}}
+              onDirtyChange={setAiDirty}
               onRescan={async()=>{
                 try{
                   const r=await rescanAllGroups({force:true});
@@ -4066,7 +4080,7 @@ function WorkspaceHome(){
             </div>
             <p className="small-note">
               Цель: {accountSelected.length?`${accountSelected.length} выбранных`:`все ${list('account').length} аккаунтов`}.
-              Нужен запущенный Telegram-воркер (идёт вместе с npm run dev).
+              Нужно подключение к Telegram.
             </p>
             <div className="flex flex-wrap gap-2">
               <Button disabled={busy||!list('account').length} onClick={()=>applyFarmProfiles(accountSelected.length?accountSelected:list('account').map(r=>r.id),true)}>
@@ -4123,6 +4137,20 @@ function WorkspaceHome(){
         </DialogContent>
       </Dialog>
 
+      <AlertDialog open={!!pendingLeave} onOpenChange={o=>{if(!o)setPendingLeave(null)}}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Карточка проекта не сохранена</AlertDialogTitle>
+            <AlertDialogDescription>
+              Изменения в описании проекта для AI пропадут, если уйти со страницы без сохранения.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Остаться</AlertDialogCancel>
+            <AlertDialogAction onClick={()=>{const apply=pendingLeave;setPendingLeave(null);setAiDirty(false);apply?.()}}>Перейти без сохранения</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog open={!!deleting} onOpenChange={o=>{if(!o&&!busy)setDeleting(null)}}>
         <AlertDialogContent>
           <AlertDialogHeader>
