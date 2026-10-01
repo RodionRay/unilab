@@ -5,13 +5,13 @@ import {database,seal,unseal} from '@/lib/server-store';
 import {envAiApiKey,resolveAiConfig} from '@/lib/ai-client';
 import {parseLeadTemperature,ratingFromTemperatures} from '@/lib/lead-filter';
 import {addLeadTombstone,evaluateScanGate,keepServerOwnedFields} from '@/lib/processes/scan-flow';
-import {DRAFT_KINDS,defaultProjectId as defaultProjectIdOf,generateDraft,normalizeDmMessage,projectIdOf,type DmMessage,type ProjectRow} from '@/lib/leads';
-import {dailyCapOf,findOwnedProject,loadSettingsRow,mutateLead,reserveDailyCap,withoutDraft} from '@/lib/processes/lead-store';
-import {autoDraftCandidates,autoDraftLeads,autoDraftKind,draftLlm,draftLeadOf,judgeInboxDms,scanGroupLeads,type InsertedLead} from '@/lib/processes/lead-scan';
+import {DRAFT_KINDS,defaultProjectId as defaultProjectIdOf,generateDraft,normalizeDmMessage,type DmMessage,type ProjectRow} from '@/lib/leads';
+import {dailyCapOf,findOwnedProject,findProjectOf,loadSettingsRow,mutateLead,reserveDailyCap,withoutDraft} from '@/lib/processes/lead-store';
+import {autoDraftCandidates,autoDraftLeads,autoDraftKind,draftLlm,draftLeadOf,judgeInboxDms,loadPeerLeads,scanGroupLeads,type InsertedLead} from '@/lib/processes/lead-scan';
 import {createProject,deleteProject,generateAccountAbout,leadFeedback,projectFunnel,rebuildProduct,requestedProject,setGroupProject,updateProject,type ActionResult} from '@/lib/processes/lead-actions';
 import {after} from 'next/server';
 import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,generateTelegramUsername,hasMessageQuota,isAccountUsable,isOnCooldown,withFrozenStatus} from '@/lib/telegram-accounts';
-import {pushTaskLog} from '@/lib/audience-invite';
+import {pushTaskLog,pushTaskLogs} from '@/lib/audience-invite';
 import {canonicalizeTgUrl,duplicateReason,isDuplicateKind,telegramEntityKey} from '@/lib/record-identity';
 import {DEFAULT_DM_SOFT_CLOSE} from '@/lib/mailing';
 import {checkProxyTarget} from '@/lib/security/net-guard';
@@ -26,42 +26,27 @@ import {z} from 'zod';
 export const dynamic='force-dynamic';
 const kindSchema=z.enum(RECORD_KINDS);
 const short=z.string().trim().min(1).max(200);
+/**
+ * Настройки кабинета. Поля проекта (продукт, ключи, стоп-слова, глубина скана) живут только в `project`
+ * (lead core v2 REQ-4): схема их не принимает, а старые значения в строке settings не трогаются —
+ * их читает только `lib/leads/projects.ts::defaultProjectFromSettings` (scan-flow.ts::SERVER_OWNED).
+ */
 const settingsSchema=z.object({
  name:short,
- product:z.string().max(12000).default(''),
- projectUrl:z.string().max(500).default(''),
- audience:z.string().max(2000).default(''),
- leadCriteria:z.string().max(4000).default(''),
- keywords:z.string().max(8000).default(''),
- minusKeywords:z.string().max(8000).default(''),
  model:z.string().max(100).default('deepseek-chat'),
  provider:z.enum(['deepseek','openai','custom']).default('deepseek'),
  apiBase:z.string().max(300).default('https://api.deepseek.com'),
- tone:z.string().max(500).default(''),
- cta:z.string().max(500).default(''),
- pains:z.string().max(4000).default(''),
- valueProps:z.string().max(4000).default(''),
- avoidTopics:z.string().max(4000).default(''),
- hotSignals:z.string().max(4000).default(''),
- productNotes:z.string().max(4000).default(''),
- learnExamples:z.string().max(4000).default(''),
  /** Мягкое закрытие в ЛС: не банить / не мутить */
  dmSoftClose:z.string().max(2000).default(DEFAULT_DM_SOFT_CLOSE),
- aiQualify:z.boolean().default(true),
  autoRescanEnabled:z.boolean().default(true),
  autoRescanMinutes:z.coerce.number().int().min(5).max(180).default(30),
  lastAutoRescanAt:z.string().max(40).default(''),
- /** Последние стоп-слова, добавленные кнопкой «В стоп-слова». */
- lastMinusAdded:z.array(z.string().max(80)).max(20).default([]),
- lastMinusAddedAt:z.string().max(40).default(''),
  /** Журнал переобходов групп (глобальный). */
  rescanLog:z.array(z.object({
   at:z.string().max(40),
   level:z.enum(['info','ok','warn','error']),
   text:z.string().max(400),
  })).max(150).default([]),
- /** Глубина просмотра истории чата (дней). */
- scanDepthDays:z.coerce.number().int().min(1).max(90).default(7),
  /** Профиль кабинета */
  profileName:z.string().max(120).default(''),
  profileAbout:z.string().max(500).default(''),
@@ -1164,18 +1149,25 @@ async function releaseDmPollLease(db:D1LikeDatabase,owner:string,stamp:string){
  await db.prepare('UPDATE records SET created=? WHERE id=? AND owner=? AND created=?').bind(new Date(0).toISOString(),dmPollLeaseId(owner),owner,stamp).run();
 }
 
-/** Ответ клиента берём только в переписку, которую мы уже начали с этим лидом. */
-async function loadConversationLeads(db:D1LikeDatabase,owner:string){
- const leadRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='lead'").bind(owner).all();
- const leads=leadRows.results.map(r=>{
+function conversationStarted(d:LeadData):boolean{
+ return !!d.conversationOpen||leadReplies(d).some(x=>x.from==='us'||x.mode==='dm');
+}
+
+/**
+ * ЛС от собеседника, который уже лид: сначала его начатая переписка, иначе самый свежий лид этого человека
+ * (mergeIncomingDm открывает переписку). Такие ЛС не идут к судье — человек уже лид.
+ */
+async function loadConversationLeads(db:D1LikeDatabase,owner:string,msgs:readonly InboxMessage[]){
+ const userIds=msgs.map(m=>String(m?.userId||m?.chatId||'').replace(/^-/,'').trim()).filter(Boolean);
+ const usernames=msgs.map(m=>normTgUser(m?.username)).filter(Boolean);
+ const leadRows=await loadPeerLeads(db,owner,{userIds,usernames});
+ const leads=leadRows.map(r=>{
   try{return {id:String(r.id),data:JSON.parse(String(r.data)) as LeadData}}catch{return null}
  }).filter(Boolean) as ConversationLead[];
- const match=(msg:InboxMessage):ConversationLead|null=>leads.find(L=>{
-  if(!sameTelegramPeer(L.data,msg))return false;
-  const d=L.data||{};
-  if(d.conversationOpen)return true;
-  return leadReplies(d).some(x=>x.from==='us'||x.mode==='dm');
- })??null;
+ const match=(msg:InboxMessage):ConversationLead|null=>{
+  const same=leads.filter(L=>sameTelegramPeer(L.data,msg));
+  return same.find(L=>conversationStarted(L.data||{}))??same[0]??null;
+ };
  return {match};
 }
 
@@ -1245,7 +1237,6 @@ async function judgeUnmatchedDms(db:D1LikeDatabase,owner:string,messages:DmMessa
 
 /** One inbox pass over a rotating slice of live accounts (caller holds the per-owner lease). */
 async function pollDmReplies(db:D1LikeDatabase,owner:string,live:LiveAccount[]){
- const {match}=await loadConversationLeads(db,owner);
  const settingsRow=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='settings' LIMIT 1").bind(owner).first<{id:string;data:string}>();
  let cursor=0;
  if(settingsRow){
@@ -1273,6 +1264,7 @@ async function pollDmReplies(db:D1LikeDatabase,owner:string,live:LiveAccount[]){
   }
   if(!result?.ok)continue;
   const msgs:InboxMessage[]=Array.isArray(result.messages)?result.messages:[];
+  const {match}=await loadConversationLeads(db,owner,msgs);
   let persisted=true;
   let maxTs=0;
   for(const msg of msgs){
@@ -1369,8 +1361,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   if(!apiKey)return reply({error:'DeepSeek не настроен: добавьте AI_API_KEY в .env и перезапустите сервер'},409);
   const lead=JSON.parse(String(row.data));
   const now=new Date();
-  const project=await findOwnedProject(db,owner,projectIdOf(lead,owner),settings.data,now.getTime());
-  if(!project)return reply({error:'Проект лида не найден — перенесите лид в проект'},404);
+  const project=await findProjectOf(db,owner,lead,settings.data,now.getTime());
   const guard=await db.prepare('INSERT INTO records(id,owner,kind,data,created) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET created=excluded.created WHERE records.created < ?').bind('ai-guard:'+owner,owner,'ai_guard','{}',now.toISOString(),new Date(now.getTime()-60000).toISOString()).run();
   if(!guard.meta.changes)return reply({error:'Можно готовить один ответ в минуту. Подождите и повторите запрос.'},429);
   if(!(await reserveDailyCap(db,owner,'draft-day',dailyCapOf(settings.data,'draft-day'),1,now.getTime()))){
@@ -1379,10 +1370,11 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const kind=requestedKind??autoDraftKind(lead);
   try{
    const draft=await generateDraft(kind,project.project,draftLeadOf(lead),draftLlm(apiKey));
-   // Ручной черновик — без draftKind: он идёт в «Переписки», а не в очередь авто-черновиков (REQ-20)
+   // Новый черновик без draftKind идёт в «Переписки»; пересборка авто-черновика сохраняет его draftKind,
+   // иначе лид выпадает из очереди одобрения (REQ-20)
    const done=await mutateLead(db,owner,id,cur=>String(cur.message??'')!==String(lead.message??'')
     ?{result:false}
-    :{next:{...withoutDraft(cur),draft},result:true});
+    :{next:{...cur,draft},result:true});
    if(!done?.result)return reply({error:'Сообщение изменено или лид удалён во время подготовки. Откройте актуальную карточку.'},409);
    return reply({ok:true,draft,kind,model:resolveAiConfig().model});
   }catch(e){
@@ -1752,9 +1744,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    }
   }
   // Проект группы (REQ-2/3): без projectId или с удалённым проектом группа читается как основной проект
-  const project=await findOwnedProject(db,owner,projectIdOf(gdata,owner),settings,Date.now())
-   ??await findOwnedProject(db,owner,defaultProjectIdOf(owner),settings,Date.now());
-  if(!project)return reply({error:'Проект группы не найден'},404);
+  const project=await findProjectOf(db,owner,gdata,settings,Date.now());
   if(!project.project.active){
    return reply({ok:true,skipped:true,projectInactive:true,scanned:0,matched:0,added:0,message:'Проект группы выключен — скан пропущен'});
   }
@@ -1887,11 +1877,16 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     lastScanned,
     // REQ-10: при сбое/пропуске судьи курсор откатывается к первому несуждённому сообщению
     scanCursor:scan.nextCursor,
+    judgeFailStreak:scan.judgeFailStreak,
     aiRejected:scan.aiRejected,
-    scanLog:pushTaskLog(base.scanLog,inserted.length?'ok':scan.judgeError?'warn':'info',`Переобход · ${scan.delta.run}`,50),
+    scanLog:pushTaskLogs(base.scanLog,[
+     {level:inserted.length?'ok':scan.judgeError?'warn':'info',text:`Переобход · ${scan.delta.run}`},
+     ...(scan.streakNote?[{level:'warn' as const,text:scan.streakNote}]:[]),
+    ],50),
    };
    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(groupNext),owner,id,'group').run();
    await appendGlobalRescanLog(owner,inserted.length?'ok':scan.judgeError?'warn':'info',scan.delta.run);
+   if(scan.streakNote)await appendGlobalRescanLog(owner,'warn',`${gdata.name||'Группа'}: ${scan.streakNote}`);
    return reply({
     ok:true,
     scanned:counts.returned,

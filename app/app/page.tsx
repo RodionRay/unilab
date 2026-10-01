@@ -108,31 +108,11 @@ const defaults:any={
     model:'deepseek-chat',
     provider:'deepseek',
     apiBase:'https://api.deepseek.com',
-    projectUrl:'',
-    audience:'Люди и компании, которые уже ищут решение в тематических Telegram-чатах: B2B, услуги, SaaS, агентства, подрядчики — аудитория с живым запросом, а не холодный спам.',
-    leadCriteria:'Целевой лид ЯВНО ищет сервис/инструмент/подрядчика под ваш продукт (остатки, синхронизация, цены, отзывы, кабинеты, 1С/МойСклад) и готов обсуждать демо или внедрение. Не лид: обычный чат селлеров, жалобы без запроса сервиса, чужая реклама.',
-    product:`Опишите здесь ваш продукт или услугу: что продаёте, для кого, чем отличаетесь, как начать работу (демо, созвон, заявка).
-
-AI будет использовать этот текст для отбора тёплых и горячих лидов и для черновиков ответов. Пишите конкретно: боли клиента, ценность, следующий шаг. Не выдумывайте цены и функции вне этого описания.`,
-    keywords:'остатки, синхронизация, МойСклад, 1С, управление ценами, ответы на отзывы, автоматизация, несколько кабинетов, интеграция, юнит-экономика, ищу сервис, нужна crm, кто пользуется',
-    minusKeywords:'вакансия, резюме, куплю аккаунт, продаю аккаунт, схема, серый, накрутка, казино, крипта, взлом, раздача, курсы инфобиз, заработок без вложений, матрица судьбы, таро, гадание, астролог, нумеролог, эзотерика, писать @',
-    tone:'Дружелюбно, по делу, без давления. Короткие абзацы, конкретный следующий шаг.',
-    cta:'Предложить короткий созвон, демо или заявку на расчёт.',
-    pains:'Клиент тратит время на поиск в чатах; много шума и оффтопа; сложно быстро отличить тёплый запрос от спама; ответ уходит поздно.',
-    valueProps:'Быстрый отклик на живой запрос; понятная ценность продукта; понятный следующий шаг без давления.',
-    avoidTopics:'вакансии, накрутка, серые схемы, продажа аккаунтов, инфобиз, болтовня селлеров без запроса сервиса, жалобы на СПП без запроса инструмента',
-    hotSignals:'ищу сервис, нужен сервис, кто пользуется, подскажите crm, интеграция 1с, мойсклад, остатки синхронизация, ответы на отзывы',
-    productNotes:'',
-    learnExamples:'',
     dmSoftClose:DEFAULT_DM_SOFT_CLOSE,
-    aiQualify:true,
     autoRescanEnabled:true,
     autoRescanMinutes:30,
     lastAutoRescanAt:'',
-    lastMinusAdded:[],
-    lastMinusAddedAt:'',
     rescanLog:[],
-    scanDepthDays:7,
     profileName:'',
     profileAbout:'',
     profileContact:'',
@@ -142,7 +122,7 @@ AI будет использовать этот текст для отбора �
   },
 };
 const TELEGRAM_OFFLINE='Telegram не подключён — проверьте подключение в разделе «Аккаунты».';
-const viewCopy:Record<string,string>={'Обзор':'Лиды, чаты и статус подключений — всё важное на одном экране.','Уведомления':'Журнал событий кабинета: сканы, вступления, ошибки и сохранения.','Лиды':'Новые запросы: просмотренные скрываются из общей сетки.','Переписки':'Ответы клиентов: откройте диалог — он уйдёт в «Просмотренные». Новый ответ клиента снова в «Новые».','Группы и каналы':'Поиск тем под AI → вступление → реальные лиды из чатов.','Аккаунты':'Статусы, дневные лимиты, отлёжка, прокси и группы — всё по каждому аккаунту.','Прокси':'host:port:user:password — список или по одному.','AI-ассистент':'Сколько клиентов AI нашёл в ваших чатах и какие ответы ждут вашего одобрения.','Сотрудники':'Роли, доступы к разделам CRM и приглашения коллег по ссылке.','Настройки':'Глубина скана, профиль кабинета и уведомления о лидах в Telegram-бота.'};
+const viewCopy:Record<string,string>={'Обзор':'Лиды, чаты и статус подключений — всё важное на одном экране.','Уведомления':'Журнал событий кабинета: сканы, вступления, ошибки и сохранения.','Лиды':'Новые запросы: просмотренные скрываются из общей сетки.','Переписки':'Ответы клиентов: откройте диалог — он уйдёт в «Просмотренные». Новый ответ клиента снова в «Новые».','Группы и каналы':'Поиск тем под AI → вступление → реальные лиды из чатов.','Аккаунты':'Статусы, дневные лимиты, отлёжка, прокси и группы — всё по каждому аккаунту.','Прокси':'host:port:user:password — список или по одному.','AI-ассистент':'Сколько клиентов AI нашёл в ваших чатах и какие ответы ждут вашего одобрения.','Сотрудники':'Роли, доступы к разделам CRM и приглашения коллег по ссылке.','Настройки':'Автообход, лимиты AI, профиль кабинета и уведомления о лидах в Telegram-бота.'};
 
 /** Дневные лимиты AI владельца (docs/leads-pipeline.md): оценки сообщений и черновики. */
 const DEFAULT_JUDGE_DAILY_CAP=3000;
@@ -428,7 +408,6 @@ function WorkspaceHome(){
   const [accountPickerQuery,setAccountPickerQuery]=useState('');
   const [accountPickerDraft,setAccountPickerDraft]=useState<string[]>([]);
   const [genSettings,setGenSettings]=useState({
-    scanDepthDays:7,
     autoRescanEnabled:true,
     autoRescanMinutes:30,
     judgeDailyCap:DEFAULT_JUDGE_DAILY_CAP,
@@ -658,7 +637,6 @@ function WorkspaceHome(){
   useEffect(()=>{
     const d=settings?.data||{};
     setGenSettings({
-      scanDepthDays:Math.max(1,Math.min(90,Number(d.scanDepthDays)||7)),
       autoRescanEnabled:d.autoRescanEnabled!==false,
       autoRescanMinutes:Math.max(5,Math.min(180,Number(d.autoRescanMinutes)||30)),
       judgeDailyCap:clampCap(d.judgeDailyCap,DEFAULT_JUDGE_DAILY_CAP),
@@ -670,7 +648,7 @@ function WorkspaceHome(){
       notifyBotToken:String(d.notifyBotToken||''),
       notifyChatId:String(d.notifyChatId||''),
     });
-  },[settings?.id,settings?.data?.scanDepthDays,settings?.data?.autoRescanEnabled,settings?.data?.autoRescanMinutes,settings?.data?.judgeDailyCap,settings?.data?.draftDailyCap,settings?.data?.profileName,settings?.data?.profileAbout,settings?.data?.profileContact,settings?.data?.notifyEnabled,settings?.data?.notifyBotToken,settings?.data?.notifyChatId]);
+  },[settings?.id,settings?.data?.autoRescanEnabled,settings?.data?.autoRescanMinutes,settings?.data?.judgeDailyCap,settings?.data?.draftDailyCap,settings?.data?.profileName,settings?.data?.profileAbout,settings?.data?.profileContact,settings?.data?.notifyEnabled,settings?.data?.notifyBotToken,settings?.data?.notifyChatId]);
 
   // Автообход лидов крутит tg-worker → /api/cron/auto-rescan (24/7, без открытого кабинета).
   // Здесь только кнопка «Собрать лиды» и отображение статуса.
@@ -926,10 +904,11 @@ function WorkspaceHome(){
   async function saveGeneralSettings(){
     setBusy(true);
     try{
+      // Только поля настроек: поля проекта живут в карточке проекта (REQ-4), сервер их тоже не примет
+      const stored:Record<string,unknown>=settings?.data||{};
+      const kept=Object.fromEntries(Object.keys(defaults.settings).map(k=>[k,stored[k]??defaults.settings[k]]));
       const payload={
-        ...defaults.settings,
-        ...(settings?.data||{}),
-        scanDepthDays:Math.max(1,Math.min(90,Number(genSettings.scanDepthDays)||7)),
+        ...kept,
         autoRescanEnabled:!!genSettings.autoRescanEnabled,
         autoRescanMinutes:Math.max(5,Math.min(180,Number(genSettings.autoRescanMinutes)||30)),
         judgeDailyCap:clampCap(genSettings.judgeDailyCap,DEFAULT_JUDGE_DAILY_CAP),
@@ -1547,6 +1526,21 @@ function WorkspaceHome(){
     finally{setBusy(false)}
   }
 
+  /** REQ-3: переносит группы в проект (сервер проверяет, что проект свой). */
+  async function moveGroupsToProject(groupIds:string[],projectId:string){
+    if(!groupIds.length||!projectId)return;
+    setBusy(true);
+    try{
+      const r=await api({action:'set_group_project',groupIds,projectId});
+      await refresh();
+      if(groupIds.length>1)setGroupSelected([]);
+      const n=Number(r.updated)||0;
+      const name=projects.find(p=>p.id===projectId)?.data.name||'проект';
+      toast.success(`${n} ${pluralRu(n,'группа','группы','групп')} → «${name}»`);
+    }catch(e){toast.error((e as Error).message)}
+    finally{setBusy(false)}
+  }
+
   function toggleGroupSelected(id:string,on:boolean){
     setGroupSelected(prev=>on?([...new Set([...prev,id])]):prev.filter(x=>x!==id));
   }
@@ -2141,6 +2135,16 @@ function WorkspaceHome(){
                     </span>
                   )}
                 </div>
+                {projects.length>=2&&(
+                  <Select value={projectIdOf(r.data,projects)} onValueChange={v=>void moveGroupsToProject([r.id],v)} disabled={busy}>
+                    <SelectTrigger className="mt-1 h-7 w-auto max-w-[220px] text-xs" aria-label={`Проект группы ${r.data.name||''}`}>
+                      <SelectValue placeholder="Проект"/>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {projects.map(p=><SelectItem key={p.id} value={p.id}>{p.data.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                )}
                 {err&&<div className="groups-err" title={r.data.error||r.data.joinStateError}>{err}{(r.data.error||r.data.joinStateError||'').length>90?'…':''}</div>}
               </div>
               <button type="button" className="groups-acc" disabled={busy} onClick={()=>openAccountPicker('row',r.id)} title={accountName||'Назначить аккаунт'}>
@@ -2708,7 +2712,7 @@ function WorkspaceHome(){
                         </>
                       ):(
                         <>
-                          <span className="muted text-sm">Отметьте группы, чтобы назначить им аккаунт</span>
+                          <span className="muted text-sm">Отметьте группы, чтобы назначить им аккаунт{projects.length>=2?' или проект':''}</span>
                           {sortedList.length>0&&(
                             <Button size="sm" variant="outline" onClick={()=>setGroupSelected(sortedList.map(r=>r.id))}>
                               Выбрать все ({sortedList.length})
@@ -2718,6 +2722,16 @@ function WorkspaceHome(){
                       )}
                     </div>
                     <div className="groups-actionbar-right">
+                      {projects.length>=2&&(
+                        <Select value="" onValueChange={v=>void moveGroupsToProject(groupSelected,v)} disabled={busy||!groupSelected.length}>
+                          <SelectTrigger className="h-8 w-auto max-w-[220px]" aria-label="Перенести выбранные группы в проект">
+                            <SelectValue placeholder="В проект…"/>
+                          </SelectTrigger>
+                          <SelectContent>
+                            {projects.map(p=><SelectItem key={p.id} value={p.id}>{p.data.name}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      )}
                       <Button size="sm" variant="outline" disabled={busy||!accountsActive.length} onClick={()=>openAccountPicker('single')}>
                         <Users size={14}/>
                         {accountsActive.find(a=>a.id===bulkAccountId)?.data.name
@@ -3019,8 +3033,8 @@ function WorkspaceHome(){
                   <div className="title-icon">
                     <div className="icon-box"><Search size={20}/></div>
                     <div>
-                      <h2>Глубина просмотра чатов</h2>
-                      <p className="small-note">Сколько дней истории читать при скане и автообходе</p>
+                      <h2>Автообход и лимиты AI</h2>
+                      <p className="small-note">Глубина истории чатов задаётся в карточке проекта на странице AI-ассистента</p>
                     </div>
                   </div>
                   <span className={`badge ${telegramConnected?'success':'warning'}`}>
@@ -3029,16 +3043,6 @@ function WorkspaceHome(){
                 </div>
                 <div className="settings-fields">
                   <div className="settings-row">
-                    <label className="field">Глубина, дней
-                      <Input
-                        type="number"
-                        min={1}
-                        max={90}
-                        value={genSettings.scanDepthDays}
-                        onChange={e=>setGenSettings(s=>({...s,scanDepthDays:Math.max(1,Math.min(90,Number(e.target.value)||7))}))}
-                      />
-                      <span className="settings-hint">От 1 до 90. Больше дней — дольше скан.</span>
-                    </label>
                     <label className="field">Интервал автообхода, минут
                       <Input
                         type="number"
@@ -3553,8 +3557,8 @@ function WorkspaceHome(){
                 variant="outline"
                 className="mt-3 w-full"
                 onClick={()=>{
-                  const s=list('settings')[0]?.data||defaults.settings;
-                  const auto=nichesFromProjectText(s.product,s.audience,s.keywords,s.leadCriteria,s.name,s.pains,s.valueProps,s.hotSignals);
+                  const p=projects.find(x=>x.id===activeProjectId)?.data;
+                  const auto=p?nichesFromProjectText(p.product,p.audience,p.keywords.join(', '),p.leadCriteria,p.name,p.valueProps):[];
                   if(!auto.length){toast.message('В AI нет явных ниш — выберите рынок вручную');return}
                   let best={id:MARKET_SECTIONS.find(m=>m.niches.length)?.id||'all',score:0};
                   for(const m of MARKET_SECTIONS){

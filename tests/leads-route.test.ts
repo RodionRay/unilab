@@ -1,5 +1,5 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
-import {ACCOUNT_ID,LEAD_ID,OWNER,SETTINGS_ID,addRecord,login,postRequest,resetWorkspace,testDb} from './helpers/workspace-harness';
+import {ACCOUNT_ID,LEAD_ID,OWNER,SETTINGS_ID,addRecord,cfModule,login,postRequest,resetWorkspace,testDb} from './helpers/workspace-harness';
 import {ACC_A,API_ID,addSealedAccount,dropHarnessAccount} from './helpers/chats-fixture';
 
 vi.mock('cloudflare:workers',async()=>(await import('./helpers/workspace-harness')).cfModule);
@@ -360,6 +360,28 @@ describe('lead core v2 · workspace route',()=>{
       expect(record(GROUP_ID).scanCursor).toBe('119');
     });
 
+    it('a judge failing 3 scans in a row advances the cursor and logs it in Russian',async()=>{
+      workerMessages=messages(3);
+      workerCursor='102';
+      judge=()=>new Response('down',{status:500});
+
+      await scan();
+      expect(record(GROUP_ID)).toMatchObject({scanCursor:'99',judgeFailStreak:1});
+      await scan();
+      expect(record(GROUP_ID)).toMatchObject({scanCursor:'99',judgeFailStreak:2});
+      await scan();
+
+      const g=record(GROUP_ID);
+      expect(g).toMatchObject({scanCursor:'102',judgeFailStreak:0});
+      expect(g.scanLog.some((e:Json)=>e.level==='warn'&&/3 скана подряд/.test(e.text))).toBe(true);
+    });
+
+    it('a client save cannot reset judgeFailStreak',async()=>{
+      patchRecord(GROUP_ID,{judgeFailStreak:2});
+      await post({action:'save',kind:'group',id:GROUP_ID,data:{...record(GROUP_ID),judgeFailStreak:0}});
+      expect(record(GROUP_ID).judgeFailStreak).toBe(2);
+    });
+
     it('no AI key → nothing judged, nothing lost: cursor stays before the first message',async()=>{
       vi.stubEnv('AI_API_KEY','');
       workerMessages=messages(3);
@@ -422,6 +444,62 @@ describe('lead core v2 · workspace route',()=>{
       await scan();
 
       expect(record(GROUP_ID).scanCursor).toBe('300');
+    });
+  });
+
+  describe('bounded lead reads (no full lead-table scan per scan / DM pass)',()=>{
+    type Stmt={bind:(...v:unknown[])=>{all:()=>Promise<{results:unknown[]}>}&Record<string,unknown>};
+    /** Wraps the D1 fake: rows returned by every SELECT over leads, and the bind size of each such SELECT. */
+    function countLeadReads(){
+      const stats={rows:0,maxBinds:0};
+      const db=cfModule.env.DB as {prepare:(sql:string)=>Stmt};
+      const prepare=db.prepare.bind(db);
+      vi.spyOn(db,'prepare').mockImplementation((sql:string)=>{
+       const stmt=prepare(sql);
+       if(!/^\s*SELECT/i.test(sql)||!/kind='lead'/.test(sql))return stmt;
+       return {...stmt,bind:(...v:unknown[])=>{
+        stats.maxBinds=Math.max(stats.maxBinds,v.length);
+        const bound=stmt.bind(...v);
+        return {...bound,all:async()=>{const r=await bound.all();stats.rows+=r.results.length;return r}};
+       }};
+      });
+      return stats;
+    }
+    function seedLeads(n:number){
+      for(let i=0;i<n;i++)addRecord(`e0000000-0000-4000-8000-${String(i).padStart(12,'0')}`,'lead',{
+       name:`L${i}`,message:`старый лид ${i}`,groupId:GROUP_2,tgMsgId:String(1000+i),senderId:`9${i}`,senderUsername:`old${i}`,status:'new',notifyPending:false,
+      });
+    }
+
+    it('a group scan reads only the leads of the returned ids, in chunks of ≤50',async()=>{
+      seedLeads(150);
+      addRecord('e1000000-0000-4000-8000-000000000001','lead',{name:'Known',message:'уже лид',groupId:GROUP_ID,tgMsgId:'101',status:'new',notifyPending:false});
+      workerMessages=messages(80);
+      judge=()=>({isLead:false,score:1});
+      const stats=countLeadReads();
+
+      await scan();
+
+      expect(calls.judge.flat()).not.toContain('101');
+      expect(stats.rows).toBeLessThanOrEqual(5);
+      expect(stats.maxBinds).toBeLessThanOrEqual(52);
+    });
+
+    it('a DM pass reads only leads of the DM senders',async()=>{
+      dropHarnessAccount();
+      await addSealedAccount(ACC_A,{username:'our_farm'});
+      seedLeads(150);
+      inboxMessages=[
+       {userId:'95',username:'old5',name:'Old',text:'Снова пишу',messageId:'1',at:nowIso(),ts:Math.floor(Date.now()/1000),hasMedia:false},
+       {userId:'4242',username:'fresh',name:'New',text:'Ищу сервис для остатков',messageId:'2',at:nowIso(),ts:Math.floor(Date.now()/1000),hasMedia:false},
+      ];
+      const stats=countLeadReads();
+
+      await post({action:'poll_dm_replies'});
+
+      expect(calls.dm).toEqual([['4242']]);
+      expect(record('e0000000-0000-4000-8000-000000000005').conversationOpen).toBe(true);
+      expect(stats.rows).toBeLessThanOrEqual(5);
     });
   });
 
@@ -518,6 +596,29 @@ describe('lead core v2 · workspace route',()=>{
       expect(second.status).toBe(429);
     });
 
+    it('regenerating an auto draft keeps draftKind: the lead stays in the approval queue',async()=>{
+      patchRecord(LEAD_ID,{draft:'Авто',draftKind:'dm_first'});
+
+      const r=await post({action:'draft',id:LEAD_ID,kind:'dm_first'});
+
+      expect(r.status).toBe(200);
+      expect(record(LEAD_ID)).toMatchObject({draft:'Черновик 1',draftKind:'dm_first'});
+    });
+
+    it('a lead whose project is gone reads as the default project in draft and feedback',async()=>{
+      const gone='a0000000-0000-4000-8000-00000000dead';
+      patchRecord(LEAD_ID,{projectId:gone});
+
+      const draft=await post({action:'draft',id:LEAD_ID,kind:'dm_first'});
+      const feedback=await post({action:'lead_feedback',id:LEAD_ID,verdict:'good'});
+
+      expect(draft.status).toBe(200);
+      expect(calls.draft).toHaveLength(1);
+      expect(feedback.status).toBe(200);
+      expect(feedback.body.projectId).toBe(DEFAULT_PROJECT);
+      expect(record(DEFAULT_PROJECT).goodExamples).toEqual(['Ищу сервис для остатков']);
+    });
+
     it('draft with an unknown kind → 400',async()=>{
       const r=await post({action:'draft',id:LEAD_ID,kind:'mass_mail'});
       expect(r.status).toBe(400);
@@ -595,6 +696,22 @@ describe('lead core v2 · workspace route',()=>{
       expect(record(SETTINGS_ID).product).toBe(SETTINGS.product);
     });
 
+    it('a settings save never writes project fields; legacy values stay for the default-project read',async()=>{
+      const dead={product:'взлом',keywords:'a',minusKeywords:'b',audience:'новая',leadCriteria:'x',projectUrl:'https://evil.test',
+        tone:'t',cta:'c',pains:'p',valueProps:'v',avoidTopics:'n',hotSignals:'h',productNotes:'pn',learnExamples:'l',
+        aiQualify:false,lastMinusAdded:['x'],lastMinusAddedAt:nowIso(),scanDepthDays:30};
+
+      const r=await post({action:'save',kind:'settings',id:SETTINGS_ID,data:{name:'Кабинет',notifyEnabled:false,autoRescanMinutes:45,...dead}});
+
+      expect(r.status).toBe(200);
+      const s=record(SETTINGS_ID);
+      expect(s).toMatchObject({name:'Кабинет',autoRescanMinutes:45,product:SETTINGS.product,keywords:SETTINGS.keywords,
+        minusKeywords:SETTINGS.minusKeywords,audience:SETTINGS.audience,leadCriteria:SETTINGS.leadCriteria});
+      for(const key of ['projectUrl','tone','cta','pains','valueProps','avoidTopics','hotSignals','productNotes','learnExamples','aiQualify','lastMinusAdded','lastMinusAddedAt','scanDepthDays']){
+        expect(s).not.toHaveProperty(key);
+      }
+    });
+
     it('generate_account_about reads the project card',async()=>{
       otherAnswer=()=>JSON.stringify({about:'Остатки без ошибок',firstName:'Анна',lastName:''});
       const id=await createProject('Второй',{product:'Уникальный продукт XYZ'});
@@ -669,6 +786,31 @@ describe('lead core v2 · workspace route',()=>{
       await poll();
 
       expect(calls.dm).toHaveLength(0);
+      const lead=record('d0000000-0000-4000-8000-0000000000aa');
+      expect(lead).toMatchObject({conversationOpen:true,incomingLastText:'Ещё раз пишу про остатки, ответьте'});
+      expect(lead.replies).toEqual([expect.objectContaining({from:'client',messageId:'5',text:'Ещё раз пишу про остатки, ответьте'})]);
+      expect(rows('lead').filter(l=>l.data.senderId==='801')).toHaveLength(1);
+    });
+
+    it('a DM from an existing lead goes into its open conversation, not into an older lead of the same sender',async()=>{
+      addRecord('d0000000-0000-4000-8000-0000000000ab','lead',{name:'Group',message:'из группы',senderId:'802',status:'new'});
+      addRecord('d0000000-0000-4000-8000-0000000000ac','lead',{name:'Talk',message:'переписка',senderId:'802',status:'working',conversationOpen:true});
+      inboxMessages=[dm('802','Добрый день, напомню о себе','6')];
+
+      await poll();
+
+      expect(record('d0000000-0000-4000-8000-0000000000ac').replies).toHaveLength(1);
+      expect(record('d0000000-0000-4000-8000-0000000000ab').replies??[]).toHaveLength(0);
+    });
+
+    it('a username match opens the conversation of a lead without senderId',async()=>{
+      addRecord('d0000000-0000-4000-8000-0000000000ad','lead',{name:'Nick',message:'старое',senderUsername:'@Nick_803',status:'new'});
+      inboxMessages=[dm('803','Пишу вам напрямую','7','nick_803')];
+
+      await poll();
+
+      expect(calls.dm).toHaveLength(0);
+      expect(record('d0000000-0000-4000-8000-0000000000ad')).toMatchObject({conversationOpen:true,senderId:'803'});
     });
 
     it('a DM rejected by the judge is remembered and not judged again',async()=>{

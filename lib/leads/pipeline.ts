@@ -3,20 +3,21 @@
  * Pure apart from the injected LLM / daily-cap gate / clock; the route does every DB write.
  */
 
-import type { JsonLlm } from "@/lib/ai-client";
 import type { ReplyEntry } from "@/lib/lead-conversation";
 import { groupDmSenders, judgeDmSenders, type DmMessage, type DmSender } from "@/lib/leads/dm-judge";
 import { addSample, emptyCounts } from "@/lib/leads/funnel";
 import { filterMessages, normalizeScanMessage } from "@/lib/leads/filter";
-import { compareMsgIds, judgeMessages } from "@/lib/leads/judge";
+import { compareMsgIds, judgeMessages, type UnjudgedMessage } from "@/lib/leads/judge";
 import { projectSignature, type ProjectData, type ProjectRow } from "@/lib/leads/projects";
 import { activeAiRejects, rememberAiRejects, type AiRejectMemory } from "@/lib/leads/reject-memory";
-import type { FunnelCounts, JudgeGate, ScanDelta, ScanMessage, SourceKind } from "@/lib/leads/types";
+import type { FunnelCounts, JudgeGate, JudgeLlm, ScanDelta, ScanMessage, SourceKind } from "@/lib/leads/types";
 
 export const HOT_SCORE = 80;
 export const DM_SOURCE = "Личные сообщения";
 const RUN_LINE_MAX = 200;
 const DM_DEFAULT_DEPTH_DAYS = 30;
+/** Consecutive scans whose judge call failed before the group advances past the stuck messages anyway. */
+export const JUDGE_FAIL_STREAK_MAX = 3;
 
 /** Raw worker `/scan-group` answer (REQ-5 fields). */
 export type WorkerScanResult = {
@@ -32,13 +33,24 @@ export type WorkerScanResult = {
 export type GroupScanDeps = {
   projectId: string;
   project: ProjectData;
-  group: { id: string; name: string; accountId: string; scanCursor: string; aiRejected: unknown; leadTombstones: unknown };
+  group: {
+    id: string;
+    name: string;
+    accountId: string;
+    scanCursor: string;
+    aiRejected: unknown;
+    leadTombstones: unknown;
+    /** Consecutive earlier scans with a failed judge call (`group.judgeFailStreak`). */
+    judgeFailStreak?: unknown;
+  };
   worker: WorkerScanResult;
   /** `leadMessageFingerprint` of the owner's existing leads. */
   knownFingerprints: ReadonlySet<string>;
-  llm: JsonLlm | null;
+  llm: JudgeLlm | null;
   gate?: JudgeGate;
   now: () => number;
+  /** Wall clock of the judge deadline (default `Date.now`); `now` stays the scan's fixed timestamp. */
+  clock?: () => number;
   notifyEnabled: boolean;
 };
 
@@ -80,6 +92,10 @@ export type GroupScanResult = {
   delta: ScanDelta;
   /** Judge error of this run ("" when none); never contains message text. */
   judgeError: string;
+  /** New `group.judgeFailStreak`. */
+  judgeFailStreak: number;
+  /** Russian scan-log note when the streak forced the cursor forward ("" otherwise). */
+  streakNote: string;
 };
 
 function count(v: unknown): number {
@@ -95,10 +111,18 @@ function clockLabel(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(11, 16);
 }
 
-function runLine(nowMs: number, label: string, c: FunnelCounts, error: string, skip: string): string {
+function runLine(nowMs: number, label: string, c: FunnelCounts, error: string, skip: string, note = ""): string {
   const dropped = c.skippedErrorApp + c.old + c.short + c.duplicate + c.stopword;
-  const tail = error ? " · ошибка судьи" : skip ? ` · судья пропущен: ${skip}` : "";
+  const tail = (error ? " · ошибка судьи" : skip ? ` · судья пропущен: ${skip}` : "") + (note ? ` · ${note}` : "");
   return `${clockLabel(nowMs)} · ${label} · собрано ${c.fetched} · отдано ${c.returned} · отсеяно ${dropped} · судья ${c.judged} · лиды ${c.leads}${tail}`.slice(0, RUN_LINE_MAX);
+}
+
+/** Worker `fetched` when it reported one, else the sum of its counters (REQ-13 left side). */
+function workerFetched(worker: WorkerScanResult, counted: number): number {
+  const reported = Number(worker.fetched);
+  return worker.fetched !== undefined && worker.fetched !== null && Number.isFinite(reported) && reported >= 0
+    ? Math.floor(reported)
+    : counted;
 }
 
 /**
@@ -113,6 +137,36 @@ export function nextScanCursor(workerCursor: string, prevCursor: string, unjudge
     .sort(compareMsgIds);
   if (ids.length) return String(Math.max(0, Number(ids[0]) - 1));
   return workerCursor || prevCursor;
+}
+
+type CursorDecision = { nextCursor: string; judgeFailStreak: number; streakNote: string };
+
+/**
+ * A scan failed when a judge call failed on messages that must be seen again. A scan that judged
+ * nothing because it only waited (daily cap / no key) keeps the streak; any other scan resets it. After `JUDGE_FAIL_STREAK_MAX` such scans in a row the cursor takes the worker's
+ * value so one poisoned batch cannot stall the group forever.
+ */
+function decideCursor(deps: GroupScanDeps, judged: number, unjudged: readonly UnjudgedMessage[]): CursorDecision {
+  const workerCursor = String(deps.worker.cursor ?? "");
+  const rewind = unjudged.filter((u) => u.rewind).map((u) => u.message);
+  const failed = unjudged.some((u) => u.rewind && u.step === "judgeError");
+  if (!failed) {
+    const waited = judged === 0 && rewind.length > 0;
+    return {
+      nextCursor: nextScanCursor(workerCursor, deps.group.scanCursor, rewind),
+      judgeFailStreak: waited ? count(deps.group.judgeFailStreak) : 0,
+      streakNote: "",
+    };
+  }
+  const streak = count(deps.group.judgeFailStreak) + 1;
+  if (streak < JUDGE_FAIL_STREAK_MAX) {
+    return { nextCursor: nextScanCursor(workerCursor, deps.group.scanCursor, rewind), judgeFailStreak: streak, streakNote: "" };
+  }
+  return {
+    nextCursor: workerCursor || deps.group.scanCursor,
+    judgeFailStreak: 0,
+    streakNote: `Судья не ответил ${streak} скана подряд — курсор сдвинут вперёд, пропущено ${rewind.length} сообщ.`,
+  };
 }
 
 function groupLead(deps: GroupScanDeps, m: ScanMessage, score: number, reason: string): NewLead {
@@ -159,15 +213,17 @@ export async function runGroupScan(deps: GroupScanDeps): Promise<GroupScanResult
     aiRejects: active,
     stopWords: deps.project.stopWords,
   });
-  const judge = await judgeMessages(deps.project, filtered.passed, deps.llm, { gate: deps.gate });
+  const judge = await judgeMessages(deps.project, filtered.passed, deps.llm, { gate: deps.gate, ...(deps.clock ? { clock: deps.clock } : {}) });
 
   const counts = { ...emptyCounts(), ...filtered.counts, ...judge.counts };
   counts.skippedNotUser = count(deps.worker.skippedNotUser);
   counts.skippedOldWorker = count(deps.worker.skippedOld);
   counts.skippedError = count(deps.worker.skippedError);
   counts.returned = messages.length;
-  // REQ-13 holds by construction; the worker's own `fetched` is only shown when it disagrees.
-  counts.fetched = counts.skippedNotUser + counts.skippedOldWorker + counts.skippedError + counts.returned;
+  // REQ-13: the worker's own `fetched` is kept; a worker that breaks the invariant is shown, not hidden.
+  const counted = counts.skippedNotUser + counts.skippedOldWorker + counts.skippedError + counts.returned;
+  counts.fetched = workerFetched(deps.worker, counted);
+  const mismatch = counts.fetched !== counted ? `расхождение: воркер собрал ${counts.fetched}, по счётчикам ${counted}` : "";
   const samples = { ...filtered.samples };
 
   const leads: NewLead[] = [];
@@ -185,14 +241,12 @@ export async function runGroupScan(deps: GroupScanDeps): Promise<GroupScanResult
   counts.leads = leads.length;
   counts.rejected = rejectedIds.length;
 
-  const workerFetched = count(deps.worker.fetched);
-  const label = deps.group.name + (workerFetched && workerFetched !== counts.fetched ? ` (worker fetched ${workerFetched})` : "");
   const skip = judge.unjudged[0]?.step === "judgeSkipped" ? judge.unjudged[0].reason : "";
   return {
     leads,
     aiRejected: rememberAiRejects(active, rejectedIds, sig, now),
-    nextCursor: nextScanCursor(String(deps.worker.cursor ?? ""), deps.group.scanCursor, judge.unjudged.map((u) => u.message)),
-    delta: { counts, samples, run: runLine(now, label, counts, judge.error, skip) },
+    ...decideCursor(deps, judge.judged.length, judge.unjudged),
+    delta: { counts, samples, run: runLine(now, deps.group.name, counts, judge.error, skip, mismatch) },
     judgeError: judge.error,
   };
 }
@@ -206,7 +260,7 @@ export type DmJudgeDeps = {
   knownSenderIds: ReadonlySet<string>;
   /** AI-reject memory of the DM pass (keyed `userId:lastMessageId`). */
   aiRejected: unknown;
-  llm: JsonLlm | null;
+  llm: JudgeLlm | null;
   gate?: JudgeGate;
   now: () => number;
   notifyEnabled: boolean;

@@ -64,6 +64,31 @@ describe('runGroupScan', () => {
     expect(r.delta.samples.leads?.[0]?.text).toContain('сообщение номер 10');
   });
 
+  it('keeps the worker-reported fetched; a mismatch is shown in Russian in the run line', async () => {
+    const {llm} = scriptedLlm([answerAll(() => ({isLead: false, score: 1}))]);
+    const msgs = [makeMessage(10), makeMessage(11)];
+    const r = await runGroupScan(
+      groupDeps(msgs, llm, {worker: {messages: msgs, fetched: 7, skippedNotUser: 1, skippedOld: 1, skippedError: 1, cursor: '900'}}),
+    );
+    expect(r.delta.counts.fetched).toBe(7);
+    expect(r.delta.run).toMatch(/расхождение: воркер собрал 7, по счётчикам 5/);
+    expect(r.delta.run).not.toMatch(/worker/);
+  });
+
+  it('a consistent worker answer keeps the invariant and adds no note; a missing fetched falls back to the sum', async () => {
+    const {llm} = scriptedLlm([answerAll(() => ({isLead: false, score: 1}))]);
+    const msgs = [makeMessage(10), makeMessage(11)];
+    const ok = await runGroupScan(
+      groupDeps(msgs, llm, {worker: {messages: msgs, fetched: 5, skippedNotUser: 1, skippedOld: 1, skippedError: 1, cursor: '900'}}),
+    );
+    expect(ok.delta.counts.fetched).toBe(5);
+    expect(ok.delta.run).not.toMatch(/расхождение/);
+    expectInvariant(ok.delta.counts);
+    const missing = await runGroupScan(groupDeps(msgs, llm, {worker: {messages: msgs, skippedNotUser: 1, cursor: '900'}}));
+    expect(missing.delta.counts.fetched).toBe(3);
+    expectInvariant(missing.delta.counts);
+  });
+
   it('respects project minScore and scanDepthDays', async () => {
     const {llm} = scriptedLlm([answerAll(() => ({isLead: true, score: 70}))]);
     const msgs = [makeMessage(1), makeMessage(2, {date: new Date(NOW - 2 * DAY).toISOString()})];
@@ -94,8 +119,8 @@ describe('runGroupScan', () => {
 });
 
 describe('cursor rewind (REQ-10)', () => {
-  it('rewinds to firstUnjudgedId − 1 when batch 2 fails', async () => {
-    const {llm} = scriptedLlm([answerAll(() => ({isLead: false, score: 1})), 'bad', 'bad']);
+  it('rewinds to firstUnjudgedId − 1 when batch 2 fails with a transient error', async () => {
+    const {llm} = scriptedLlm([answerAll(() => ({isLead: false, score: 1})), new Error('DeepSeek 503: down')]);
     const msgs = Array.from({length: 30}, (_, i) => makeMessage(101 + i));
     const r = await runGroupScan(groupDeps(msgs, llm));
     expect(r.nextCursor).toBe('120');
@@ -105,7 +130,7 @@ describe('cursor rewind (REQ-10)', () => {
   });
 
   it('ignores comment ids: only group/discussion ids reach the cursor', async () => {
-    const {llm} = scriptedLlm(['bad']);
+    const {llm} = scriptedLlm([new Error('DeepSeek 503: down')]);
     const msgs = [
       makeMessage(5000, {messageKind: 'comment'}),
       makeMessage(300, {messageKind: 'discussion'}),
@@ -115,6 +140,67 @@ describe('cursor rewind (REQ-10)', () => {
     expect(r.nextCursor).toBe('299');
     const onlyComments = await runGroupScan(groupDeps([makeMessage(5000, {messageKind: 'comment'})], llm));
     expect(onlyComments.nextCursor).toBe('900');
+  });
+
+  it('a schema-invalid answer twice is judgeError and the cursor moves past that batch', async () => {
+    const {llm} = scriptedLlm([answerAll(() => ({isLead: false, score: 1})), 'bad', 'bad']);
+    const msgs = Array.from({length: 30}, (_, i) => makeMessage(101 + i));
+    const r = await runGroupScan(groupDeps(msgs, llm));
+    expect(r.nextCursor).toBe('900');
+    expect(r.delta.counts).toMatchObject({judgeError: 10, rejected: 20});
+    expect(r.judgeFailStreak).toBe(0);
+    expectInvariant(r.delta.counts);
+  });
+
+  it('a schema-invalid batch followed by blocked batches rewinds to the first blocked id', async () => {
+    const {llm} = scriptedLlm([answerAll(() => ({isLead: false, score: 1})), 'bad', 'bad']);
+    const msgs = Array.from({length: 50}, (_, i) => makeMessage(101 + i));
+    const r = await runGroupScan(groupDeps(msgs, llm));
+    expect(r.nextCursor).toBe('140');
+  });
+
+  it('counts consecutive failed scans in judgeFailStreak; success resets it', async () => {
+    const failing = scriptedLlm([new Error('DeepSeek 503: down')]).llm;
+    const msgs = [makeMessage(50), makeMessage(51)];
+    const first = await runGroupScan(groupDeps(msgs, failing));
+    expect(first.judgeFailStreak).toBe(1);
+    expect(first.nextCursor).toBe('49');
+    expect(first.streakNote).toBe('');
+    const ok = scriptedLlm([answerAll(() => ({isLead: false, score: 1}))]).llm;
+    const after = await runGroupScan(groupDeps(msgs, ok, {group: {...groupDeps([], null).group, judgeFailStreak: 2}}));
+    expect(after.judgeFailStreak).toBe(0);
+  });
+
+  it('the third failed scan in a row advances to the worker cursor and says so in Russian', async () => {
+    const failing = scriptedLlm([new Error('DeepSeek 503: down')]).llm;
+    const msgs = [makeMessage(50), makeMessage(51)];
+    const r = await runGroupScan(groupDeps(msgs, failing, {group: {...groupDeps([], null).group, judgeFailStreak: 2}}));
+    expect(r.nextCursor).toBe('900');
+    expect(r.judgeFailStreak).toBe(0);
+    expect(r.streakNote).toMatch(/3 скана подряд/);
+    expect(r.streakNote).toMatch(/пропущено 2/);
+  });
+
+  it('daily cap and missing key never count as failed scans', async () => {
+    const r = await runGroupScan(groupDeps([makeMessage(50)], null, {group: {...groupDeps([], null).group, judgeFailStreak: 2}}));
+    expect(r.nextCursor).toBe('49');
+    expect(r.judgeFailStreak).toBe(2);
+  });
+
+  it('the judge deadline rewinds to the first skipped id and is not a failed scan', async () => {
+    let t = 0;
+    const {llm} = scriptedLlm([
+      (p) => {
+        t += 95_000;
+        return answerAll(() => ({isLead: false, score: 1}))(p);
+      },
+    ]);
+    const msgs = Array.from({length: 30}, (_, i) => makeMessage(101 + i));
+    const r = await runGroupScan(groupDeps(msgs, llm, {clock: () => t}));
+    expect(r.nextCursor).toBe('120');
+    expect(r.judgeFailStreak).toBe(0);
+    expect(r.delta.samples.judgeSkipped?.[0]?.reason).toBe('deadline');
+    expectInvariant(r.delta.counts);
   });
 
   it('no AI key rewinds too (no non-LLM fallback)', async () => {

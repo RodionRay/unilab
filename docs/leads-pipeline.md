@@ -15,34 +15,54 @@ are no keyword / intent regexes on the lead path; project keywords are only a hi
 | `ai_guard` | `judge-day:<owner>:<day>`, `draft-day:<owner>:<day>`, `ai-guard:<owner>` (manual draft 1/min) | caps | no |
 
 - Contract and zod: `lib/leads/projects.ts::projectSchema`, `::projectPatchSchema` (strict field patch).
-- A group/lead without `projectId` reads as the default project: `lib/leads/projects.ts::projectIdOf`. The
+- A group/lead without `projectId` reads as the default project: `lib/leads/projects.ts::projectIdOf`; one whose
+  project is missing or not the owner's too (`lib/processes/lead-store.ts::findProjectOf` — scan, `draft`,
+  `lead_feedback`, auto drafts). The
   default row is created lazily from `settings` (`::ensureDefaultProject`, `INSERT OR IGNORE`) by GET
   (`app/api/workspace/route.ts::ensureOwnerProject`), the first scan or any project action.
 - Server-owned fields (a client `save` never sets them): `lib/processes/scan-flow.ts::keepServerOwnedFields`
   (lead `projectId`, `score`, `reason`, `sourceKind`, `draftKind`, `feedback`; group `projectId`; settings
-  `inboxPollCursor`, `dmAiRejected`).
+  `inboxPollCursor`, `dmAiRejected`, and the legacy project fields `scan-flow.ts::LEGACY_PROJECT_SETTINGS`).
+- A settings save never writes project fields (REQ-4): `route.ts::settingsSchema` has no product / keyword /
+  stop-word / depth fields; legacy values stay in the row only for `projects.ts::defaultProjectFromSettings`.
+  The settings page has no scan depth input (depth is the project card's `scanDepthDays`).
+- The in-app assistant's product context is the default project's `product`
+  (`app/api/assistant/route.ts::loadOwnerProduct` → `projects.ts::ensureDefaultProject`), never `settings.product`.
 
 ## Group scan (`scan_group`)
 
 `app/api/workspace/route.ts` action `scan_group`:
 1. Account gate, catalog placeholder, rescan interval, scan lock — unchanged
    (`lib/processes/scan-flow.ts::evaluateScanGate`, `route.ts::acquireGroupScanLock`).
-2. Project of the group: `lib/processes/lead-store.ts::findOwnedProject` (deleted project → default).
+2. Project of the group: `lib/processes/lead-store.ts::findProjectOf` (deleted project → default).
    An inactive project (`active:false`) skips the scan (`projectInactive:true`).
 3. Worker `/scan-group` with `{…session, url, days: project.scanDepthDays, minId: group.scanCursor}`
    (no keywords/limit; REQ-5 lives in `telegram-worker/src/check_account.py::scan_group`).
 4. `lib/processes/lead-scan.ts::scanGroupLeads` → `lib/leads/pipeline.ts::runGroupScan`:
+   - known leads are read bounded, never the whole lead table: only this group's leads whose `tgMsgId` is
+     among the returned ids, `IN (…)` chunks of ≤50 (`lead-scan.ts::loadKnownFingerprints`,
+     `::leadsWhereIn`, `LEAD_LOOKUP_CHUNK`); deleted leads stay blocked by `group.leadTombstones`;
    - `lib/leads/filter.ts::filterMessages` — in order: empty id (`skippedErrorApp`), older than
      `scanDepthDays` (`old`), text < 12 (`short`), known fingerprint / tombstone / AI-reject memory / same
      sender+text (`duplicate`), word-start stop word (`stopword`);
    - `lib/leads/judge.ts::judgeMessages` — ascending ids, batches ≤20, ≤4 per scan, daily cap gate
      (`lead-store.ts::reserveDailyCap`, default 3000 messages/day, `settings.judgeDailyCap`), 35 s + 1 retry
-     (`lib/ai-client.ts::jsonLlmFrom`, `::deepseekJsonText`); the retry reserves the cap again for the same
-     messages (`lib/processes/lead-scan.ts::judgeLlm`), no room → the batch fails as `judgeError`;
+     (`lib/ai-client.ts::jsonLlmFrom`, `::deepseekJsonText`), 90 s wall-clock deadline per scan checked before
+     each batch after the first (`judge.ts::JUDGE_DEADLINE_MS`, `JudgeOptions.clock`): the rest is
+     `judgeSkipped` `deadline` and rewinds (not a failed scan); the retry reserves the cap again for the same
+     messages — the judge passes the batch size explicitly (`lib/leads/types.ts::JudgeLlm` `units`,
+     `lib/processes/lead-scan.ts::judgeLlm`), no room → the batch fails as `judgeError`;
    - `isLead && score ≥ minScore` → lead (`hot` when score ≥ `HOT_SCORE` = 80); others → rejected and
      remembered in `group.aiRejected` (`lib/leads/reject-memory.ts`);
-   - a failed or skipped batch stops judging: `scanCursor = first unjudged group/discussion id − 1`
-     (`pipeline.ts::nextScanCursor`), so nothing is lost; comment ids never reach the cursor.
+   - a failed or skipped batch stops judging: `scanCursor = first rewind-marked unjudged group/discussion
+     id − 1` (`pipeline.ts::nextScanCursor`), so nothing is lost; comment ids never reach the cursor;
+   - `rewind` (`judge.ts::UnjudgedMessage`): every skip and call error rewinds, except a batch whose answer
+     stayed invalid JSON / failed the schema after the retry (`judge.ts::callFailure`) — it is `judgeError`
+     and the cursor moves past it;
+   - `group.judgeFailStreak` (server-owned) counts consecutive scans with a rewinding `judgeError`; a scan
+     that only waited (daily cap / no key, nothing judged) keeps it, any other resets it. The 3rd failed
+     scan in a row (`pipeline.ts::JUDGE_FAIL_STREAK_MAX`) takes the worker cursor, resets the streak and
+     writes a Russian `warn` note to `scanLog` and `rescanLog` (`pipeline.ts::decideCursor`).
 5. Leads inserted, `scan_day` upserted (`lib/leads/funnel.ts::upsertScanDay`, compare-and-set), group
    metrics/cursor/`aiRejected`/scan log written, notifications flushed (`route.ts::flushLeadNotifications`).
 6. Auto drafts: `lead-scan.ts::autoDraftCandidates` (hot leads of projects with `autoDraft`, ≤3) drafted
@@ -55,9 +75,15 @@ judgeError, title, metrics, taskLog}` (cron `app/api/cron/auto-rescan/route.ts` 
 
 ## DM pass (`poll_dm_replies`)
 
-`route.ts::pollDmReplies`: per account `/inbox-dms`; a DM of an open conversation is merged
-(`lib/lead-conversation.ts::mergeIncomingDm`); every other DM is collected and judged once per pass by
+`route.ts::pollDmReplies`: per account `/inbox-dms`; a DM whose sender already is a lead (same Telegram
+peer: senderId / peerId / username, `route.ts::sameTelegramPeer`) is merged into that lead — its started
+conversation first, else the newest lead of that person — and opens the conversation
+(`lib/lead-conversation.ts::mergeIncomingDm`, `route.ts::loadConversationLeads`); it never reaches the judge.
+Every other DM is collected and judged once per pass by
 `route.ts::judgeUnmatchedDms` → `lead-scan.ts::judgeInboxDms` → `pipeline.ts::runDmJudge`:
+- lead lookups are bounded to the pass's peers: conversation match per account by `senderId` / `peerId` /
+  normalized `senderUsername` IN the DM peers (`lead-scan.ts::loadPeerLeads`), known senders by `senderId`
+  IN the DM user ids (`::loadKnownSenderIds`), chunks of ≤50;
 - own accounts dropped app-side (`lead-scan.ts::loadOwnAccounts`: account `username`, `tgUserId` stored by
   `route.ts::runAccountCheck`), senders that already are leads → `duplicate`;
 - ≤20 senders in one call with all active project cards (`lib/leads/dm-judge.ts::judgeDmSenders`; each card
@@ -69,10 +95,13 @@ Response adds `dmLeads` (number of DM leads created).
 
 ## Funnel counters (`lib/leads/types.ts::FUNNEL_COUNTERS`, events per run)
 
-`fetched = skippedNotUser + skippedOldWorker + skippedError + returned`;
+`fetched = skippedNotUser + skippedOldWorker + skippedError + returned` — `fetched` is the worker's own
+number when it reports one (`pipeline.ts::workerFetched`, else the sum); a worker that breaks the equation
+is shown, not hidden: the run line ends with «расхождение: воркер собрал N, по счётчикам M». Asserted in
+`tests/leads/pipeline.test.ts` and `telegram-worker/tests/test_scan_raw.py::assert_funnel_invariant`;
 `returned = skippedErrorApp + old + short + duplicate + stopword + judgeSkipped + judgeError + rejected + leads`.
 `judged` = messages the judge answered (`rejected + leads`). Each app step keeps the last 3 samples
-(text ≤200, `term` for stop words, `reason` for judge steps / skip reason `no_ai_key|daily_cap|blocked|batch_limit|sender_limit|no_project`);
+(text ≤200, `term` for stop words, `reason` for judge steps / skip reason `no_ai_key|daily_cap|blocked|batch_limit|deadline|sender_limit|no_project`);
 `runs` keeps the last 20 run lines. One row per project per UTC day (`funnel.ts::mergeScanDay`). Retention: after each upsert the owner's
 `scan_day` rows with `day` older than 30 days are deleted, at most 100 per run
 (`lib/leads/funnel.ts::pruneScanDays`, called by `lib/processes/lead-scan.ts::recordFunnel`).
@@ -84,11 +113,11 @@ Response adds `dmLeads` (number of DM leads created).
 | `project_create` | `{data:{name, …card fields}}` | `{ok,id,project}`; 409 `limitReached` over 10 | ai (write) |
 | `project_update` | `{id, patch:{…any card fields}}` (unknown keys → 400) | `{ok,id,project}` | ai (write) |
 | `project_delete` | `{id, moveToProjectId?}` | `{ok,id,moved,moveToProjectId}`; 409 `{groups}` when groups exist without target; 400 for the default project | ai (write) |
-| `set_group_project` | `{groupIds:[uuid…≤500], projectId}` | `{ok,projectId,updated}` | ai (write) |
+| `set_group_project` | `{groupIds:[uuid…≤500], projectId}` | `{ok,projectId,updated}`; UI: groups view per-row project select and «В проект…» in the action bar for the selection, both only with ≥2 projects (`app/app/page.tsx::moveGroupsToProject`) | ai (write) |
 | `funnel` | `{projectId, days:1\|7}` | `{ok, funnel:FunnelView, dm:FunnelView}` (`projectId:'dm'`) | ai (read) |
 | `rebuild_product` | `{projectId, notes?}` | `{ok,id,project}` — AI fills the card from `url`; stop words untouched | ai (write) |
 | `lead_feedback` | `{id, verdict:'good'\|'bad'}` | `{ok,lead,projectId,project}` — example added (FIFO ≤10), `lead.feedback` set | leads |
-| `draft` | `{id, kind?:'group_reply'\|'dm_first'\|'dm_continue'}` | `{ok,draft,kind,model}`; 429 by the 1/min guard or the daily cap; manual draft has no `draftKind` | leads |
+| `draft` | `{id, kind?:'group_reply'\|'dm_first'\|'dm_continue'}` | `{ok,draft,kind,model}`; 429 by the 1/min guard or the daily cap; a new manual draft has no `draftKind`, regenerating an auto draft keeps its `draftKind` (stays in the approval queue) | leads |
 | `dismiss_draft` | `{id}` | `{ok,lead}` — `draft:''`, `draftKind` removed | leads |
 | `send_lead_message` | unchanged | success clears `draft` + `draftKind` | leads |
 | `generate_account_about` | `{projectId?, notes?}` | `{ok,about,firstName,lastName,fromAi,projectId}` | accounts |

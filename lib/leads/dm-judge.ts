@@ -4,11 +4,10 @@
  */
 
 import { z } from "zod";
-import type { JsonLlm } from "@/lib/ai-client";
 import { checkGate, compareMsgIds, errorText, NO_VERDICT_REASON, REASON_MAX } from "@/lib/leads/judge";
 import type { ProjectRow } from "@/lib/leads/projects";
 import { buildDmJudgePrompt } from "@/lib/leads/prompt";
-import type { JudgeGate, UnjudgedStep } from "@/lib/leads/types";
+import type { JudgeGate, JudgeLlm, UnjudgedStep } from "@/lib/leads/types";
 
 export const DM_MAX_SENDERS = 20;
 const SENDER_TEXT_MAX = 4000;
@@ -112,7 +111,7 @@ function skipAll(senders: readonly DmSender[], step: UnjudgedStep, reason: strin
 export async function judgeDmSenders(
   projects: readonly ProjectRow[],
   senders: readonly DmSender[],
-  llm: JsonLlm | null,
+  llm: JudgeLlm | null,
   opts: { gate?: JudgeGate } = {},
 ): Promise<DmJudgeResult> {
   if (!projects.length) return { judged: [], unjudged: skipAll(senders, "judgeSkipped", "no_project"), error: "" };
@@ -124,7 +123,7 @@ export async function judgeDmSenders(
   if (capped) return { judged: [], unjudged: [...skipAll(batch, capped.step, capped.reason), ...overflow], error: capped.error };
   try {
     const prompt = buildDmJudgePrompt(projects, batch.map((s) => ({ id: s.userId, name: s.name, text: s.text })));
-    const answer = await llm(dmAnswerSchema, prompt);
+    const answer = await llm(dmAnswerSchema, prompt, batch.length);
     const projectIds = new Set(projects.map((p) => p.id));
     const byId = new Map<string, DmVerdict>();
     for (const v of answer.verdicts) {

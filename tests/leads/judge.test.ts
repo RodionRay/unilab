@@ -90,6 +90,20 @@ describe('judgeMessages failure stops judging (REQ-10)', () => {
     expect(r.error).toMatch(/JSON/i);
   });
 
+  it('a schema-invalid answer twice moves past its batch; the blocked rest rewinds', async () => {
+    const {llm} = scriptedLlm([answerAll(lead), 'bad', 'still bad', answerAll(lead)]);
+    const r = await judgeMessages(makeProject(), range(1, 50), llm);
+    expect(r.unjudged.filter((u) => u.step === 'judgeError').every((u) => !u.rewind)).toBe(true);
+    expect(r.unjudged.filter((u) => u.step === 'judgeSkipped').every((u) => u.rewind)).toBe(true);
+    expect(r.firstUnjudgedId).toBe('21');
+  });
+
+  it('a transient call error rewinds its batch', async () => {
+    const {llm} = scriptedLlm([new Error('DeepSeek 503: down')]);
+    const r = await judgeMessages(makeProject(), range(1, 3), llm);
+    expect(r.unjudged.every((u) => u.step === 'judgeError' && u.rewind)).toBe(true);
+  });
+
   it('a thrown call error is retried, then counted as judgeError', async () => {
     const {llm, calls} = scriptedLlm([new Error('DeepSeek 503: down')]);
     const r = await judgeMessages(makeProject(), range(1, 3), llm);
@@ -123,6 +137,35 @@ describe('judgeMessages failure stops judging (REQ-10)', () => {
     const {llm} = scriptedLlm([answerAll(lead)]);
     const r = await judgeMessages(makeProject(), range(1, 2), llm, {gate: () => Promise.reject(new Error('db'))});
     expect(r.counts.judgeError).toBe(2);
+  });
+
+  it('stops at the 90 s deadline: the rest is judgeSkipped deadline and rewinds', async () => {
+    let t = 0;
+    const clock = () => t;
+    const {llm, calls} = scriptedLlm([
+      (p) => {
+        t += 50_000;
+        return answerAll(lead)(p);
+      },
+    ]);
+    const r = await judgeMessages(makeProject(), range(1, 70), llm, {clock});
+    expect(calls).toHaveLength(2);
+    expect(r.counts).toEqual({judged: 40, judgeSkipped: 30, judgeError: 0});
+    expect(r.unjudged.every((u) => u.reason === 'deadline' && u.rewind)).toBe(true);
+    expect(r.firstUnjudgedId).toBe('41');
+  });
+
+  it('a custom deadline is honoured and the first batch always runs', async () => {
+    let t = 0;
+    const {llm, calls} = scriptedLlm([
+      (p) => {
+        t += 10;
+        return answerAll(lead)(p);
+      },
+    ]);
+    const r = await judgeMessages(makeProject(), range(1, 45), llm, {clock: () => t, deadlineMs: 10});
+    expect(calls).toHaveLength(1);
+    expect(r.counts.judgeSkipped).toBe(25);
   });
 
   it('an empty input makes no call', async () => {

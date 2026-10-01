@@ -4,22 +4,25 @@
  * Message texts are never logged.
  */
 
-import { AiJsonError, aiChatText, deepseekJsonText, jsonLlmFrom, type ChatPrompt, type JsonLlm, type TextLlm } from "@/lib/ai-client";
+import { AiJsonError, aiChatText, deepseekJsonText, jsonLlmFrom, type TextLlm } from "@/lib/ai-client";
 import type { D1LikeDatabase } from "@/lib/db";
 import { leadReplies, type LeadData } from "@/lib/lead-conversation";
 import { leadMessageFingerprint } from "@/lib/lead-filter";
 import {
+  defaultProjectId,
   generateDraft,
   HOT_SCORE,
   runDmJudge,
   pruneScanDays,
   runGroupScan,
+  normalizeScanMessage,
   upsertScanDay,
   type DmMessage,
   type DraftKind,
   type DraftLead,
   type GroupScanResult,
   type JudgeGate,
+  type JudgeLlm,
   type NewLead,
   type ProjectRow,
   type ScanDelta,
@@ -32,31 +35,21 @@ export const AUTO_DRAFTS_PER_RUN = 3;
 
 export type InsertedLead = { id: string; lead: NewLead };
 
-/** Items in the prompt's `<data>` JSON array (messages / DM senders the call judges). */
-export function judgedUnits(prompt: ChatPrompt): number {
-  const start = prompt.user.indexOf("<data>");
-  const end = prompt.user.indexOf("</data>");
-  if (start < 0 || end <= start) return 1;
-  try {
-    const items: unknown = JSON.parse(prompt.user.slice(start + "<data>".length, end));
-    return Array.isArray(items) ? Math.max(1, items.length) : 1;
-  } catch {
-    return 1;
-  }
-}
-
 /**
  * Judge LLM (35 s, one retry). A retry is a second paid call, so it reserves the daily judge cap
- * again for the same messages; without room the batch fails (`judgeError`) and the cursor rewinds.
+ * again for the `units` the caller judges; without room the batch fails (`judgeError`) and the cursor rewinds.
  */
-export function judgeLlm(apiKey: string, gate?: JudgeGate): JsonLlm | null {
+export function judgeLlm(apiKey: string, gate?: JudgeGate): JudgeLlm | null {
   if (!apiKey) return null;
-  const beforeRetry = gate
-    ? async (prompt: ChatPrompt) => {
-        if (!(await gate(judgedUnits(prompt)))) throw new AiJsonError("AI: daily judge cap reached before retry", 1);
-      }
-    : undefined;
-  return jsonLlmFrom(deepseekJsonText({ apiKey }), 1, beforeRetry);
+  const text = deepseekJsonText({ apiKey });
+  return (schema, prompt, units) => {
+    const beforeRetry = gate
+      ? async () => {
+          if (!(await gate(units))) throw new AiJsonError("AI: daily judge cap reached before retry", 1);
+        }
+      : undefined;
+    return jsonLlmFrom(text, 1, beforeRetry)(schema, prompt);
+  };
 }
 
 export function draftLlm(apiKey: string): TextLlm {
@@ -67,25 +60,72 @@ function logError(context: string, e: unknown): void {
   console.error(`[workspace] ${context}:`, String((e as Error)?.message || e).slice(0, 300));
 }
 
-type KnownLeads = { fingerprints: Set<string>; senderIds: Set<string> };
+/** Max values in one `IN (…)` of a lead lookup (D1 bind limit is 100). */
+export const LEAD_LOOKUP_CHUNK = 50;
 
-/** Dedupe keys of every lead of the owner (only the four fields, not the whole rows). */
-async function loadKnownLeads(db: D1LikeDatabase, owner: string): Promise<KnownLeads> {
-  const res = await db
-    .prepare(
-      "SELECT json_extract(data,'$.message') AS message,json_extract(data,'$.groupId') AS groupId," +
-        "json_extract(data,'$.tgMsgId') AS tgMsgId,json_extract(data,'$.senderId') AS senderId " +
-        "FROM records WHERE owner=? AND kind='lead'",
-    )
-    .bind(owner)
-    .all();
-  const known: KnownLeads = { fingerprints: new Set(), senderIds: new Set() };
-  for (const r of res.results) {
-    known.fingerprints.add(leadMessageFingerprint(String(r.message ?? ""), String(r.groupId ?? ""), String(r.tgMsgId ?? "")));
-    const sender = String(r.senderId ?? "").trim();
-    if (sender) known.senderIds.add(sender);
+const textOf = (field: string) => `CAST(json_extract(data,'$.${field}') AS TEXT)`;
+const USERNAME_EXPR = "lower(ltrim(json_extract(data,'$.senderUsername'),'@'))";
+
+/**
+ * Rows of the owner's leads whose `expr` (SQL over `data`) is one of `values`, `LEAD_LOOKUP_CHUNK` per query, so a
+ * scan reads only the leads it can collide with, never the whole lead table. `scope` narrows further.
+ */
+async function leadsWhereIn(
+  db: D1LikeDatabase,
+  owner: string,
+  columns: string,
+  expr: string,
+  values: readonly string[],
+  scope: { sql: string; binds: readonly string[] } = { sql: "", binds: [] },
+): Promise<Record<string, unknown>[]> {
+  const out: Record<string, unknown>[] = [];
+  const unique = [...new Set(values.filter(Boolean))];
+  for (let i = 0; i < unique.length; i += LEAD_LOOKUP_CHUNK) {
+    const part = unique.slice(i, i + LEAD_LOOKUP_CHUNK);
+    const res = await db
+      .prepare(
+        `SELECT ${columns} FROM records WHERE owner=? AND kind='lead'${scope.sql} ` +
+          `AND ${expr} IN (${part.map(() => "?").join(",")})`,
+      )
+      .bind(owner, ...scope.binds, ...part)
+      .all();
+    out.push(...res.results);
   }
-  return known;
+  return out;
+}
+
+/** Fingerprints of the group's leads among the returned message ids (tombstones stay in the group row). */
+async function loadKnownFingerprints(db: D1LikeDatabase, owner: string, groupId: string, worker: WorkerScanResult): Promise<Set<string>> {
+  const ids = (Array.isArray(worker.messages) ? worker.messages : []).map((m) => normalizeScanMessage(m).tgMsgId);
+  const rows = await leadsWhereIn(db, owner, "json_extract(data,'$.tgMsgId') AS tgMsgId", textOf("tgMsgId"), ids, {
+    sql: ` AND ${textOf("groupId")}=?`,
+    binds: [groupId],
+  });
+  return new Set(rows.map((r) => leadMessageFingerprint("", groupId, String(r.tgMsgId ?? ""))));
+}
+
+/** DM senders that already are leads (any source). */
+async function loadKnownSenderIds(db: D1LikeDatabase, owner: string, messages: readonly DmMessage[]): Promise<Set<string>> {
+  const rows = await leadsWhereIn(db, owner, "json_extract(data,'$.senderId') AS senderId", textOf("senderId"), messages.map((m) => m.userId));
+  return new Set(rows.map((r) => String(r.senderId ?? "").trim()).filter(Boolean));
+}
+
+/** Leads that may be the Telegram peer of the given DMs: by user id (sender / peer) or lower-case username without `@`. */
+export async function loadPeerLeads(
+  db: D1LikeDatabase,
+  owner: string,
+  peers: { userIds: readonly string[]; usernames: readonly string[] },
+): Promise<{ id: string; data: string }[]> {
+  const cols = "id,data,created";
+  const found = [
+    ...(await leadsWhereIn(db, owner, cols, textOf("senderId"), peers.userIds)),
+    ...(await leadsWhereIn(db, owner, cols, textOf("peerId"), peers.userIds)),
+    ...(await leadsWhereIn(db, owner, cols, USERNAME_EXPR, peers.usernames)),
+  ];
+  const byId = new Map(found.map((r) => [String(r.id), r]));
+  return [...byId.values()]
+    .sort((a, b) => String(b.created ?? "").localeCompare(String(a.created ?? "")))
+    .map((r) => ({ id: String(r.id), data: String(r.data) }));
 }
 
 async function insertLeads(db: D1LikeDatabase, owner: string, leads: readonly NewLead[], nowMs: number): Promise<InsertedLead[]> {
@@ -137,7 +177,7 @@ export type GroupScanOutcome = { scan: GroupScanResult; inserted: InsertedLead[]
 /** REQ-6..13: filter → judge → leads of the group's project, today's `scan_day` row updated. */
 export async function scanGroupLeads(db: D1LikeDatabase, input: GroupScanInput): Promise<GroupScanOutcome> {
   const { owner, group, project, nowMs } = input;
-  const known = await loadKnownLeads(db, owner);
+  const knownFingerprints = await loadKnownFingerprints(db, owner, input.groupId, input.worker);
   const gate = judgeGate(db, owner, input.settings, nowMs);
   const scan = await runGroupScan({
     projectId: project.id,
@@ -149,9 +189,10 @@ export async function scanGroupLeads(db: D1LikeDatabase, input: GroupScanInput):
       scanCursor: String(group.scanCursor || ""),
       aiRejected: group.aiRejected,
       leadTombstones: group.leadTombstones,
+      judgeFailStreak: group.judgeFailStreak,
     },
     worker: input.worker,
-    knownFingerprints: known.fingerprints,
+    knownFingerprints,
     llm: judgeLlm(input.apiKey, gate),
     gate,
     now: () => nowMs,
@@ -204,7 +245,7 @@ export async function judgeInboxDms(db: D1LikeDatabase, input: DmPassInput): Pro
   const { owner, settings, nowMs } = input;
   const [projects, known, ownAccounts] = await Promise.all([
     listProjects(db, owner, settings, nowMs),
-    loadKnownLeads(db, owner),
+    loadKnownSenderIds(db, owner, input.messages),
     loadOwnAccounts(db, owner),
   ]);
   const gate = judgeGate(db, owner, settings, nowMs);
@@ -212,7 +253,7 @@ export async function judgeInboxDms(db: D1LikeDatabase, input: DmPassInput): Pro
     projects,
     messages: input.messages,
     ownAccounts,
-    knownSenderIds: known.senderIds,
+    knownSenderIds: known,
     aiRejected: settings.dmAiRejected,
     llm: judgeLlm(input.apiKey, gate),
     gate,
@@ -272,9 +313,11 @@ export async function autoDraftLeads(db: D1LikeDatabase, input: AutoDraftInput):
   const llm = input.llm ?? draftLlm(input.apiKey);
   const cap = dailyCapOf(input.settings, "draft-day");
   const byId = new Map(input.projects.map((p) => [p.id, p.project]));
+  const fallback = byId.get(defaultProjectId(input.owner));
   let drafted = 0;
   for (const { id, lead } of input.leads) {
-    const project = byId.get(lead.projectId);
+    // A lead of a missing project reads as the default project (REQ-2).
+    const project = byId.get(lead.projectId) ?? fallback;
     if (!project) continue;
     if (!(await reserveDailyCap(db, input.owner, "draft-day", cap, 1, input.nowMs))) break;
     try {

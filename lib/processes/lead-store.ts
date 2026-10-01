@@ -10,6 +10,7 @@ import {
   defaultProjectId,
   ensureDefaultProject,
   parseProjectData,
+  projectIdOf,
   type ProjectData,
   type ProjectRow,
 } from "@/lib/leads";
@@ -60,6 +61,21 @@ export async function findOwnedProject(
     .bind(owner, id)
     .first<{ data: string }>();
   return row ? { id, project: parseProjectData(row.data) } : null;
+}
+
+/**
+ * Project of a lead or group: its `projectId` when that project still exists and is the owner's,
+ * else the default project (REQ-2: a missing or deleted project reads as the default one).
+ */
+export async function findProjectOf(
+  db: D1LikeDatabase,
+  owner: string,
+  record: { projectId?: unknown },
+  settings: Record<string, unknown>,
+  nowMs: number,
+): Promise<ProjectRow> {
+  const own = await findOwnedProject(db, owner, projectIdOf(record, owner), settings, nowMs);
+  return own ?? ensureDefaultProject(db, owner, settings, nowMs);
 }
 
 /** All projects of the owner, the default one first (created lazily). */
