@@ -110,8 +110,8 @@ Removed (unknown → 400): `preview_lead_core`, `train_from_hot`, `train_from_ig
 
 ## Evaluation
 
-`scripts/eval-lead-judge.mts` replays `tests/fixtures/lead-eval/messages.json` (60 messages: 30 `lead`,
-30 `not_lead`, each tagged `source` real|synthetic and a `category`) through `lib/leads/judge.ts::judgeMessages`
+`scripts/eval-lead-judge.mts` replays `tests/fixtures/lead-eval/messages.json` (64 messages: 31 `lead`,
+33 `not_lead`, each tagged `source` real|synthetic|e1-hard and a `category`) through `lib/leads/judge.ts::judgeMessages`
 with the real DeepSeek call (`lib/ai-client.ts::aiChatJson`). The card is `tests/fixtures/lead-eval/project.json`
 (stand `settings` subset) mapped by `lib/leads/projects.ts::defaultProjectFromSettings`; a message counts as
 predicted lead when `isLead && score >= minScore`, as in `pipeline.ts::runGroupScan`. Targets: recall ≥80 %,
@@ -128,5 +128,9 @@ history, `lead-filter` import made relative) for comparison.
 Fixture provenance: the 30 negatives are 27 real stand messages (old hot/warm/cold leads: seller questions,
 complaints, vacancies, spam, service ads, vendor research, news) and 3 synthetic hard negatives; the stand had
 no unambiguous real lead, so the 30 leads are synthetic. Names, usernames and links are replaced by
-placeholders. Run 2026-10-01 (deepseek-chat, 3 calls): new judge 30/0/0/30 (recall 100 %, precision 100 %;
-lead scores ≥80, negatives ≤20); old core recall 46.7 % (14/30), precision 82.4 %.
+placeholders. The 4 `e1-hard` cases (3 off-niche asks / integrator self-pitch, 1 soft ask with a pilot offer)
+target the old core's known false fits and stem miss.
+
+Run 2026-10-01 (deepseek-chat, 4 calls, 64 messages): new judge TP 31 / FN 0 / FP 0 / TN 33 (recall 100 %,
+precision 100 %); old core recall 45.2 % (14/31), precision 70.0 % (6 false positives). On the 4 `e1-hard`
+cases the new judge is 4/4 (negatives score 5, 5, 20; the lead 90), the old core 0/4.
