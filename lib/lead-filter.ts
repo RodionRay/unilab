@@ -1,9 +1,11 @@
-/** Правила отбора лидов из чатов. */
-
-export type LeadFilterSettings = {
-  keywords: string;
-  minusKeywords: string;
-};
+/**
+ * Lead helpers shared by route/UI: fingerprint, normalization, temperature.
+ *
+ * Everything marked @deprecated below is the old regex lead path (lead core v2 REQ-7). It is still
+ * imported by lib/lead-core.ts, lib/lead-stopwords.ts, lib/ai-keywords.ts, scripts/sanitize-lead-settings.ts,
+ * route.ts (strongPlusTerms, buildProjectBrief) and their tests; task T3 deletes those importers and then
+ * these exports. The new lead path lives in lib/leads/** and must not import them.
+ */
 
 export type LeadTemperature = "hot" | "warm" | "cold";
 
@@ -37,17 +39,16 @@ const BROADCAST_AD_RE =
 const PRODUCT_FIT_RE =
   /(?:остатк|синхрон|мой\s*склад|мойсклад|(?<![\p{L}\p{N}])1с(?![\p{L}\p{N}])|управлен[\p{L}\p{N}]*\s+цен|автоответ[\p{L}\p{N}]*\s+на\s+отзыв|ответ[\p{L}\p{N}]*\s+на\s+отзыв|нескольк[\p{L}\p{N}]*\s+кабинет|едином?\s+окн|каталог\s+товар|заказы?\s+с\s+(?:вб|wb|озон)|интеграц[\p{L}\p{N}]*\s+(?:с\s+)?(?:1с|мойсклад|маркетплейс)|автоматиз[\p{L}\p{N}]*\s+(?:остат|заказ|цен|отзыв))/iu;
 
-/** Маркетплейс-контекст (фон чата, сам по себе не лид). */
-const MP_CONTEXT_RE =
-  /(?:(?<![\p{L}\p{N}])вб(?![\p{L}\p{N}])|\bwb\b|wildberries|вайлдберр|озон|\bozon\b|яндекс\s*маркет|megamarket|мегамаркет|фбс|фбо|fbs|fbo|пвз|селлер|маркетплейс|мойсклад|(?<![\p{L}\p{N}])1с(?![\p{L}\p{N}])|юнит.?эконом|биддер|фулфилмент|fulfillment)/iu;
-
 const SPAM_RE =
   /(?:нужн[ыа]\s*деньг|деньги\s+прямо\s+сейчас|займ|кредит\s+онлайн|пиши[,.]?\s*могу\s+помочь|накрутк|купл[юи]\s+аккаунт|продам\s+аккаунт|ваканси|резюме|ищу\s+работ)/iu;
 
 const SERVICE_AD_RE =
   /(?<![\p{L}\p{N}])(?:матриц[аыеу]\s+судьб|судьб[\p{L}\p{N}]*\s+матриц|таро|гадан[\p{L}\p{N}]*|астролог|нумеролог|эзотерик|руны(?![\p{L}\p{N}])|натальн[\p{L}\p{N}]*\s+карт|разбор\s+матриц|(?:писать|пишите|пиши|напишите)\s*@|tg\s*@|передано\s+через\s*@|есть\s+отзывы\s*[)）]|занимаюсь\s+(?:разбором|гадан|эзотери|таро)|принимаю\s+заказ|услуги\s+гадан)/iu;
 
-/** Слишком общие плюс-слова — не считаем совпадением. */
+/**
+ * Слишком общие плюс-слова — не считаем совпадением.
+ * @deprecated Old regex lead path (REQ-7); removed by T3 with lib/lead-core.ts.
+ */
 export const WEAK_PLUS_TERMS = new Set([
   "отзывы",
   "цены",
@@ -71,9 +72,13 @@ export const WEAK_PLUS_TERMS = new Set([
   "fbo",
 ]);
 
-/** Core and worker both consider at most this many stop terms (the same ordered head of the list). */
+/**
+ * Core and worker both consider at most this many stop terms (the same ordered head of the list).
+ * @deprecated Old regex lead path (REQ-7); removed by T3 with lib/lead-core.ts.
+ */
 export const MAX_MINUS_TERMS = 120;
 
+/** @deprecated Old regex lead path (REQ-7); removed by T3 with lib/lead-core.ts. */
 export function splitTerms(raw: string): string[] {
   return raw
     .split(/[,;\n]+/)
@@ -112,6 +117,7 @@ function minusTermPattern(term: string): RegExp {
  * First minus term found at a word start in `text` (phrases match as a phrase), else "".
  * Only the first MAX_MINUS_TERMS non-empty terms count; returned term is lower-cased, ё→е.
  * Mirrors telegram-worker/src/check_account.py::find_minus_hit (shared fixture tests/fixtures/minus-match.json).
+ * @deprecated Old regex lead path (REQ-7); removed by T3 with lib/lead-core.ts.
  */
 export function findMinusHit(text: string, terms: readonly string[]): string {
   const body = normalizeYo(text || "");
@@ -137,7 +143,10 @@ const WORD_ENDINGS = [
 const MIN_STEM_LENGTH = 3;
 const CYRILLIC_WORD_RE = /^[а-я]+$/;
 
-/** Stem of one lower-cased word: Cyrillic words lose one inflection ending, others stay as is. */
+/**
+ * Stem of one lower-cased word: Cyrillic words lose one inflection ending, others stay as is.
+ * @deprecated Old regex lead path (REQ-7); removed by T3 with lib/lead-core.ts.
+ */
 export function stemWord(word: string): string {
   if (!CYRILLIC_WORD_RE.test(word)) return word;
   for (const end of WORD_ENDINGS) {
@@ -167,12 +176,14 @@ function plusTermPattern(term: string): RegExp {
 /**
  * Plus-word / signal / criteria hit in a lower-cased body: word-start stem match, ё→е on both sides.
  * Mirrors telegram-worker/src/check_account.py::plus_term_hit (shared fixture tests/fixtures/lead-match.json).
+ * @deprecated Old regex lead path (REQ-7); removed by T3 with lib/lead-core.ts.
  */
 export function plusTermHit(body: string, term: string): boolean {
   if (!term.trim()) return false;
   return plusTermPattern(term).test(normalizeYo(body));
 }
 
+/** @deprecated Old regex lead path (REQ-7); removed by T3 with lib/lead-core.ts. */
 export function strongPlusTerms(raw: string): string[] {
   return splitTerms(raw).filter((t) => t.length >= 3 && !WEAK_PLUS_TERMS.has(t));
 }
@@ -194,23 +205,25 @@ export function leadMessageFingerprint(
   return `${groupId || ""}::${normalizeLeadMessage(message)}`;
 }
 
-/** Жёсткий покупательский запрос услуги/инструмента. */
+/**
+ * Жёсткий покупательский запрос услуги/инструмента.
+ * @deprecated Old regex lead path (REQ-7); removed by T3 with lib/lead-core.ts.
+ */
 export function hasBuyerIntent(text: string): boolean {
   return BUYER_INTENT_RE.test(text || "");
 }
 
+/** @deprecated Old regex lead path (REQ-7); removed by T3 with lib/lead-core.ts. */
 export function hasSoftAsk(text: string): boolean {
   return SOFT_ASK_RE.test(text || "");
 }
 
+/** @deprecated Old regex lead path (REQ-7); removed by T3 with lib/lead-core.ts. */
 export function hasProductFit(text: string): boolean {
   return PRODUCT_FIT_RE.test(text || "");
 }
 
-export function hasMarketplaceContext(text: string): boolean {
-  return MP_CONTEXT_RE.test(text || "");
-}
-
+/** @deprecated Old regex lead path (REQ-7); removed by T3 with lib/lead-core.ts. */
 export function looksLikeServiceAd(text: string): boolean {
   return (
     SERVICE_AD_RE.test(text || "") ||
@@ -241,6 +254,7 @@ export function ratingFromTemperatures(counts: {
   return Math.max(1, Math.min(5, Math.round(1 + score * 4)));
 }
 
+/** @deprecated Old regex lead path (REQ-7); removed by T3 with lib/lead-core.ts. */
 export function buildProjectBrief(settings: {
   name?: string;
   product?: string;

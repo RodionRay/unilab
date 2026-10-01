@@ -1,5 +1,6 @@
 import {describe, expect, it} from 'vitest';
-import {DM_MAX_SENDERS, groupDmSenders, judgeDmSenders} from '@/lib/leads/dm-judge';
+import {DM_MAX_SENDERS, groupDmSenders, judgeDmSenders, normalizeDmMessage} from '@/lib/leads/dm-judge';
+import * as leads from '@/lib/leads';
 import {answerAll, dm, idsInPrompt, makeProject, scriptedLlm} from './fakes';
 
 const projects = [
@@ -73,5 +74,22 @@ describe('judgeDmSenders (REQ-15, REQ-16)', () => {
     const r = await judgeDmSenders([], groupDmSenders([dm('1', 'aaa')]), llm);
     expect(calls).toHaveLength(0);
     expect(r.unjudged[0]?.reason).toBe('no_project');
+  });
+});
+
+describe('normalizeDmMessage', () => {
+  it('coerces a worker inbox message and stamps the receiving account', () => {
+    const m = normalizeDmMessage({userId: 42, username: ' @bob ', text: 'hi', messageId: 7, at: 'x'}, 'acc9');
+    expect(m).toEqual({userId: '42', username: '@bob', name: '', text: 'hi', messageId: '7', at: 'x', accountId: 'acc9'});
+    expect(normalizeDmMessage(undefined, 'a').userId).toBe('');
+  });
+});
+
+describe('lib/leads index', () => {
+  it('exposes the pipeline entry points', () => {
+    expect(typeof leads.runGroupScan).toBe('function');
+    expect(typeof leads.runDmJudge).toBe('function');
+    expect(typeof leads.upsertScanDay).toBe('function');
+    expect(typeof leads.ensureDefaultProject).toBe('function');
   });
 });
