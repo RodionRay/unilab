@@ -47,3 +47,6 @@ export function canonicalVkGroupUrl(groupId: number): string {
   if (!Number.isInteger(groupId) || groupId <= 0) throw new RangeError('VK group id must be a positive integer');
   return `https://vk.com/club${groupId}`;
 }
+
+/** REQ-15: the only lead deep-link shape shown or sent anywhere — https://vk.com/ plus a plain path/query. */
+export const VK_LEAD_URL = /^https:\/\/vk\.com\/[A-Za-z0-9_\-?=&]+$/;
