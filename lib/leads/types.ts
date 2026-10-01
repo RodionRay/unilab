@@ -1,5 +1,8 @@
 /** Lead core v2 shared types (docs/project/specs/lead-core-v2.md, Contracts). */
 
+import type { z } from "zod";
+import type { ChatPrompt } from "@/lib/ai-client";
+
 export const MESSAGE_KINDS = ["group", "discussion", "comment"] as const;
 export type MessageKind = (typeof MESSAGE_KINDS)[number];
 export type SourceKind = MessageKind | "dm";
@@ -81,4 +84,10 @@ export type JudgeSkipReason =
 export type JudgeGate = (count: number) => Promise<boolean>;
 
 export type UnjudgedStep = "judgeSkipped" | "judgeError";
+
+/**
+ * Judge LLM: `JsonLlm` plus the number of messages / senders the call judges, so a retry can reserve
+ * the daily cap for exactly those units. A plain `JsonLlm` (tests, eval script) is assignable.
+ */
+export type JudgeLlm = <T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, prompt: ChatPrompt, units: number) => Promise<T>;
 

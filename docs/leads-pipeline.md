@@ -45,7 +45,8 @@ are no keyword / intent regexes on the lead path; project keywords are only a hi
      (`lib/ai-client.ts::jsonLlmFrom`, `::deepseekJsonText`), 90 s wall-clock deadline per scan checked before
      each batch after the first (`judge.ts::JUDGE_DEADLINE_MS`, `JudgeOptions.clock`): the rest is
      `judgeSkipped` `deadline` and rewinds (not a failed scan); the retry reserves the cap again for the same
-     messages (`lib/processes/lead-scan.ts::judgeLlm`), no room → the batch fails as `judgeError`;
+     messages — the judge passes the batch size explicitly (`lib/leads/types.ts::JudgeLlm` `units`,
+     `lib/processes/lead-scan.ts::judgeLlm`), no room → the batch fails as `judgeError`;
    - `isLead && score ≥ minScore` → lead (`hot` when score ≥ `HOT_SCORE` = 80); others → rejected and
      remembered in `group.aiRejected` (`lib/leads/reject-memory.ts`);
    - a failed or skipped batch stops judging: `scanCursor = first rewind-marked unjudged group/discussion

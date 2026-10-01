@@ -7,10 +7,9 @@
  */
 
 import { z } from "zod";
-import type { JsonLlm } from "@/lib/ai-client";
 import { buildGroupJudgePrompt } from "@/lib/leads/prompt";
 import type { ProjectData } from "@/lib/leads/projects";
-import type { JudgeGate, JudgeSkipReason, ScanMessage, UnjudgedStep, Verdict } from "@/lib/leads/types";
+import type { JudgeGate, JudgeLlm, JudgeSkipReason, ScanMessage, UnjudgedStep, Verdict } from "@/lib/leads/types";
 
 export const JUDGE_BATCH_SIZE = 20;
 export const JUDGE_MAX_BATCHES = 4;
@@ -98,14 +97,14 @@ export async function checkGate(gate: JudgeGate | undefined, count: number): Pro
 async function judgeBatch(
   project: ProjectData,
   batch: readonly ScanMessage[],
-  llm: JsonLlm | null,
+  llm: JudgeLlm | null,
   gate: JudgeGate | undefined,
 ): Promise<Map<string, Verdict> | BatchStop> {
   if (!llm) return { step: "judgeSkipped", reason: "no_ai_key", error: "", rewind: true };
   const capped = await checkGate(gate, batch.length);
   if (capped) return capped;
   try {
-    const answer = await llm(judgeAnswerSchema, buildGroupJudgePrompt(project, batch));
+    const answer = await llm(judgeAnswerSchema, buildGroupJudgePrompt(project, batch), batch.length);
     const ids = new Set(batch.map((m) => m.tgMsgId));
     const verdicts = new Map<string, Verdict>();
     for (const v of answer.verdicts) {
@@ -120,7 +119,7 @@ async function judgeBatch(
 export async function judgeMessages(
   project: ProjectData,
   messages: readonly ScanMessage[],
-  llm: JsonLlm | null,
+  llm: JudgeLlm | null,
   opts: JudgeOptions = {},
 ): Promise<JudgeResult> {
   const sorted = [...messages].sort((a, b) => compareMsgIds(a.tgMsgId, b.tgMsgId));

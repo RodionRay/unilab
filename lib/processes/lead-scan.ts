@@ -4,7 +4,7 @@
  * Message texts are never logged.
  */
 
-import { AiJsonError, aiChatText, deepseekJsonText, jsonLlmFrom, type ChatPrompt, type JsonLlm, type TextLlm } from "@/lib/ai-client";
+import { AiJsonError, aiChatText, deepseekJsonText, jsonLlmFrom, type TextLlm } from "@/lib/ai-client";
 import type { D1LikeDatabase } from "@/lib/db";
 import { leadReplies, type LeadData } from "@/lib/lead-conversation";
 import { leadMessageFingerprint } from "@/lib/lead-filter";
@@ -21,6 +21,7 @@ import {
   type DraftLead,
   type GroupScanResult,
   type JudgeGate,
+  type JudgeLlm,
   type NewLead,
   type ProjectRow,
   type ScanDelta,
@@ -33,31 +34,21 @@ export const AUTO_DRAFTS_PER_RUN = 3;
 
 export type InsertedLead = { id: string; lead: NewLead };
 
-/** Items in the prompt's `<data>` JSON array (messages / DM senders the call judges). */
-export function judgedUnits(prompt: ChatPrompt): number {
-  const start = prompt.user.indexOf("<data>");
-  const end = prompt.user.indexOf("</data>");
-  if (start < 0 || end <= start) return 1;
-  try {
-    const items: unknown = JSON.parse(prompt.user.slice(start + "<data>".length, end));
-    return Array.isArray(items) ? Math.max(1, items.length) : 1;
-  } catch {
-    return 1;
-  }
-}
-
 /**
  * Judge LLM (35 s, one retry). A retry is a second paid call, so it reserves the daily judge cap
- * again for the same messages; without room the batch fails (`judgeError`) and the cursor rewinds.
+ * again for the `units` the caller judges; without room the batch fails (`judgeError`) and the cursor rewinds.
  */
-export function judgeLlm(apiKey: string, gate?: JudgeGate): JsonLlm | null {
+export function judgeLlm(apiKey: string, gate?: JudgeGate): JudgeLlm | null {
   if (!apiKey) return null;
-  const beforeRetry = gate
-    ? async (prompt: ChatPrompt) => {
-        if (!(await gate(judgedUnits(prompt)))) throw new AiJsonError("AI: daily judge cap reached before retry", 1);
-      }
-    : undefined;
-  return jsonLlmFrom(deepseekJsonText({ apiKey }), 1, beforeRetry);
+  const text = deepseekJsonText({ apiKey });
+  return (schema, prompt, units) => {
+    const beforeRetry = gate
+      ? async () => {
+          if (!(await gate(units))) throw new AiJsonError("AI: daily judge cap reached before retry", 1);
+        }
+      : undefined;
+    return jsonLlmFrom(text, 1, beforeRetry)(schema, prompt);
+  };
 }
 
 export function draftLlm(apiKey: string): TextLlm {

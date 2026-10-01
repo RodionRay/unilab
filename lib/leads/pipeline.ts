@@ -3,7 +3,6 @@
  * Pure apart from the injected LLM / daily-cap gate / clock; the route does every DB write.
  */
 
-import type { JsonLlm } from "@/lib/ai-client";
 import type { ReplyEntry } from "@/lib/lead-conversation";
 import { groupDmSenders, judgeDmSenders, type DmMessage, type DmSender } from "@/lib/leads/dm-judge";
 import { addSample, emptyCounts } from "@/lib/leads/funnel";
@@ -11,7 +10,7 @@ import { filterMessages, normalizeScanMessage } from "@/lib/leads/filter";
 import { compareMsgIds, judgeMessages, type UnjudgedMessage } from "@/lib/leads/judge";
 import { projectSignature, type ProjectData, type ProjectRow } from "@/lib/leads/projects";
 import { activeAiRejects, rememberAiRejects, type AiRejectMemory } from "@/lib/leads/reject-memory";
-import type { FunnelCounts, JudgeGate, ScanDelta, ScanMessage, SourceKind } from "@/lib/leads/types";
+import type { FunnelCounts, JudgeGate, JudgeLlm, ScanDelta, ScanMessage, SourceKind } from "@/lib/leads/types";
 
 export const HOT_SCORE = 80;
 export const DM_SOURCE = "Личные сообщения";
@@ -47,7 +46,7 @@ export type GroupScanDeps = {
   worker: WorkerScanResult;
   /** `leadMessageFingerprint` of the owner's existing leads. */
   knownFingerprints: ReadonlySet<string>;
-  llm: JsonLlm | null;
+  llm: JudgeLlm | null;
   gate?: JudgeGate;
   now: () => number;
   /** Wall clock of the judge deadline (default `Date.now`); `now` stays the scan's fixed timestamp. */
@@ -253,7 +252,7 @@ export type DmJudgeDeps = {
   knownSenderIds: ReadonlySet<string>;
   /** AI-reject memory of the DM pass (keyed `userId:lastMessageId`). */
   aiRejected: unknown;
-  llm: JsonLlm | null;
+  llm: JudgeLlm | null;
   gate?: JudgeGate;
   now: () => number;
   notifyEnabled: boolean;
