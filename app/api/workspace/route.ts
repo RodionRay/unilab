@@ -1379,10 +1379,11 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const kind=requestedKind??autoDraftKind(lead);
   try{
    const draft=await generateDraft(kind,project.project,draftLeadOf(lead),draftLlm(apiKey));
-   // Ручной черновик — без draftKind: он идёт в «Переписки», а не в очередь авто-черновиков (REQ-20)
+   // Новый черновик без draftKind идёт в «Переписки»; пересборка авто-черновика сохраняет его draftKind,
+   // иначе лид выпадает из очереди одобрения (REQ-20)
    const done=await mutateLead(db,owner,id,cur=>String(cur.message??'')!==String(lead.message??'')
     ?{result:false}
-    :{next:{...withoutDraft(cur),draft},result:true});
+    :{next:{...cur,draft},result:true});
    if(!done?.result)return reply({error:'Сообщение изменено или лид удалён во время подготовки. Откройте актуальную карточку.'},409);
    return reply({ok:true,draft,kind,model:resolveAiConfig().model});
   }catch(e){

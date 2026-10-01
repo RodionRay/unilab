@@ -518,6 +518,15 @@ describe('lead core v2 · workspace route',()=>{
       expect(second.status).toBe(429);
     });
 
+    it('regenerating an auto draft keeps draftKind: the lead stays in the approval queue',async()=>{
+      patchRecord(LEAD_ID,{draft:'Авто',draftKind:'dm_first'});
+
+      const r=await post({action:'draft',id:LEAD_ID,kind:'dm_first'});
+
+      expect(r.status).toBe(200);
+      expect(record(LEAD_ID)).toMatchObject({draft:'Черновик 1',draftKind:'dm_first'});
+    });
+
     it('draft with an unknown kind → 400',async()=>{
       const r=await post({action:'draft',id:LEAD_ID,kind:'mass_mail'});
       expect(r.status).toBe(400);

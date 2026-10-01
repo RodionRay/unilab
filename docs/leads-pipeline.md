@@ -88,7 +88,7 @@ Response adds `dmLeads` (number of DM leads created).
 | `funnel` | `{projectId, days:1\|7}` | `{ok, funnel:FunnelView, dm:FunnelView}` (`projectId:'dm'`) | ai (read) |
 | `rebuild_product` | `{projectId, notes?}` | `{ok,id,project}` — AI fills the card from `url`; stop words untouched | ai (write) |
 | `lead_feedback` | `{id, verdict:'good'\|'bad'}` | `{ok,lead,projectId,project}` — example added (FIFO ≤10), `lead.feedback` set | leads |
-| `draft` | `{id, kind?:'group_reply'\|'dm_first'\|'dm_continue'}` | `{ok,draft,kind,model}`; 429 by the 1/min guard or the daily cap; manual draft has no `draftKind` | leads |
+| `draft` | `{id, kind?:'group_reply'\|'dm_first'\|'dm_continue'}` | `{ok,draft,kind,model}`; 429 by the 1/min guard or the daily cap; a new manual draft has no `draftKind`, regenerating an auto draft keeps its `draftKind` (stays in the approval queue) | leads |
 | `dismiss_draft` | `{id}` | `{ok,lead}` — `draft:''`, `draftKind` removed | leads |
 | `send_lead_message` | unchanged | success clears `draft` + `draftKind` | leads |
 | `generate_account_about` | `{projectId?, notes?}` | `{ok,about,firstName,lastName,fromAi,projectId}` | accounts |
