@@ -1193,6 +1193,15 @@ function WorkspaceHome(){
           }
         }catch(err){
           const data=(err as Error & {data?:any}).data;
+          if(data?.deferred){
+            // Слеп аккаунт, а не группа: группа ждёт повтор на сервере (joinNextAt) — не ошибка.
+            const note=String(data.error||'Отложено').slice(0,120);
+            setJoinQueueSync(prev=>prev.map(q=>q.id===g.id?{...q,status:'done',error:note}:q));
+            patchGroupLocal(g.id,{...(data.group||{}),joinState:'',joinStateAt:'',joinStateError:''});
+            void persistJoinState(g.id,'');
+            toast.message(`${g.name}: ${note}`);
+            continue;
+          }
           failed++;
           const msg=(err as Error).message;
           setJoinQueueSync(prev=>prev.map(q=>q.id===g.id?{...q,status:'error',error:msg}:q));

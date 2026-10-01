@@ -256,6 +256,32 @@ export function accountBlindPatch(now = Date.now()): { resolveBlindUntil: string
   return { resolveBlindUntil: new Date(now + ACCOUNT_BLIND_COOLDOWN_MS).toISOString() };
 }
 
+/** Accounts that answered «blind» for this group (unique, newest last, capped). */
+export function blindAccountsOf(group: { joinBlindAccounts?: unknown }): string[] {
+  const raw = Array.isArray(group.joinBlindAccounts) ? group.joinBlindAccounts : [];
+  return [...new Set(raw.map((x) => String(x || "")).filter(Boolean))].slice(-20);
+}
+
+/**
+ * A blind answer blames the account, not the group: no error status, but a pause. Without joinNextAt
+ * planGroupHeal re-enqueued the group on every heal tick — an endless join spinner and one farm account
+ * burned per tick. The first blind witness waits JOIN_WORKER_ERROR_RETRY_MS; from the second one on the
+ * group waits the blind cooldown instead of trying the next account.
+ */
+export function accountBlindDeferPatch(
+  group: { joinBlindAccounts?: unknown },
+  accountId: string,
+  now = Date.now(),
+): { status: "setup"; joinNextAt: string; joinBlindAccounts: string[] } {
+  const witnesses = blindAccountsOf({ joinBlindAccounts: [...blindAccountsOf(group), String(accountId || "")] });
+  const backoffMs = witnesses.length > 1 ? ACCOUNT_BLIND_COOLDOWN_MS : JOIN_WORKER_ERROR_RETRY_MS;
+  return {
+    status: "setup",
+    joinNextAt: new Date(now + backoffMs).toISOString(),
+    joinBlindAccounts: witnesses,
+  };
+}
+
 export const JOIN_SUCCESS_PATCH: Required<JoinRetryFields> = {
   joinAttempts: 0,
   joinNextAt: "",
