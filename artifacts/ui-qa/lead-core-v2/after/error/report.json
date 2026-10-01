@@ -1,0 +1,807 @@
+{
+  "base": "http://127.0.0.1:8011",
+  "started": "2026-10-01T06:39:09.777Z",
+  "routes": {
+    "/app?view=ai": {
+      "390x844": {
+        "screenshot": "/Users/rodiontipcov/worktrees/wt-unilab-lead-core-v2-2026-10-01-ui/artifacts/ui-qa/lead-core-v2/after/error/app_view_ai-390x844.png",
+        "dom": {
+          "overflow": false,
+          "offenders": [],
+          "smallTargets": 1,
+          "smallPrimary": 3,
+          "smallInputs": 0,
+          "imgsNoDims": 0,
+          "imgsBroken": 0,
+          "lazyAboveFold": 0,
+          "h1": 1,
+          "skippedHeading": false,
+          "main": true,
+          "nav": false,
+          "unlabeled": 0,
+          "stickyPct": 14,
+          "bodyBg": "rgb(25, 25, 25)",
+          "bodyFont": "\"PP Mori\", \"Plus Jakarta Sans\", Helvetica, Arial, sans-serif",
+          "fontsLoaded": "loaded",
+          "smells": [],
+          "i18nKeys": []
+        },
+        "focus": [
+          {
+            "tag": "button",
+            "label": "Toggle Sidebar",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              28,
+              28
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Уведомления",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              40,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "a",
+            "label": "О сервисе",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              88,
+              21
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Повторить",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              332,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Открыть ассистента UniLab",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              52,
+              52
+            ],
+            "covered": false
+          }
+        ],
+        "axe": null,
+        "vitals": {
+          "lcp": 872,
+          "cls": 0.06,
+          "inp": null,
+          "interactions": [],
+          "cta": null,
+          "field": null
+        },
+        "states": null,
+        "consoleErrors": [
+          "Failed to load resource: the server responded with a status of 500 (Internal Server Error)"
+        ],
+        "failedReq": [
+          "500 http://127.0.0.1:8011/api/workspace"
+        ],
+        "ok": false,
+        "issues": [
+          "A4 1 standalone controls < 24px",
+          "A4 3 primary buttons < 44px on mobile",
+          "C2 1 focused elements without visible ring",
+          "E8 console errors: 1",
+          "E8 failed requests: 1"
+        ]
+      },
+      "768x1024": {
+        "screenshot": "/Users/rodiontipcov/worktrees/wt-unilab-lead-core-v2-2026-10-01-ui/artifacts/ui-qa/lead-core-v2/after/error/app_view_ai-768x1024.png",
+        "dom": {
+          "overflow": false,
+          "offenders": [],
+          "smallTargets": 13,
+          "smallPrimary": 0,
+          "smallInputs": 0,
+          "imgsNoDims": 0,
+          "imgsBroken": 0,
+          "lazyAboveFold": 0,
+          "h1": 1,
+          "skippedHeading": false,
+          "main": true,
+          "nav": false,
+          "unlabeled": 0,
+          "stickyPct": 112,
+          "bodyBg": "rgb(25, 25, 25)",
+          "bodyFont": "\"PP Mori\", \"Plus Jakarta Sans\", Helvetica, Arial, sans-serif",
+          "fontsLoaded": "loaded",
+          "smells": [],
+          "i18nKeys": []
+        },
+        "focus": [
+          {
+            "tag": "button",
+            "label": "Переместить «Обзор»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Обзор",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Уведомления»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Уведомления",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Лиды»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Лиды",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Переписки»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переписки",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Группы и каналы»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Группы и каналы",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Аккаунты»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Аккаунты",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Прокси»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Прокси",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «AI-ассистент»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "AI-ассистент1",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Сотрудники»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Сотрудники",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Настройки»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Настройки",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Настроить аккаунты",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              153,
+              20
+            ],
+            "covered": false
+          },
+          {
+            "tag": "a",
+            "label": "Выйти",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              16,
+              16
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Toggle Sidebar",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              28,
+              28
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Уведомления",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              40,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "a",
+            "label": "О сервисе",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              88,
+              21
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Повторить",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              113,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Открыть ассистента UniLab",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              187,
+              52
+            ],
+            "covered": false
+          }
+        ],
+        "axe": null,
+        "vitals": {
+          "lcp": 808,
+          "cls": 0.016,
+          "inp": null,
+          "interactions": [],
+          "cta": null,
+          "field": null
+        },
+        "states": null,
+        "consoleErrors": [
+          "Failed to load resource: the server responded with a status of 500 (Internal Server Error)"
+        ],
+        "failedReq": [
+          "500 http://127.0.0.1:8011/api/workspace"
+        ],
+        "ok": false,
+        "issues": [
+          "A4 13 standalone controls < 24px",
+          "C2 1 focused elements without visible ring",
+          "E8 console errors: 1",
+          "E8 failed requests: 1"
+        ]
+      },
+      "1440x900": {
+        "screenshot": "/Users/rodiontipcov/worktrees/wt-unilab-lead-core-v2-2026-10-01-ui/artifacts/ui-qa/lead-core-v2/after/error/app_view_ai-1440x900.png",
+        "dom": {
+          "overflow": false,
+          "offenders": [],
+          "smallTargets": 13,
+          "smallPrimary": 0,
+          "smallInputs": 0,
+          "imgsNoDims": 0,
+          "imgsBroken": 0,
+          "lazyAboveFold": 0,
+          "h1": 1,
+          "skippedHeading": false,
+          "main": true,
+          "nav": false,
+          "unlabeled": 0,
+          "stickyPct": 114,
+          "bodyBg": "rgb(25, 25, 25)",
+          "bodyFont": "\"PP Mori\", \"Plus Jakarta Sans\", Helvetica, Arial, sans-serif",
+          "fontsLoaded": "loaded",
+          "smells": [],
+          "i18nKeys": []
+        },
+        "focus": [
+          {
+            "tag": "button",
+            "label": "Переместить «Обзор»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Обзор",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Уведомления»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Уведомления",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Лиды»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Лиды",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Переписки»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переписки",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Группы и каналы»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Группы и каналы",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Аккаунты»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Аккаунты",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Прокси»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Прокси",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «AI-ассистент»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "AI-ассистент1",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Сотрудники»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Сотрудники",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Настройки»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Настройки",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Настроить аккаунты",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              153,
+              20
+            ],
+            "covered": false
+          },
+          {
+            "tag": "a",
+            "label": "Выйти",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              16,
+              16
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Toggle Sidebar",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              28,
+              28
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Уведомления",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              40,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "a",
+            "label": "О сервисе",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              88,
+              21
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Повторить",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              113,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Открыть ассистента UniLab",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              187,
+              52
+            ],
+            "covered": false
+          }
+        ],
+        "axe": null,
+        "vitals": {
+          "lcp": 832,
+          "cls": 0.021,
+          "inp": null,
+          "interactions": [],
+          "cta": null,
+          "field": null
+        },
+        "states": null,
+        "consoleErrors": [
+          "Failed to load resource: the server responded with a status of 500 (Internal Server Error)"
+        ],
+        "failedReq": [
+          "500 http://127.0.0.1:8011/api/workspace"
+        ],
+        "ok": false,
+        "issues": [
+          "A4 13 standalone controls < 24px",
+          "C2 1 focused elements without visible ring",
+          "E8 console errors: 1",
+          "E8 failed requests: 1"
+        ]
+      }
+    }
+  },
+  "failures": 13,
+  "visualFailures": 0
+}

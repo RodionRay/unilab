@@ -1,0 +1,1570 @@
+{
+  "base": "http://127.0.0.1:8011",
+  "started": "2026-10-01T06:39:32.783Z",
+  "routes": {
+    "/app?view=leads": {
+      "390x844": {
+        "screenshot": "/Users/rodiontipcov/worktrees/wt-unilab-lead-core-v2-2026-10-01-ui/artifacts/ui-qa/lead-core-v2/after/leads/app_view_leads-390x844.png",
+        "dom": {
+          "overflow": true,
+          "offenders": [
+            "div.flex.flex-wrap",
+            "button.flex.items-center",
+            "svg",
+            "path",
+            "button.flex.items-center",
+            "span",
+            "svg",
+            "path"
+          ],
+          "smallTargets": 1,
+          "smallPrimary": 27,
+          "smallInputs": 1,
+          "imgsNoDims": 0,
+          "imgsBroken": 0,
+          "lazyAboveFold": 0,
+          "h1": 1,
+          "skippedHeading": false,
+          "main": true,
+          "nav": false,
+          "unlabeled": 0,
+          "stickyPct": 14,
+          "bodyBg": "rgb(25, 25, 25)",
+          "bodyFont": "\"PP Mori\", \"Plus Jakarta Sans\", Helvetica, Arial, sans-serif",
+          "fontsLoaded": "loaded",
+          "smells": [],
+          "i18nKeys": []
+        },
+        "focus": [
+          {
+            "tag": "button",
+            "label": "Toggle Sidebar",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              28,
+              28
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Уведомления",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              40,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "a",
+            "label": "О сервисе",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              88,
+              21
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Добавить лид",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              159,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "input",
+            "label": "Поиск по списку",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              358,
+              42
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Собрать лиды",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              162,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Проект",
+            "visibleRing": true,
+            "inView": false,
+            "size": [
+              220,
+              36
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Группа",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              220,
+              36
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Все",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              42,
+              30
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Марина КузнецоваГорячийНовыйИщу фулфилме",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              304,
+              151
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Открыть",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Хороший лид",
+            "visibleRing": false,
+            "inView": false,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Не лид",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Дмитрий ОрловГорячийНовыйНаш фф третий р",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              304,
+              171
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Открыть",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Хороший лид",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Не лид",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Сергей ПановТёплыйНовыйКто-нибудь работа",
+            "visibleRing": true,
+            "inView": false,
+            "size": [
+              304,
+              151
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Открыть",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Хороший лид",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Не лид",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Анна МорозоваТёплыйНовыйСколько сейчас в",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              304,
+              151
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Открыть",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Хороший лид",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Не лид",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Открыть ассистента UniLab",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              52,
+              52
+            ],
+            "covered": false
+          }
+        ],
+        "axe": null,
+        "vitals": {
+          "lcp": 888,
+          "cls": 0.086,
+          "inp": 32,
+          "interactions": [
+            "field",
+            "cta"
+          ],
+          "cta": "Фулфилмент для WB",
+          "field": "text"
+        },
+        "states": null,
+        "consoleErrors": [],
+        "failedReq": [],
+        "ok": false,
+        "issues": [
+          "A7 horizontal overflow: div.flex.flex-wrap, button.flex.items-center, svg, path, button.flex.items-center, span, svg, path",
+          "A4 1 standalone controls < 24px",
+          "A4 27 primary buttons < 44px on mobile",
+          "A10 1 inputs < 16px on mobile (iOS zoom)",
+          "C2 14 focused elements without visible ring"
+        ]
+      },
+      "768x1024": {
+        "screenshot": "/Users/rodiontipcov/worktrees/wt-unilab-lead-core-v2-2026-10-01-ui/artifacts/ui-qa/lead-core-v2/after/leads/app_view_leads-768x1024.png",
+        "dom": {
+          "overflow": true,
+          "offenders": [
+            "main.relative.flex",
+            "header.topbar",
+            "div.topbar-actions",
+            "button.notify-bell",
+            "svg",
+            "path",
+            "path",
+            "a.text-link.flex"
+          ],
+          "smallTargets": 13,
+          "smallPrimary": 0,
+          "smallInputs": 0,
+          "imgsNoDims": 0,
+          "imgsBroken": 0,
+          "lazyAboveFold": 0,
+          "h1": 1,
+          "skippedHeading": false,
+          "main": true,
+          "nav": false,
+          "unlabeled": 0,
+          "stickyPct": 112,
+          "bodyBg": "rgb(25, 25, 25)",
+          "bodyFont": "\"PP Mori\", \"Plus Jakarta Sans\", Helvetica, Arial, sans-serif",
+          "fontsLoaded": "loaded",
+          "smells": [],
+          "i18nKeys": []
+        },
+        "focus": [
+          {
+            "tag": "button",
+            "label": "Переместить «Обзор»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Обзор",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Уведомления»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Уведомления",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Лиды»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Лиды6",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Переписки»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переписки1",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Группы и каналы»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Группы и каналы",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Аккаунты»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Аккаунты",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Прокси»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Прокси",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «AI-ассистент»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "AI-ассистент",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Сотрудники»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Сотрудники",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Настройки»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Настройки",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Настроить аккаунты",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              153,
+              20
+            ],
+            "covered": false
+          },
+          {
+            "tag": "a",
+            "label": "Выйти",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              16,
+              16
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Toggle Sidebar",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              28,
+              28
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Уведомления",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              40,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "a",
+            "label": "О сервисе",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              88,
+              21
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Добавить лид",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              159,
+              40
+            ],
+            "covered": true
+          },
+          {
+            "tag": "input",
+            "label": "Поиск по списку",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              320,
+              42
+            ],
+            "covered": true
+          },
+          {
+            "tag": "button",
+            "label": "Собрать лиды",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              162,
+              40
+            ],
+            "covered": true
+          },
+          {
+            "tag": "button",
+            "label": "Проект",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              220,
+              36
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Группа",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              220,
+              36
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Все",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              42,
+              30
+            ],
+            "covered": true
+          },
+          {
+            "tag": "button",
+            "label": "Марина КузнецоваГорячийНовыйИщу фулфилме",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              474,
+              132
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Открыть",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Хороший лид",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Не лид",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Дмитрий ОрловГорячийНовыйНаш фф третий р",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              474,
+              132
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Открыть",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Хороший лид",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Не лид",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Сергей ПановТёплыйНовыйКто-нибудь работа",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              474,
+              132
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Открыть",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Хороший лид",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Не лид",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": true
+          },
+          {
+            "tag": "button",
+            "label": "Анна МорозоваТёплыйНовыйСколько сейчас в",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              474,
+              132
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Открыть",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Хороший лид",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Не лид",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Открыть ассистента UniLab",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              187,
+              52
+            ],
+            "covered": false
+          }
+        ],
+        "axe": null,
+        "vitals": {
+          "lcp": 856,
+          "cls": 0.024,
+          "inp": 32,
+          "interactions": [
+            "field",
+            "cta"
+          ],
+          "cta": "Фулфилмент для WB",
+          "field": "text"
+        },
+        "states": null,
+        "consoleErrors": [],
+        "failedReq": [],
+        "ok": false,
+        "issues": [
+          "A7 horizontal overflow: main.relative.flex, header.topbar, div.topbar-actions, button.notify-bell, svg, path, path, a.text-link.flex",
+          "A4 13 standalone controls < 24px",
+          "C2 14 focused elements without visible ring",
+          "C2 5 focused elements covered by sticky UI"
+        ]
+      },
+      "1440x900": {
+        "screenshot": "/Users/rodiontipcov/worktrees/wt-unilab-lead-core-v2-2026-10-01-ui/artifacts/ui-qa/lead-core-v2/after/leads/app_view_leads-1440x900.png",
+        "dom": {
+          "overflow": false,
+          "offenders": [],
+          "smallTargets": 18,
+          "smallPrimary": 0,
+          "smallInputs": 0,
+          "imgsNoDims": 0,
+          "imgsBroken": 0,
+          "lazyAboveFold": 0,
+          "h1": 1,
+          "skippedHeading": false,
+          "main": true,
+          "nav": false,
+          "unlabeled": 0,
+          "stickyPct": 114,
+          "bodyBg": "rgb(25, 25, 25)",
+          "bodyFont": "\"PP Mori\", \"Plus Jakarta Sans\", Helvetica, Arial, sans-serif",
+          "fontsLoaded": "loaded",
+          "smells": [],
+          "i18nKeys": []
+        },
+        "focus": [
+          {
+            "tag": "button",
+            "label": "Переместить «Обзор»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Обзор",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Уведомления»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Уведомления",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Лиды»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Лиды6",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Переписки»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переписки1",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Группы и каналы»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Группы и каналы",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Аккаунты»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Аккаунты",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Прокси»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Прокси",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «AI-ассистент»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "AI-ассистент",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Сотрудники»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Сотрудники",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Настройки»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Настройки",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Настроить аккаунты",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              153,
+              20
+            ],
+            "covered": false
+          },
+          {
+            "tag": "a",
+            "label": "Выйти",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              16,
+              16
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Toggle Sidebar",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              28,
+              28
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Уведомления",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              40,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "a",
+            "label": "О сервисе",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              88,
+              21
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Добавить лид",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              159,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "input",
+            "label": "Поиск по списку",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              320,
+              42
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Собрать лиды",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              162,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Проект",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              220,
+              36
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Группа",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              220,
+              36
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Все",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              42,
+              30
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Лид",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              577,
+              17
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Темп.",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              53,
+              17
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Статус",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              64,
+              17
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Источник",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              256,
+              17
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Дата",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              49,
+              17
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Марина КузнецоваГорячийНовыйИщу фулфилме",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              896,
+              132
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Открыть",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Хороший лид",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Не лид",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Дмитрий ОрловГорячийНовыйНаш фф третий р",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              896,
+              109
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Открыть",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Хороший лид",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Не лид",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Сергей ПановТёплыйНовыйКто-нибудь работа",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              896,
+              109
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Открыть",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Хороший лид",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": true
+          },
+          {
+            "tag": "button",
+            "label": "Не лид",
+            "visibleRing": false,
+            "inView": false,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Анна МорозоваТёплыйНовыйСколько сейчас в",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              896,
+              109
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Открыть",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Хороший лид",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Не лид",
+            "visibleRing": false,
+            "inView": true,
+            "size": [
+              152,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Открыть ассистента UniLab",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              187,
+              52
+            ],
+            "covered": false
+          }
+        ],
+        "axe": null,
+        "vitals": {
+          "lcp": 992,
+          "cls": 0.25,
+          "inp": 40,
+          "interactions": [
+            "field",
+            "cta"
+          ],
+          "cta": "Фулфилмент для WB",
+          "field": "text"
+        },
+        "states": null,
+        "consoleErrors": [],
+        "failedReq": [],
+        "ok": false,
+        "issues": [
+          "A4 18 standalone controls < 24px",
+          "C2 14 focused elements without visible ring",
+          "C2 1 focused elements covered by sticky UI",
+          "E7 CLS 0.25 > 0.1"
+        ]
+      }
+    }
+  },
+  "failures": 13,
+  "visualFailures": 0
+}
