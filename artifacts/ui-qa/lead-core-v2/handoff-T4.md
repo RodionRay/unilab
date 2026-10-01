@@ -1,3 +1,25 @@
+# Handoff T4 (UI) lead-core-v2: resume 2 (2026-10-01), stopped at context threshold before CSS
+Branch `task/lead-core-v2-2026-10-01-ui-2026-10-01`, worktree `/Users/rodiontipcov/worktrees/wt-unilab-lead-core-v2-2026-10-01-ui`.
+
+## Done in resume 2 (pushed: ff500d7, 385870d)
+- Redaction: `model.ts::canSeeLeadText/canSeeGroups/patchForViewer/isRowExpandable/showRedactedSamplesNote`; page passes
+  `leadTextVisible`/`groupsVisible` from GET `workspace` (`workspaceMeta`); funnel rows without samples are not expandable,
+  note `.aiw-redacted-note`; examples → `.aiw-locked` «Примеры видны только с доступом к лидам», patch never carries examples;
+  queue for such staff → «Черновики видны сотрудникам с доступом к лидам»; staff without groups → funnel still requested (`groupCount:null`).
+  Tests: `tests/ui-ai-workspace.test.ts` (7 pass). tsc: 0 errors in owned files.
+- Harness: real contract shapes, draftKind real kinds (manual draft has none), scenario `staff-redacted` (`fixtures.mjs::STAFF_WORKSPACE`,
+  proxy 403 + log on examples patch / lead actions). README updated.
+
+## Next (exact)
+1. globals.css: delete dead rules (verified unused in app/ components/ via grep): `.ai-layout` (≈1825 + responsive ≈3361, 3374), `.ai-block*`,
+   `.ai-filter-grid/-card*` (+ responsive ≈3377), `.ai-last-minus*`, `.kw.minus.is-new`, `.kw.plus/.minus/.niche` (≈1932-1946),
+   `.ai-tips*` (≈2030-2050), `.lead-core-*` (≈4915-4960+). KEEP `.kw`, `.kw-list`, `.kw-editor*` (term-fields uses `.kw-editor .kw`), `.ai-assistant-widget`.
+2. Write `.aiw-*` (list below + new `aiw-redacted-note`, `aiw-locked`, `aiw-count`, `aiw-score`, `aiw-queue-row/-who/-name/-snippet/-list`,
+   `aiw-draft-head/-name/-foot/-actions`, `aiw-link-btn`, `aiw-muted`, `aiw-inline`, `aiw-banners`, `aiw-page-error`, `aiw-alert-title`,
+   `aiw-dm-main/-sum/-steps`, `aiw-row-chevron`, `aiw-first-copy`, `aiw-save-state`, `aiw-empty-title`, `is-compact`, `is-static`, `is-small`) with
+   `--spike-*` tokens only; get the full list: `grep -oh 'aiw-[a-z0-9-]*' components/product/ai/*.tsx | sort -u`.
+3. Rounds r1..r3 (task step 4), final after/ captures incl. `staff-redacted` + `harness/states.mjs` (task step 5); stop servers (`harness/serve.sh --stop`).
+
 # Handoff T4 (UI) lead-core-v2 — 2026-10-01, stopped at context threshold
 Worktree `/Users/rodiontipcov/worktrees/wt-unilab-lead-core-v2-2026-10-01-ui`, branch `task/lead-core-v2-2026-10-01-ui-2026-10-01` (pushed), head 52eac86.
 
