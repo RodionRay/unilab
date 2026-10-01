@@ -13,6 +13,7 @@ import {InvitePanel,InviteModePicker,InviteTaskFields} from '@/components/produc
 import {MailingPanel,MailingTaskFields,MailingDeliveriesView} from '@/components/product/mailing-panel';
 import {TaskLogDialog} from '@/components/product/task-log-dialog';
 import {EmployeesPanel} from '@/components/product/employees-panel';
+import {TmaLinkPanel} from '@/components/product/tma-link-panel';
 import {DEFAULT_DM_SOFT_CLOSE,DEFAULT_MAILING_TASK} from '@/lib/mailing';
 import {canAccessNav,type CrmAccess,type WorkspaceInvite,type WorkspaceMember} from '@/lib/staff-types';
 import {DEFAULT_NAV} from '@/components/product/workspace-nav';
@@ -4192,6 +4193,8 @@ function WorkspaceHome(){
                   </div>
                 </div>
               </section>
+
+              <TmaLinkPanel key={String(workspaceMeta?.isOwner)+Boolean(settings?.data?.notifyBotToken)} botConfigured={workspaceMeta?.isOwner?Boolean(String(settings?.data?.notifyBotToken||'').trim()):null}/>
 
               <div className="settings-actions">
                 <p className="settings-actions-note">
