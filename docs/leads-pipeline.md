@@ -111,7 +111,7 @@ is shown, not hidden: the run line ends with «расхождение: ворк�
 | `project_create` | `{data:{name, …card fields}}` | `{ok,id,project}`; 409 `limitReached` over 10 | ai (write) |
 | `project_update` | `{id, patch:{…any card fields}}` (unknown keys → 400) | `{ok,id,project}` | ai (write) |
 | `project_delete` | `{id, moveToProjectId?}` | `{ok,id,moved,moveToProjectId}`; 409 `{groups}` when groups exist without target; 400 for the default project | ai (write) |
-| `set_group_project` | `{groupIds:[uuid…≤500], projectId}` | `{ok,projectId,updated}` | ai (write) |
+| `set_group_project` | `{groupIds:[uuid…≤500], projectId}` | `{ok,projectId,updated}`; UI: groups view per-row project select and «В проект…» in the action bar for the selection, both only with ≥2 projects (`app/app/page.tsx::moveGroupsToProject`) | ai (write) |
 | `funnel` | `{projectId, days:1\|7}` | `{ok, funnel:FunnelView, dm:FunnelView}` (`projectId:'dm'`) | ai (read) |
 | `rebuild_product` | `{projectId, notes?}` | `{ok,id,project}` — AI fills the card from `url`; stop words untouched | ai (write) |
 | `lead_feedback` | `{id, verdict:'good'\|'bad'}` | `{ok,lead,projectId,project}` — example added (FIFO ≤10), `lead.feedback` set | leads |

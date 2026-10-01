@@ -1526,6 +1526,21 @@ function WorkspaceHome(){
     finally{setBusy(false)}
   }
 
+  /** REQ-3: переносит группы в проект (сервер проверяет, что проект свой). */
+  async function moveGroupsToProject(groupIds:string[],projectId:string){
+    if(!groupIds.length||!projectId)return;
+    setBusy(true);
+    try{
+      const r=await api({action:'set_group_project',groupIds,projectId});
+      await refresh();
+      if(groupIds.length>1)setGroupSelected([]);
+      const n=Number(r.updated)||0;
+      const name=projects.find(p=>p.id===projectId)?.data.name||'проект';
+      toast.success(`${n} ${pluralRu(n,'группа','группы','групп')} → «${name}»`);
+    }catch(e){toast.error((e as Error).message)}
+    finally{setBusy(false)}
+  }
+
   function toggleGroupSelected(id:string,on:boolean){
     setGroupSelected(prev=>on?([...new Set([...prev,id])]):prev.filter(x=>x!==id));
   }
@@ -2120,6 +2135,16 @@ function WorkspaceHome(){
                     </span>
                   )}
                 </div>
+                {projects.length>=2&&(
+                  <Select value={projectIdOf(r.data,projects)} onValueChange={v=>void moveGroupsToProject([r.id],v)} disabled={busy}>
+                    <SelectTrigger className="mt-1 h-7 w-auto max-w-[220px] text-xs" aria-label={`Проект группы ${r.data.name||''}`}>
+                      <SelectValue placeholder="Проект"/>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {projects.map(p=><SelectItem key={p.id} value={p.id}>{p.data.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                )}
                 {err&&<div className="groups-err" title={r.data.error||r.data.joinStateError}>{err}{(r.data.error||r.data.joinStateError||'').length>90?'…':''}</div>}
               </div>
               <button type="button" className="groups-acc" disabled={busy} onClick={()=>openAccountPicker('row',r.id)} title={accountName||'Назначить аккаунт'}>
@@ -2687,7 +2712,7 @@ function WorkspaceHome(){
                         </>
                       ):(
                         <>
-                          <span className="muted text-sm">Отметьте группы, чтобы назначить им аккаунт</span>
+                          <span className="muted text-sm">Отметьте группы, чтобы назначить им аккаунт{projects.length>=2?' или проект':''}</span>
                           {sortedList.length>0&&(
                             <Button size="sm" variant="outline" onClick={()=>setGroupSelected(sortedList.map(r=>r.id))}>
                               Выбрать все ({sortedList.length})
@@ -2697,6 +2722,16 @@ function WorkspaceHome(){
                       )}
                     </div>
                     <div className="groups-actionbar-right">
+                      {projects.length>=2&&(
+                        <Select value="" onValueChange={v=>void moveGroupsToProject(groupSelected,v)} disabled={busy||!groupSelected.length}>
+                          <SelectTrigger className="h-8 w-auto max-w-[220px]" aria-label="Перенести выбранные группы в проект">
+                            <SelectValue placeholder="В проект…"/>
+                          </SelectTrigger>
+                          <SelectContent>
+                            {projects.map(p=><SelectItem key={p.id} value={p.id}>{p.data.name}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      )}
                       <Button size="sm" variant="outline" disabled={busy||!accountsActive.length} onClick={()=>openAccountPicker('single')}>
                         <Users size={14}/>
                         {accountsActive.find(a=>a.id===bulkAccountId)?.data.name
