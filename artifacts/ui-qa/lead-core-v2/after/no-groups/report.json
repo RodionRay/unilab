@@ -1,6 +1,6 @@
 {
   "base": "http://127.0.0.1:8011",
-  "started": "2026-10-01T06:38:29.294Z",
+  "started": "2026-10-01T06:45:10.783Z",
   "routes": {
     "/app?view=ai": {
       "390x844": {
@@ -514,9 +514,9 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 1984,
+          "lcp": 2004,
           "cls": 0,
-          "inp": 24,
+          "inp": 32,
           "interactions": [
             "field"
           ],
@@ -1285,9 +1285,9 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 1996,
+          "lcp": 1940,
           "cls": 0,
-          "inp": 24,
+          "inp": 32,
           "interactions": [
             "field"
           ],

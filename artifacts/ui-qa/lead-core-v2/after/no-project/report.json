@@ -1,6 +1,6 @@
 {
   "base": "http://127.0.0.1:8011",
-  "started": "2026-10-01T06:38:02.671Z",
+  "started": "2026-10-01T06:45:00.144Z",
   "routes": {
     "/app?view=ai": {
       "390x844": {
@@ -85,7 +85,7 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 17396,
+          "lcp": 912,
           "cls": 0,
           "inp": null,
           "interactions": [],
@@ -93,19 +93,12 @@
           "field": null
         },
         "states": null,
-        "consoleErrors": [
-          "Failed to load resource: net::ERR_NETWORK_CHANGED"
-        ],
-        "failedReq": [
-          "https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap"
-        ],
+        "consoleErrors": [],
+        "failedReq": [],
         "ok": false,
         "issues": [
           "A4 1 standalone controls < 24px",
-          "A4 2 primary buttons < 44px on mobile",
-          "E8 console errors: 1",
-          "E8 failed requests: 1",
-          "E7 LCP 17396 ms > 2500"
+          "A4 2 primary buttons < 44px on mobile"
         ]
       },
       "768x1024": {
@@ -432,7 +425,7 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 1084,
+          "lcp": 1656,
           "cls": 0.006,
           "inp": null,
           "interactions": [],
@@ -771,7 +764,7 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 828,
+          "lcp": 816,
           "cls": 0.002,
           "inp": null,
           "interactions": [],
@@ -788,6 +781,6 @@
       }
     }
   },
-  "failures": 7,
+  "failures": 4,
   "visualFailures": 0
 }

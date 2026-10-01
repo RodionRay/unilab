@@ -1,6 +1,6 @@
 {
   "base": "http://127.0.0.1:8011",
-  "started": "2026-10-01T06:38:56.326Z",
+  "started": "2026-10-01T06:45:37.313Z",
   "routes": {
     "/app?view=ai": {
       "390x844": {
@@ -649,9 +649,9 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 1980,
+          "lcp": 2024,
           "cls": 0,
-          "inp": 24,
+          "inp": 32,
           "interactions": [
             "field"
           ],
@@ -1552,9 +1552,9 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 2024,
+          "lcp": 1944,
           "cls": 0,
-          "inp": 40,
+          "inp": 32,
           "interactions": [
             "field"
           ],
@@ -2454,7 +2454,7 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 1996,
+          "lcp": 2584,
           "cls": 0.03,
           "inp": 40,
           "interactions": [
@@ -2469,11 +2469,12 @@
         "ok": false,
         "issues": [
           "A4 13 standalone controls < 24px",
-          "C2 1 focused elements covered by sticky UI"
+          "C2 1 focused elements covered by sticky UI",
+          "E7 LCP 2584 ms > 2500"
         ]
       }
     }
   },
-  "failures": 5,
+  "failures": 6,
   "visualFailures": 0
 }

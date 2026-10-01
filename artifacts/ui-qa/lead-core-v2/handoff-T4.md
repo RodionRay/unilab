@@ -52,3 +52,10 @@ Worktree `/Users/rodiontipcov/worktrees/wt-unilab-lead-core-v2-2026-10-01-ui`, b
 2. Fix harness `fixtures.mjs` draftKind 'auto' → 'group_reply'/'dm_first'.
 3. tests/ui-ai-workspace.test.ts (model helpers) + extend tests/ui-risky-features-removed.test.ts (removed actions, panel absent).
 4. harness e2e-ai.mjs (playwright from ~/Projects/crm-spa) + log; ui-qa rounds r1..r3 → after/<scenario>; gate (vitest, eslint, tsc, build).
+
+# Resume 4 (2026-10-01): r3 done, final after/ captured, servers stopped
+r3 notes `rounds/r3/notes.md` (best = r3). Savebar keeps «Сохранить» clear of the assistant button (≥1024 reserved strip,
+<1024 actions first). after/: full, no-project, no-groups, no-scans, ai-key-missing, error, staff-redacted (proxy 3× `-> 403`),
+leads, chats, states/ (harness/states.mjs, 9 PNGs). Open: «Лиды» row below fold at 1440; draft-head meta wraps at 1440;
+390 second project tab cut in scroll strip; 768 save-state text sits under the assistant button; full-page PNGs show the
+fixed shell mid-page (capture artefact).

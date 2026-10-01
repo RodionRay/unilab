@@ -1,6 +1,6 @@
 {
   "base": "http://127.0.0.1:8011",
-  "started": "2026-10-01T06:39:43.714Z",
+  "started": "2026-10-01T06:46:25.876Z",
   "routes": {
     "/app?view=chats": {
       "390x844": {
@@ -151,7 +151,7 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 944,
+          "lcp": 852,
           "cls": 0.028,
           "inp": 24,
           "interactions": [
@@ -561,8 +561,8 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 832,
-          "cls": 0.012,
+          "lcp": 816,
+          "cls": 0.013,
           "inp": 24,
           "interactions": [
             "field"
@@ -1024,7 +1024,7 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 844,
+          "lcp": 852,
           "cls": 0.013,
           "inp": 24,
           "interactions": [

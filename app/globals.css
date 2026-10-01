@@ -5710,6 +5710,23 @@ button.aiw-row-main {
   border-top: 1px solid var(--spike-border);
   border-radius: 0 0 var(--spike-radius-card) var(--spike-radius-card);
   background: var(--spike-paper);
+  /* keep «Сохранить» out from under the fixed «Спросить UniLab» button (bottom-right, ~190px wide, icon-only <=700px) */
+  padding-right: calc(var(--aiw-pad) + 196px);
+}
+/* below 1024 the reserved strip would squeeze the bar into 3 rows: actions go first (left), clear of the button */
+@media (max-width: 1023px) {
+  .aiw-savebar {
+    justify-content: flex-start;
+    padding-right: var(--aiw-pad);
+  }
+  .aiw-savebar .aiw-draft-actions {
+    order: -1;
+  }
+}
+@media (max-width: 700px) {
+  .aiw-savebar {
+    padding-right: calc(var(--aiw-pad) + 60px);
+  }
 }
 .aiw-save-state {
   display: inline-flex;

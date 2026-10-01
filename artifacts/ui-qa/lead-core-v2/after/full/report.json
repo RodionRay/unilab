@@ -1,6 +1,6 @@
 {
   "base": "http://127.0.0.1:8011",
-  "started": "2026-10-01T06:37:48.910Z",
+  "started": "2026-10-01T06:44:45.940Z",
   "routes": {
     "/app?view=ai": {
       "390x844": {
@@ -693,9 +693,9 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 2084,
+          "lcp": 2164,
           "cls": 0,
-          "inp": 32,
+          "inp": 24,
           "interactions": [
             "field"
           ],
@@ -1618,9 +1618,9 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 1952,
+          "lcp": 1980,
           "cls": 0,
-          "inp": 40,
+          "inp": 32,
           "interactions": [
             "field"
           ],
@@ -2542,9 +2542,9 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 2044,
+          "lcp": 1964,
           "cls": 0.03,
-          "inp": 40,
+          "inp": 32,
           "interactions": [
             "field"
           ],
@@ -2552,22 +2552,16 @@
           "field": "textarea"
         },
         "states": null,
-        "consoleErrors": [
-          "Failed to load resource: net::ERR_NETWORK_CHANGED"
-        ],
-        "failedReq": [
-          "https://fonts.gstatic.com/s/plusjakartasans/v12/LDIoaomQNQcsA88c7O9yZ4KMCoOg4Ko40yygg_vbd-E.woff2"
-        ],
+        "consoleErrors": [],
+        "failedReq": [],
         "ok": false,
         "issues": [
           "A4 13 standalone controls < 24px",
-          "C2 1 focused elements covered by sticky UI",
-          "E8 console errors: 1",
-          "E8 failed requests: 1"
+          "C2 1 focused elements covered by sticky UI"
         ]
       }
     }
   },
-  "failures": 7,
+  "failures": 5,
   "visualFailures": 0
 }
