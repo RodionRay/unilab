@@ -16,9 +16,13 @@ import {EmployeesPanel} from '@/components/product/employees-panel';
 import {DEFAULT_DM_SOFT_CLOSE,DEFAULT_MAILING_TASK} from '@/lib/mailing';
 import {joinGateFor} from '@/lib/join-relevance';
 import {groupInTab,groupIsMember,groupStatusLabel as groupStatusLabelOf,type GroupTab} from '@/lib/group-tabs';
+import {DEFAULT_GROUP_FILTERS,GROUP_SEARCH_MAX,groupFiltersActive,groupMatchesFilters,parseGroupFilters,serializeGroupFilters,sortGroups,type GroupBandFilter,type GroupFilters,type GroupSort} from '@/lib/group-filters';
+import {accountJoinCapacity,countOpenAssignments,planAssignmentByLimit} from '@/lib/join-capacity';
+import {isJoinFarmCandidate} from '@/lib/processes/join-flow';
 import {canAccessNav,type CrmAccess,type WorkspaceInvite,type WorkspaceMember} from '@/lib/staff-types';
 import {DEFAULT_NAV} from '@/components/product/workspace-nav';
 import {Input} from '@/components/ui/input';
+import {NativeSelect,NativeSelectOption} from '@/components/ui/native-select';
 import {Checkbox} from '@/components/ui/checkbox';
 import {Textarea} from '@/components/ui/textarea';
 import {Dialog,DialogContent,DialogHeader,DialogTitle,DialogDescription} from '@/components/ui/dialog';
@@ -311,6 +315,10 @@ function groupNeedsJoin(item:RecordItem){
 }
 
 type GroupFilter='all'|GroupTab;
+const GROUP_TAB_LABELS:Record<GroupFilter,string>={all:'Все',need:'Ждут',review:'На подтверждение',skip:'Не вступать',joined:'Вступили',pending:'Заявки',error:'Ошибки'};
+const GROUP_BAND_LABELS:Record<GroupBandFilter,string>={all:'Все',auto:'Рекомендуем',review:'На подтверждение',skip:'Не вступать'};
+/** Потолок списка групп в assign_group_accounts (zod max 500). */
+const BY_LIMIT_MAX_GROUPS=500;
 
 function groupStatusLabel(item:RecordItem){
   return groupStatusLabelOf(item.data||{});
@@ -473,7 +481,11 @@ function WorkspaceHome(){
   const [lastLeadFunnel,setLastLeadFunnel]=useState<{worker?:number;core?:number;matched?:number;added?:number}|null>(null);
   const [leadGroupFilter,setLeadGroupFilter]=useState('all');
   const [leadSelected,setLeadSelected]=useState<string[]>([]);
-  const [groupFilter,setGroupFilter]=useState<GroupFilter>('all');
+  const [groupFilters,setGroupFilters]=useState<GroupFilters>(()=>parseGroupFilters(searchParams));
+  const groupFilter:GroupFilter=groupFilters.tab;
+  const [byLimitOpen,setByLimitOpen]=useState(false);
+  const [byLimitRunning,setByLimitRunning]=useState(false);
+  const [byLimitResult,setByLimitResult]=useState<null|{tone:'success'|'warning'|'danger';text:string}>(null);
   const [groupSelected,setGroupSelected]=useState<string[]>([]);
   const [bulkAccountId,setBulkAccountId]=useState('');
   const [mixAccountIds,setMixAccountIds]=useState<string[]>([]);
@@ -583,6 +595,13 @@ function WorkspaceHome(){
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[]);
   useEffect(()=>{persistWorkspaceView(view)},[view]);
+  // Фильтры групп живут в URL (g_*), без навигации: обновление/возврат восстанавливают их.
+  useEffect(()=>{
+    const url=new URL(window.location.href);
+    const next=serializeGroupFilters(view==='Группы и каналы'?groupFilters:DEFAULT_GROUP_FILTERS,url.searchParams).toString();
+    if(next===url.searchParams.toString())return;
+    window.history.replaceState(window.history.state,'',`${url.pathname}${next?`?${next}`:''}${url.hash}`);
+  },[groupFilters,view]);
   useEffect(()=>{recordsRef.current=records},[records]);
   useEffect(()=>{busyRef.current=busy},[busy]);
 
@@ -645,7 +664,7 @@ function WorkspaceHome(){
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[records]);
-  const navigate=(name:NavName)=>{setView(name);setQuery('');setFilter('all');setLeadGroupFilter('all');setLeadSelected([]);setAccountSelected([]);setGroupFilter('all');setGroupSelected([]);setAudienceSearch('');setInviteSearch('');setMailingSearch('')};
+  const navigate=(name:NavName)=>{setView(name);setQuery('');setFilter('all');setLeadGroupFilter('all');setLeadSelected([]);setAccountSelected([]);setGroupFilters({...DEFAULT_GROUP_FILTERS});setGroupSelected([]);setByLimitResult(null);setAudienceSearch('');setInviteSearch('');setMailingSearch('')};
   const openTask=(kind:'audience_task'|'invite_task'|'mailing_task',item?:RecordItem)=>{
     setInviteWizardStep(item?2:1);
     setModal({kind,item});
@@ -668,7 +687,7 @@ function WorkspaceHome(){
   const goChats=(filter:GroupFilter='all')=>{
     setView('Группы и каналы');
     setQuery('');
-    setGroupFilter(filter);
+    setGroupFilters({...DEFAULT_GROUP_FILTERS,tab:filter});
     setGroupSelected([]);
   };
   const open=(kind:Kind,item?:RecordItem)=>{
@@ -2328,6 +2347,72 @@ function WorkspaceHome(){
     finally{setBusy(false)}
   }
 
+  function updateGroupFilters(patch:Partial<GroupFilters>){
+    setGroupFilters(f=>({...f,...patch}));
+    setGroupSelected([]);
+  }
+
+  /** «Сбросить фильтры»: поиск, релевантность, балл и сортировка; вкладка остаётся. */
+  function resetGroupFilters(){
+    updateGroupFilters({q:'',band:'all',min:0,sort:'default'});
+  }
+
+  /** Аккаунты фермы вступлений — то же правило, что у сервера (listJoinFarmCandidates). */
+  function joinFarmAccounts(){
+    const proxies=new Map(list('proxy').map(p=>[p.id,p.data]));
+    return list('account').filter(a=>{
+      const pid=String(a.data?.proxyId||'');
+      return isJoinFarmCandidate(a.data,{proxy:pid?proxies.get(pid)??null:undefined});
+    });
+  }
+
+  /** Цели «Распределить по лимитам»: выбранные (в видимом порядке), иначе весь отфильтрованный список. */
+  function byLimitTargetIds(){
+    if(!groupSelected.length)return sortedList.map(r=>r.id);
+    const selected=new Set(groupSelected);
+    const visible=sortedList.filter(r=>selected.has(r.id)).map(r=>r.id);
+    const shown=new Set(visible);
+    return [...visible,...groupSelected.filter(id=>!shown.has(id))];
+  }
+
+  /** Превью плана тем же чистым хелпером, что и сервер (lib/join-capacity). */
+  function byLimitPreview(){
+    const ids=byLimitTargetIds().slice(0,BY_LIMIT_MAX_GROUPS);
+    const groups=list('group').map(g=>({id:g.id,data:g.data||{}}));
+    const byId=new Map(groups.map(g=>[g.id,g]));
+    const targets=ids.map(id=>byId.get(id)).filter((g):g is NonNullable<typeof g>=>!!g);
+    const open=countOpenAssignments(groups,new Set(ids));
+    const farm=joinFarmAccounts().map(a=>({id:a.id,name:String(a.data?.name||a.id.slice(0,8)),data:a.data,created:a.created,assignedOpen:open.get(a.id)||0}));
+    const plan=planAssignmentByLimit(targets,farm);
+    const got=new Map<string,number>();
+    for(const a of plan.assignments)got.set(a.accountId,(got.get(a.accountId)||0)+1);
+    const perAccount=farm
+      .map(a=>({id:a.id,name:a.name,left:accountJoinCapacity(a,a.assignedOpen),got:got.get(a.id)||0}))
+      .filter(a=>a.left>0)
+      .sort((x,y)=>y.got-x.got||y.left-x.left);
+    return {plan,total:byLimitTargetIds().length,perAccount,farmSize:farm.length};
+  }
+
+  async function runAssignByLimit(){
+    const ids=byLimitTargetIds().slice(0,BY_LIMIT_MAX_GROUPS);
+    if(!ids.length)return;
+    setByLimitRunning(true);
+    setBusy(true);
+    try{
+      const r=await api({action:'assign_group_accounts',mode:'by_limit',groupIds:ids});
+      await refresh();
+      setGroupSelected([]);
+      const overflow=Number(r.capacity)<=0||(Array.isArray(r.unassigned)&&r.unassigned.length>0);
+      setByLimitResult({tone:overflow?'warning':'success',text:String(r.message||'')});
+    }catch(e){
+      setByLimitResult({tone:'danger',text:`Не удалось распределить: ${(e as Error).message}`});
+    }finally{
+      setByLimitRunning(false);
+      setBusy(false);
+      setByLimitOpen(false);
+    }
+  }
+
   function toggleGroupSelected(id:string,on:boolean){
     setGroupSelected(prev=>on?([...new Set([...prev,id])]):prev.filter(x=>x!==id));
   }
@@ -2420,7 +2505,6 @@ function WorkspaceHome(){
       toast.success(added?`В базу добавлено ${added} чатов`:`Уже в базе · ${skipped} чатов`);
       setCatalogOpen(false);
       navigate('Группы и каналы');
-      setGroupFilter('all');
     }catch(e){toast.error((e as Error).message)}
     finally{setBusy(false)}
   }
@@ -2679,14 +2763,17 @@ function WorkspaceHome(){
         if(st!==filter)return false;
       }else if(r.data.status!==filter)return false;
     }
-    return JSON.stringify(r.data).toLowerCase().includes(query.toLowerCase());
+    // Группы ищутся своим полем (lib/group-filters: название, ссылка, причины), не по всему JSON.
+    return currentKind==='group'||JSON.stringify(r.data).toLowerCase().includes(query.toLowerCase());
   });
 
   const listRows=useMemo(()=>{
     if(currentKind==='group'){
-      return displayed.filter(r=>{
-        return groupFilter==='all'||groupInTab(r.data||{},groupFilter);
+      const rows=displayed.filter(r=>{
+        const d=r.data||{};
+        return groupMatchesFilters(d,groupFilters)&&(groupFilter==='all'||groupInTab(d,groupFilter));
       });
+      return sortGroups(rows,groupFilters.sort);
     }
     if(view==='Переписки'){
       return [...displayed].sort((a,b)=>{
@@ -2699,7 +2786,7 @@ function WorkspaceHome(){
       });
     }
     return displayed;
-  },[displayed,currentKind,groupFilter,view]);
+  },[displayed,currentKind,groupFilter,groupFilters,view]);
 
   const listSortTypes=useMemo(():Record<string,SortValueType>=>{
     if(currentKind==='lead')return{name:'string',temperature:'status',status:'status',source:'string',created:'date'};
@@ -2750,7 +2837,7 @@ function WorkspaceHome(){
     types:listSortTypes,
     defaultKey:currentKind==='lead'?'created':currentKind==='account'?'updated':null,
     defaultDir:currentKind==='lead'||currentKind==='account'?'desc':'asc',
-    resetKey:`${view}-${filter}-${groupFilter}-${leadGroupFilter}-${currentKind||''}`,
+    resetKey:`${view}-${filter}-${groupFilter}-${groupFilters.sort}-${leadGroupFilter}-${currentKind||''}`,
   });
 
   const change=(key:string,value:string)=>setForm((f:any)=>({...f,[key]:value}));
@@ -2926,6 +3013,32 @@ function WorkspaceHome(){
   const shortErr=(msg:string)=>String(msg||'').replace(/\s+/g,' ').trim().slice(0,90);
 
   const renderConnectedGroups=(items:RecordItem[])=>{
+    if(!items.length&&list('group').length>0){
+      const filtered=groupFiltersActive(groupFilters);
+      const tabLabel=GROUP_TAB_LABELS[groupFilter];
+      const named=[
+        groupFilters.q.trim()?`поиск «${groupFilters.q.trim()}»`:'',
+        groupFilters.band!=='all'?`релевантность «${GROUP_BAND_LABELS[groupFilters.band]}»`:'',
+        groupFilters.min>0?`балл от ${groupFilters.min}`:'',
+        groupFilter!=='all'?`вкладка «${tabLabel}»`:'',
+      ].filter(Boolean).join(', ');
+      return (
+        <Empty className="border-0 py-10">
+          <EmptyHeader>
+            <EmptyTitle>{filtered?'Фильтры скрывают все группы':`Во вкладке «${tabLabel}» групп нет`}</EmptyTitle>
+            <EmptyDescription>
+              {filtered
+                ?`Под условия (${named}) не подходит ни одна из ${list('group').length} групп.`
+                :`Всего групп в кабинете: ${list('group').length}.`}
+            </EmptyDescription>
+          </EmptyHeader>
+          <div className="flex flex-wrap gap-2 justify-center">
+            {filtered&&<Button onClick={resetGroupFilters}><FilterX size={16}/>Сбросить фильтры</Button>}
+            {groupFilter!=='all'&&<Button variant="outline" onClick={()=>updateGroupFilters({tab:'all'})}>Показать все вкладки</Button>}
+          </div>
+        </Empty>
+      );
+    }
     if(!items.length){
       return (
         <Empty className="border-0 py-10">
@@ -3080,6 +3193,10 @@ function WorkspaceHome(){
   const groupsNeedJoin=groupsAll.filter(groupNeedsJoin);
   const accountsAll=list('account');
   const accountsActive=accountsAll.filter(a=>isAccountWorkable(a.data));
+  const groupsMatching=currentKind==='group'?groupsAll.filter(g=>groupMatchesFilters(g.data||{},groupFilters)):[];
+  const farmAccounts=currentKind==='group'?joinFarmAccounts():[];
+  const byLimitCount=currentKind==='group'?(groupSelected.length||sortedList.length):0;
+  const byLimitPlan=byLimitOpen?byLimitPreview():null;
   const accountsUsableOpts=accountsActive.map(r=>({id:r.id,name:r.data.name,data:r.data}));
   const proxiesAll=list('proxy');
   const proxiesActive=proxiesAll.filter(p=>p.data.status==='active');
@@ -3428,10 +3545,12 @@ function WorkspaceHome(){
 
           {view!=='Обзор'&&view!=='Уведомления'&&view!=='AI-ассистент'&&view!=='Настройки'&&view!=='Сбор аудитории'&&view!=='Инвайтинг'&&view!=='Рассылка'&&view!=='Сотрудники'&&<>
             <div className="toolbar">
-              <div className="relative w-full sm:w-80">
-                <Search className="absolute left-3 top-2.5 text-[var(--spike-muted)]" size={16}/>
-                <Input className="pl-9" placeholder="Поиск по списку…" aria-label="Поиск по списку" value={query} onChange={e=>setQuery(e.target.value)}/>
-              </div>
+              {currentKind!=='group'&&(
+                <div className="relative w-full sm:w-80">
+                  <Search className="absolute left-3 top-2.5 text-[var(--spike-muted)]" size={16}/>
+                  <Input className="pl-9" placeholder="Поиск по списку…" aria-label="Поиск по списку" value={query} onChange={e=>setQuery(e.target.value)}/>
+                </div>
+              )}
               {view==='Переписки'?(
                 <div className="flex flex-wrap items-center gap-3">
                   <Tabs value={filter==='viewed'?'viewed':'all'} onValueChange={(v)=>{setFilter(v);setLeadSelected([])}}>
@@ -3702,25 +3821,82 @@ function WorkspaceHome(){
                     </p>
                   </div>
 
-                  <div className="groups-filters">
+                  <div className="groups-filters" role="group" aria-label="Вкладки групп">
                     {([
-                      ['all',`Все ${list('group').length}`],
-                      ['need',`Ждут ${list('group').filter(g=>groupInTab(g.data||{},'need')).length}`],
-                      ['review',`На подтверждение ${list('group').filter(g=>groupInTab(g.data||{},'review')).length}`],
-                      ['skip',`Не вступать ${list('group').filter(g=>groupInTab(g.data||{},'skip')).length}`],
-                      ['joined',`Вступили ${list('group').filter(g=>groupInTab(g.data||{},'joined')).length}`],
-                      ['pending',`Заявки ${list('group').filter(g=>groupInTab(g.data||{},'pending')).length}`],
-                      ['error',`Ошибки ${list('group').filter(g=>groupInTab(g.data||{},'error')).length}`],
-                    ] as const).map(([id,label])=>(
+                      ['all','Все',groupsMatching.length],
+                      ['need','Ждут',groupsMatching.filter(g=>groupInTab(g.data||{},'need')).length],
+                      ['review','На подтверждение',groupsMatching.filter(g=>groupInTab(g.data||{},'review')).length],
+                      ['skip','Не вступать',groupsMatching.filter(g=>groupInTab(g.data||{},'skip')).length],
+                      ['joined','Вступили',groupsMatching.filter(g=>groupInTab(g.data||{},'joined')).length],
+                      ['pending','Заявки',groupsMatching.filter(g=>groupInTab(g.data||{},'pending')).length],
+                      ['error','Ошибки',groupsMatching.filter(g=>groupInTab(g.data||{},'error')).length],
+                    ] as const).map(([id,label,count])=>(
                       <button
                         key={id}
                         type="button"
+                        aria-pressed={groupFilter===id}
                         className={`groups-filter ${groupFilter===id?'on':''}`}
-                        onClick={()=>{setGroupFilter(id);setGroupSelected([])}}
+                        onClick={()=>updateGroupFilters({tab:id})}
                       >
-                        {label}
+                        {label} <span className="groups-filter-count">{count}</span>
                       </button>
                     ))}
+                  </div>
+
+                  <div className="groups-filterbar" role="search" aria-label="Фильтры групп">
+                    <label className="groups-filterbar-search">
+                      <Search size={16} aria-hidden/>
+                      <span className="sr-only">Поиск групп</span>
+                      <Input
+                        type="search"
+                        placeholder="Название, @username, ссылка или причина"
+                        value={groupFilters.q}
+                        maxLength={GROUP_SEARCH_MAX}
+                        onChange={e=>updateGroupFilters({q:e.target.value})}
+                      />
+                    </label>
+                    <label className="groups-filterbar-field">
+                      <span>Релевантность</span>
+                      <NativeSelect size="sm" value={groupFilters.band} onChange={e=>updateGroupFilters({band:e.target.value as GroupBandFilter})}>
+                        <NativeSelectOption value="all">Все</NativeSelectOption>
+                        <NativeSelectOption value="auto">Рекомендуем</NativeSelectOption>
+                        <NativeSelectOption value="review">На подтверждение</NativeSelectOption>
+                        <NativeSelectOption value="skip">Не вступать</NativeSelectOption>
+                      </NativeSelect>
+                    </label>
+                    <label className="groups-filterbar-field">
+                      <span>Балл от</span>
+                      <Input
+                        className="groups-filterbar-min"
+                        type="number"
+                        inputMode="numeric"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={groupFilters.min||''}
+                        placeholder="0"
+                        onChange={e=>{
+                          const n=Math.round(Number(e.target.value));
+                          updateGroupFilters({min:Number.isFinite(n)?Math.min(100,Math.max(0,n)):0});
+                        }}
+                      />
+                    </label>
+                    <label className="groups-filterbar-field">
+                      <span>Сортировка</span>
+                      <NativeSelect size="sm" value={groupFilters.sort} onChange={e=>updateGroupFilters({sort:e.target.value as GroupSort})}>
+                        <NativeSelectOption value="default">По умолчанию</NativeSelectOption>
+                        <NativeSelectOption value="score_desc">Релевантность ↓</NativeSelectOption>
+                        <NativeSelectOption value="score_asc">Релевантность ↑</NativeSelectOption>
+                      </NativeSelect>
+                    </label>
+                    {groupFiltersActive(groupFilters)&&(
+                      <Button size="sm" variant="ghost" onClick={resetGroupFilters}>
+                        <FilterX size={14}/>Сбросить фильтры
+                      </Button>
+                    )}
+                    <span className="groups-filterbar-count" aria-live="polite">
+                      Показано <strong>{sortedList.length}</strong> из {groupsAll.length}
+                    </span>
                   </div>
 
                   <div className={`groups-actionbar ${groupSelected.length?'has-sel':''}`}>
@@ -3778,6 +3954,20 @@ function WorkspaceHome(){
                           Применить смесь{groupSelected.length?` · ${groupSelected.length}`:''}
                         </Button>
                       )}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={busy||!farmAccounts.length||!byLimitCount}
+                        onClick={()=>{setByLimitResult(null);setByLimitOpen(true)}}
+                        aria-describedby={!farmAccounts.length?'groups-bylimit-hint':undefined}
+                      >
+                        {byLimitRunning?<Loader2 size={14} className="animate-spin"/>:<Gauge size={14}/>}
+                        {byLimitRunning?'Распределяем…':'Распределить по лимитам'}
+                        {byLimitCount>0&&!byLimitRunning&&<span className="groups-filter-count">{byLimitCount}</span>}
+                      </Button>
+                      {!farmAccounts.length&&(
+                        <span id="groups-bylimit-hint" className="groups-bylimit-hint">Нет активных аккаунтов для вступления</span>
+                      )}
                       {groupSelected.length>0&&(
                         <Button
                           size="sm"
@@ -3804,6 +3994,14 @@ function WorkspaceHome(){
                       )}
                     </div>
                   </div>
+
+                  {byLimitResult&&(
+                    <div className={`groups-bylimit-result ${byLimitResult.tone}`} role={byLimitResult.tone==='danger'?'alert':'status'}>
+                      {byLimitResult.tone==='danger'?<AlertTriangle size={16} aria-hidden/>:byLimitResult.tone==='warning'?<Gauge size={16} aria-hidden/>:<Check size={16} aria-hidden/>}
+                      <span>{byLimitResult.text}</span>
+                      <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Скрыть сообщение" onClick={()=>setByLimitResult(null)}><X size={14}/></Button>
+                    </div>
+                  )}
 
                   <section className="panel groups-list-panel">
                     {renderConnectedGroups(sortedList)}
@@ -5436,6 +5634,54 @@ function WorkspaceHome(){
           </div>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={byLimitOpen} onOpenChange={o=>{if(!byLimitRunning)setByLimitOpen(o)}}>
+        <AlertDialogContent className="groups-bylimit-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Распределить по лимитам — групп: {byLimitPlan?.total??0}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {groupSelected.length?'Выбранные группы':'Все группы текущего списка'} получат активные аккаунты: каждому — не больше, чем он может вступить сегодня (прогрев, лимит приглашений, уже назначенные группы). Только назначение — вступление идёт как обычно.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {byLimitPlan&&(
+            <div className="groups-bylimit-preview">
+              <dl className="groups-bylimit-stats">
+                <div><dt>Назначим</dt><dd>{byLimitPlan.plan.assignments.length}</dd></div>
+                <div className={byLimitPlan.plan.unassigned.length?'is-warn':''}><dt>Без аккаунта</dt><dd>{byLimitPlan.plan.unassigned.length}</dd></div>
+                <div><dt>Ёмкость сегодня</dt><dd>{byLimitPlan.plan.capacity}</dd></div>
+              </dl>
+              {byLimitPlan.perAccount.length>0?(
+                <ul className="groups-bylimit-accounts" aria-label="Аккаунты и их ёмкость">
+                  {byLimitPlan.perAccount.slice(0,6).map(a=>(
+                    <li key={a.id}>
+                      <span className="truncate">{a.name}</span>
+                      <span className="groups-bylimit-bar" aria-hidden><span style={{width:`${Math.round(a.got/a.left*100)}%`}}/></span>
+                      <span className="groups-bylimit-num">+{a.got} из {a.left}</span>
+                    </li>
+                  ))}
+                  {byLimitPlan.perAccount.length>6&&<li className="groups-bylimit-more">и ещё аккаунтов: {byLimitPlan.perAccount.length-6}</li>}
+                </ul>
+              ):(
+                <p className="groups-bylimit-note">
+                  {byLimitPlan.farmSize?'У всех активных аккаунтов лимит на сегодня уже исчерпан — назначать нечего.':'Нет активных аккаунтов для вступления.'}
+                </p>
+              )}
+              {byLimitPlan.plan.skipped.length>0&&(
+                <p className="groups-bylimit-note">Вступившие и заявки не трогаем: {byLimitPlan.plan.skipped.length}.</p>
+              )}
+              {byLimitPlan.total>BY_LIMIT_MAX_GROUPS&&(
+                <p className="groups-bylimit-note">За один раз — первые {BY_LIMIT_MAX_GROUPS} групп списка.</p>
+              )}
+            </div>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={byLimitRunning}>Отмена</AlertDialogCancel>
+            <AlertDialogAction disabled={byLimitRunning} onClick={(e)=>{e.preventDefault();void runAssignByLimit()}}>
+              {byLimitRunning?<><Loader2 size={14} className="animate-spin"/>Распределяем…</>:`Распределить${byLimitPlan?.plan.assignments.length?` · ${byLimitPlan.plan.assignments.length}`:''}`}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={bulkDeleteOpen} onOpenChange={o=>{if(!busy)setBulkDeleteOpen(o)}}>
         <AlertDialogContent>

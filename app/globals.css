@@ -2802,6 +2802,208 @@ textarea:focus-visible,
   background: rgba(255, 169, 44, 0.12);
 }
 
+.groups-filter-count {
+  margin-left: 2px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
+/* Фильтры групп (lib/group-filters): поиск, релевантность, балл, сортировка — одной строкой под вкладками. */
+.groups-filterbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+
+.groups-filterbar-search {
+  position: relative;
+  flex: 1 1 280px;
+  min-width: 0;
+  max-width: 420px;
+}
+
+.groups-filterbar-search > svg {
+  position: absolute;
+  left: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--spike-muted);
+  pointer-events: none;
+}
+
+.groups-filterbar-search input {
+  padding-left: 34px;
+}
+
+.groups-filterbar-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.75rem;
+  color: var(--spike-muted);
+  white-space: nowrap;
+}
+
+.groups-filterbar-field select {
+  color: var(--spike-text);
+}
+
+.groups-filterbar-min {
+  width: 72px;
+  height: 2rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.groups-filterbar-count {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--spike-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.groups-filterbar-count strong {
+  color: var(--spike-text);
+  font-weight: 650;
+}
+
+@media (max-width: 640px) {
+  .groups-filterbar-search {
+    flex-basis: 100%;
+    max-width: none;
+  }
+  .groups-filterbar-field {
+    flex: 1 1 calc(50% - 7px);
+    justify-content: space-between;
+  }
+  .groups-filterbar-field [data-slot="native-select-wrapper"] {
+    flex: 1 1 auto;
+    min-width: 0;
+    width: auto;
+  }
+  .groups-filterbar-count {
+    margin-left: 0;
+  }
+}
+
+.groups-bylimit-hint {
+  font-size: 0.75rem;
+  color: var(--spike-muted);
+}
+
+.groups-bylimit-result {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 8px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--spike-border);
+  background: var(--spike-paper);
+  font-size: 0.875rem;
+  color: var(--spike-text);
+}
+
+.groups-bylimit-result > span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.groups-bylimit-result.success > svg { color: var(--spike-success); }
+.groups-bylimit-result.warning { background: var(--spike-warning-light); border-color: rgba(255, 213, 138, 0.3); }
+.groups-bylimit-result.warning > svg { color: var(--spike-warning); }
+.groups-bylimit-result.danger { background: var(--spike-error-light); border-color: rgba(251, 151, 125, 0.35); }
+.groups-bylimit-result.danger > svg { color: var(--spike-error); }
+
+.groups-bylimit-preview {
+  display: grid;
+  gap: 14px;
+}
+
+.groups-bylimit-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0;
+  border: 1px solid var(--spike-border);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--spike-border);
+}
+
+.groups-bylimit-stats > div {
+  display: grid;
+  gap: 2px;
+  padding: 12px 14px;
+  background: var(--spike-paper);
+}
+
+.groups-bylimit-stats dt {
+  font-size: 0.75rem;
+  color: var(--spike-muted);
+}
+
+.groups-bylimit-stats dd {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 650;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+  color: var(--spike-text);
+}
+
+.groups-bylimit-stats > div:first-child dd { color: var(--spike-primary); }
+.groups-bylimit-stats > div.is-warn dd { color: var(--spike-warning); }
+
+.groups-bylimit-accounts {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.groups-bylimit-accounts li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px 72px;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.8125rem;
+}
+
+.groups-bylimit-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--spike-border);
+  overflow: hidden;
+}
+
+.groups-bylimit-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--spike-primary);
+}
+
+.groups-bylimit-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--spike-muted);
+}
+
+.groups-bylimit-accounts li.groups-bylimit-more {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--spike-muted);
+}
+
+.groups-bylimit-note {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--spike-muted);
+}
+
 .groups-actionbar {
   display: flex;
   flex-wrap: wrap;

@@ -1146,7 +1146,7 @@ async function assignGroupsByLimit(owner:string,groupIds:readonly string[],accou
  const open=countOpenAssignments(all,new Set(targets.map(g=>g.id)));
  const plan=planAssignmentByLimit(targets,pool.map(a=>({id:a.id,data:a.data,created:a.created,assignedOpen:open.get(a.id)||0})));
  for(const {groupId,accountId} of plan.assignments){
-  const gdata:any=byId.get(groupId)!.data;
+  const gdata:Record<string,unknown>=byId.get(groupId)!.data;
   const clearsAccountError=String(gdata.joinAccountErrorId||'')!==accountId&&!!String(gdata.joinAccountError||gdata.joinAccountErrorId||'');
   if(gdata.accountId===accountId&&!clearsAccountError)continue;
   const next={

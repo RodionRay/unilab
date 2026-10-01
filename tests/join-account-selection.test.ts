@@ -269,6 +269,8 @@ describe('assign_group_accounts by_limit — распределение по д�
   function age(id:string,days:number){
     testDb().sqlite.prepare('UPDATE records SET created=? WHERE id=?').run(new Date(Date.now()-days*86_400_000).toISOString(),id);
   }
+  type ByLimitBody={ok:boolean;updated:number;capacity:number;skipped:number;rejected:number;unassigned:string[];assignments:{groupId:string;accountId:string}[];message:string};
+  const readBody=(res:Response)=>res.json() as Promise<ByLimitBody>;
   const byLimit=(groupIds:string[],extra:Record<string,unknown>={})=>POST(postRequest({action:'assign_group_accounts',mode:'by_limit',groupIds,...extra}));
   const assignedTo=(id:string)=>ids(1,60).filter(g=>{try{return rec(g).accountId===id}catch{return false}}).length;
 
@@ -288,7 +290,7 @@ describe('assign_group_accounts by_limit — распределение по д�
     addGroups(1,7);
 
     const res=await byLimit(ids(1,7));
-    const body=await res.json();
+    const body=await readBody(res);
 
     expect(res.status).toBe(200);
     expect(body).toMatchObject({ok:true,updated:5,capacity:5,skipped:0,unassigned:ids(6,7)});
@@ -303,7 +305,7 @@ describe('assign_group_accounts by_limit — распределение по д�
     age(ACC_A,60);
     addGroups(1,4);
 
-    const body=await (await byLimit(ids(1,4))).json();
+    const body=await readBody(await byLimit(ids(1,4)));
 
     expect(body.capacity).toBe(2);
     expect(body.updated).toBe(2);
@@ -318,7 +320,7 @@ describe('assign_group_accounts by_limit — распределение по д�
     addGroups(30,30,{accountId:ACC_A,status:'error',error:'приватная'});
     addGroups(1,4);
 
-    const body=await (await byLimit(ids(1,4))).json();
+    const body=await readBody(await byLimit(ids(1,4)));
 
     expect(body.capacity).toBe(2);
     expect(body.updated).toBe(2);
@@ -331,7 +333,7 @@ describe('assign_group_accounts by_limit — распределение по д�
     addGroups(1,5);
     addGroups(6,6,{accountId:ACC_C});
 
-    const body=await (await byLimit(ids(1,6))).json();
+    const body=await readBody(await byLimit(ids(1,6)));
 
     expect(body.unassigned).toEqual([gid(6)]);
     expect(rec(gid(6)).accountId).toBe(ACC_C);
@@ -343,7 +345,7 @@ describe('assign_group_accounts by_limit — распределение по д�
     age(ACC_B,60);
     addGroups(1,9);
 
-    const body=await (await byLimit(ids(1,9))).json();
+    const body=await readBody(await byLimit(ids(1,9)));
 
     expect(body.capacity).toBe(7);
     expect(body.updated).toBe(7);
@@ -358,7 +360,7 @@ describe('assign_group_accounts by_limit — распределение по д�
     const before=ids(1,3).map(id=>JSON.stringify(rec(id)));
 
     const res=await byLimit(ids(1,3));
-    const body=await res.json();
+    const body=await readBody(res);
 
     expect(res.status).toBe(200);
     expect(body).toMatchObject({ok:true,updated:0,capacity:0,assignments:[]});
@@ -371,8 +373,8 @@ describe('assign_group_accounts by_limit — распределение по д�
     await addAccount(ACC_B,{});
     addGroups(1,12);
 
-    const first=await (await byLimit(ids(1,12))).json();
-    const second=await (await byLimit(ids(1,12))).json();
+    const first=await readBody(await byLimit(ids(1,12)));
+    const second=await readBody(await byLimit(ids(1,12)));
 
     expect(second.assignments).toEqual(first.assignments);
     expect(second.capacity).toBe(first.capacity);
@@ -386,7 +388,7 @@ describe('assign_group_accounts by_limit — распределение по д�
     addGroups(2,2,{status:'pending',accountId:ACC_C});
     addGroups(3,7);
 
-    const body=await (await byLimit(ids(1,7))).json();
+    const body=await readBody(await byLimit(ids(1,7)));
 
     expect(body.skipped).toBe(2);
     expect(body.updated).toBe(5);
@@ -402,7 +404,7 @@ describe('assign_group_accounts by_limit — распределение по д�
     testDb().sqlite.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)')
       .run(ACC_B,'other-owner','account',JSON.stringify({name:'чужой',status:'active',proxyId:'',limits:{invite:40}}),null,new Date().toISOString());
 
-    const body=await (await byLimit([gid(1),gid(2),gid(3)],{accountIds:[ACC_B,ACC_A]})).json();
+    const body=await readBody(await byLimit([gid(1),gid(2),gid(3)],{accountIds:[ACC_B,ACC_A]}));
 
     expect(body.updated).toBe(1);
     expect(body.assignments).toEqual([{groupId:gid(1),accountId:ACC_A}]);
