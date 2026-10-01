@@ -36,6 +36,12 @@ export const KIND_ACCESS:Readonly<Record<RecordKind,readonly CrmAccessKey[]>>={
  mailing_task:['mailing'],
 };
 
+/** Kinds only listed in GET and changed by their own actions, never by generic save/delete (AM-4). */
+const LIST_ONLY_KIND_ACCESS:Readonly<Record<string,readonly CrmAccessKey[]>>={
+ vk_account:['accounts'],
+ vk_source:['groups'],
+};
+
 const LEADS:readonly CrmAccessKey[]=['leads','chats'];
 const AI:readonly CrmAccessKey[]=['ai','settings'];
 const rule=(anyOf:readonly CrmAccessKey[],mutates=true):ActionRule=>({anyOf,mutates});
@@ -85,6 +91,13 @@ export const ACTION_RULES:Readonly<Record<string,ActionRule>>={
  pause_mailing:rule(['mailing']),
  refill_mailing_ai_pool:rule(['mailing']),
  tick_mailing:rule(['mailing']),
+
+ vk_accounts_import:rule(['accounts']),
+ vk_account_delete:rule(['accounts']),
+ vk_account_set_proxy:rule(['accounts']),
+ vk_source_add:rule(['groups']),
+ vk_source_delete:rule(['groups']),
+ scan_vk_source:rule(['groups']),
 };
 
 const DENY_UNKNOWN='Действие недоступно для вашей роли';
@@ -136,6 +149,8 @@ function redactOwnerSecrets(data:Record<string,unknown>):Record<string,unknown>{
 }
 
 function viewRecord<T extends WorkspaceRecordView>(actor:WorkspaceActor,rec:T):T|null{
+ const listOnly=Object.prototype.hasOwnProperty.call(LIST_ONLY_KIND_ACCESS,rec.kind)?LIST_ONLY_KIND_ACCESS[rec.kind]:null;
+ if(listOnly)return hasAnyAccess(actor,listOnly)?rec:null;
  if(!isRecordKind(rec.kind))return null;
  if(rec.kind==='settings')return {...rec,data:redactOwnerSecrets(rec.data)};
  if(hasAnyAccess(actor,KIND_ACCESS[rec.kind]))return rec;

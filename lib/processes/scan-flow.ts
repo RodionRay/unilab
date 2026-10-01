@@ -182,6 +182,8 @@ const SERVER_OWNED: Record<"lead" | "group", readonly string[]> = {
     "coreScore", "notifyPending", "notifiedAt", "notifyAttempts", "notifyClaimUntil",
     "senderId", "senderUsername", "senderAccessHash", "peerId", "replyToMsgId", "messageKind",
     "tgMsgId", "groupId", "accountId", "mailingTaskId",
+    // REQ-15: VK identity of the lead (dedup key, deep link, source) — never the client's to change
+    "platform", "msgKey", "url", "vkSourceId",
   ],
   group: ["scanLockUntil", "scanLockToken", "scanCursor", "aiRejected", "leadTombstones"],
 };

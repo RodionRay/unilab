@@ -19,6 +19,10 @@ import {
 } from '@/lib/processes/scan-flow';
 import {qualifyLeadsWithAi} from '@/lib/processes/lead-ai';
 import {pickLeads} from '@/lib/processes/lead-ingest';
+import {scanVkSource,type VkActionResult,type VkScanDeps} from '@/lib/processes/vk-scan';
+import {addVkGroupSource,deleteVkAccounts,deleteVkSource,importVkAccounts,setVkAccountProxy,type VkAccountDeps} from '@/lib/processes/vk-accounts';
+import {VK_SOURCE_KIND,loadVkAccounts,loadVkSources} from '@/lib/vk/records';
+import {noUsableVkAccount} from '@/lib/vk/session';
 import {appendLearnExamples,extractTermsFromHotMessages,mergeKeywords,mergeKeywordsPreferNew,parseKeywordCsv} from '@/lib/ai-keywords';
 import {sanitizeMinusTerms,scanStopTerms} from '@/lib/lead-stopwords';
 import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpChatCounters,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasMemberInviteQuota,hasMessageQuota,isAccountFlooded,isAccountUsable,isDayLimitCooldown,isDayLimitedFor,dayLimitCooldownKind,isOnCooldown,joinWaitSec,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
@@ -100,6 +104,10 @@ const settingsSchema=z.object({
  notifyEnabled:z.boolean().default(false),
  notifyBotToken:z.string().max(200).default(''),
  notifyChatId:z.string().max(100).default(''),
+ /** REQ-10: newsfeed.search calls per VK account per Moscow day (0 = no cap). */
+ vkSearchDailyCap:z.coerce.number().int().min(0).max(10000).default(500),
+ /** REQ-1a / AM-11: Telegram + VK accounts per proxy. */
+ vkAccountsPerProxy:z.coerce.number().int().min(1).max(50).default(3),
 });
 const limitsSchema=z.object({
  invite:z.coerce.number().int().min(0).max(10000).default(DEFAULT_ACCOUNT_LIMITS.invite),
@@ -258,6 +266,11 @@ const schemas={
   needsManager:z.boolean().default(false),
   mailingTaskId:z.string().max(100).default(''),
   accountId:z.string().max(100).default(''),
+  /** REQ-15: VK leads; a missing platform means Telegram. Server-owned (scan-flow.ts::SERVER_OWNED). */
+  platform:z.enum(['telegram','vk']).optional(),
+  msgKey:z.string().max(120).optional(),
+  url:z.string().max(300).optional(),
+  vkSourceId:z.string().max(100).optional(),
  }),
  settings:settingsSchema,
  audience_task:z.object({
@@ -1306,13 +1319,17 @@ async function appendGlobalRescanLog(owner:string,level:'info'|'ok'|'warn'|'erro
  }catch{/* */}
 }
 
-async function notifyNewLeadsTelegram(settings:any,leads:{name:string;message:string;temperature:string;source:string}[]){
+type NotifyLead={name:string;message:string;temperature:string;source:string;platform?:string;url?:string};
+
+async function notifyNewLeadsTelegram(settings:any,leads:NotifyLead[]){
  if(!settings?.notifyEnabled||!leads.length)return {ok:false as const,skipped:true as const};
  const token=String(settings.notifyBotToken||'').trim();
  const chatId=String(settings.notifyChatId||'').trim();
  if(!token||!chatId)return {ok:false as const,error:'Нет bot token или chat id'};
  const lines=leads.slice(0,8).map((l,i)=>{
   const msg=String(l.message||'').replace(/\s+/g,' ').slice(0,180);
+  // REQ-7 / AM-14: VK leads carry a mark and the deep link the owner answers from by hand
+  if(l.platform==='vk')return `${i+1}. [VK] [${l.temperature}] ${l.name||'Лид'} · ${l.source||''}\n${l.url||''}\n${msg}`;
   return `${i+1}. [${l.temperature}] ${l.name||'Лид'} · ${l.source||''}\n${msg}`;
  });
  const text=`UniLab · новые лиды (${leads.length})\n\n${lines.join('\n\n')}`;
@@ -1340,8 +1357,9 @@ async function rememberDeletedLead(owner:string,leadId:string){
  const db=database();
  const row=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,leadId,'lead').first<{data:string}>();
  if(!row)return;
- let lead:{groupId?:unknown;tgMsgId?:unknown};
+ let lead:{groupId?:unknown;tgMsgId?:unknown;platform?:unknown;msgKey?:unknown;vkSourceId?:unknown};
  try{lead=JSON.parse(String(row.data))}catch{return}
+ if(lead.platform==='vk'){await rememberDeletedVkLead(db,owner,String(lead.msgKey||''),String(lead.vkSourceId||''));return}
  const groupId=String(lead.groupId||'');
  const tgMsgId=String(lead.tgMsgId||'');
  if(!groupId||!tgMsgId)return;
@@ -1351,6 +1369,25 @@ async function rememberDeletedLead(owner:string,leadId:string){
  try{gdata=JSON.parse(String(grow.data))}catch{return}
  const next={...gdata,leadTombstones:addLeadTombstone(gdata.leadTombstones,tgMsgId)};
  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,groupId,'group').run();
+}
+
+/**
+ * REQ-14 / AM-2: a deleted VK lead's msgKey is tombstoned on its vk_source (or any other source when
+ * that one is gone); every VK scan treats the union of tombstones as seen. CAS: parallel deletes keep both.
+ */
+async function rememberDeletedVkLead(db:D1LikeDatabase,owner:string,msgKey:string,sourceId:string){
+ if(!msgKey)return;
+ for(let attempt=0;attempt<5;attempt++){
+  const own=sourceId?await db.prepare('SELECT id,data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,sourceId,VK_SOURCE_KIND).first<{id:string;data:string}>():null;
+  const target=own??await db.prepare('SELECT id,data FROM records WHERE owner=? AND kind=? ORDER BY created LIMIT 1').bind(owner,VK_SOURCE_KIND).first<{id:string;data:string}>();
+  if(!target)return;
+  let data:Record<string,unknown>;
+  try{data=JSON.parse(String(target.data))}catch{return}
+  const next={...data,leadTombstones:addLeadTombstone(data.leadTombstones,msgKey)};
+  const res=await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=? AND data=?').bind(JSON.stringify(next),owner,target.id,VK_SOURCE_KIND,String(target.data)).run();
+  if(res.meta.changes===1)return;
+ }
+ console.error('[workspace] vk tombstone: concurrent update conflict');
 }
 
 /** Message of the worker /scan-group answer (fields scan_group reads). */
@@ -1403,6 +1440,8 @@ async function flushLeadNotifications(owner:string,settings:{notifyEnabled?:unkn
   message:String(c.data.message||''),
   temperature:String(c.data.temperature||''),
   source:String(c.data.source||''),
+  platform:String(c.data.platform||''),
+  url:String(c.data.url||''),
  })));
  if(sent.ok){
   for(const c of claimed){
@@ -1416,6 +1455,48 @@ async function flushLeadNotifications(owner:string,settings:{notifyEnabled?:unkn
    .bind(NOTIFY_MAX_ATTEMPTS,owner,c.id).run();
  }
  await appendGlobalRescanLog(owner,'warn',`Уведомление о новых лидах (${claimed.length}) не отправлено: ${error.slice(0,160)} — повтор при следующем скане`);
+}
+
+async function loadSettingsRow(db:D1LikeDatabase,owner:string){
+ const config=await db.prepare('SELECT * FROM records WHERE owner=? AND kind=? LIMIT 1').bind(owner,'settings').first<{data:string;secret:string|null}>();
+ let settings:Record<string,unknown>={};
+ try{settings=config?.data?JSON.parse(config.data):{}}catch{/* битые настройки — как пустые */}
+ return {config,settings};
+}
+
+/** Route glue for lib/processes/vk-*: worker transport, the same lead context scan_group uses, notify and log. */
+async function vkScanDeps(db:D1LikeDatabase,owner:string):Promise<VkScanDeps>{
+ return {
+  db,
+  owner,
+  post:workerPost,
+  leadContext:async()=>{
+   const {config,settings}=await loadSettingsRow(db,owner);
+   const coreSettings=leadCoreSettingsFrom(settings,String(settings.keywords||''),stopWordsFromSettings(settings));
+   const apiKey=settings.aiQualify!==false?await resolveApiKey(owner,config):'';
+   return {settings,coreSettings,qualify:apiKey?msgs=>qualifyLeadsWithAi(apiKey,settings,msgs):null};
+  },
+  flushNotifications:settings=>flushLeadNotifications(owner,settings),
+  log:(level,text)=>appendGlobalRescanLog(owner,level,text),
+ };
+}
+
+async function vkAccountDeps(db:D1LikeDatabase,owner:string):Promise<VkAccountDeps>{
+ return {db,owner,post:workerPost,settings:(await loadSettingsRow(db,owner)).settings};
+}
+
+function vkReply(r:VkActionResult){return reply(r.body,r.status)}
+
+/** REQ-8 / AM-12: VK sources due for auto-rescan (oldest first, ≤3 per tick); none without a usable account. */
+const VK_SOURCES_PER_TICK=3;
+async function dueVkSourceIds(db:D1LikeDatabase,owner:string,needMs:number,force:boolean,now:number){
+ const sources=await loadVkSources(db,owner);
+ if(!sources.length||noUsableVkAccount(await loadVkAccounts(db,owner),now))return {ids:[] as string[],total:0};
+ const due=sources
+  .map(s=>({id:s.id,last:Date.parse(String(s.data.lastScanAt||''))||0}))
+  .filter(s=>force||!s.last||now-s.last>=needMs)
+  .sort((a,b)=>a.last-b.last);
+ return {ids:due.slice(0,VK_SOURCES_PER_TICK).map(s=>s.id),total:due.length};
 }
 
 async function loadNotifySettings(db:any,owner:string){
@@ -2882,9 +2963,12 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   }
   due.sort((a,b)=>a.last-b.last);
   const ids=due.slice(0,limit).map(x=>x.id);
+  const vkDue=await dueVkSourceIds(db,owner,needMs,force,now);
   return reply({
    ok:true,
    groupIds:ids,
+   vkSourceIds:vkDue.ids,
+   vkTotal:vkDue.total,
    total:due.length,
    queued:ids.length,
    rescanMinutes,
@@ -4738,6 +4822,16 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   }
  }
 
+ // VK kinds never go through the generic kindSchema save/delete (AM-4)
+ if(b.action==='vk_accounts_import')return vkReply(await importVkAccounts(await vkAccountDeps(db,owner),{text:b.text,proxyId:b.proxyId}));
+ if(b.action==='vk_account_delete')return vkReply(await deleteVkAccounts(await vkAccountDeps(db,owner),{id:b.id,ids:b.ids}));
+ if(b.action==='vk_account_set_proxy')return vkReply(await setVkAccountProxy(await vkAccountDeps(db,owner),{id:b.id,proxyId:b.proxyId}));
+ if(b.action==='vk_source_add')return vkReply(await addVkGroupSource(await vkAccountDeps(db,owner),{url:b.url}));
+ if(b.action==='vk_source_delete')return vkReply(await deleteVkSource(await vkAccountDeps(db,owner),{id:b.id}));
+ if(b.action==='scan_vk_source'){
+  const id=z.string().uuid().parse(b.id);
+  return vkReply(await scanVkSource(await vkScanDeps(db,owner),{id,force:b.force===true}));
+ }
  if(b.action==='poll_dm_replies'){
   const accRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='account'").bind(owner).all();
   const live:LiveAccount[]=[];
@@ -4761,7 +4855,10 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
  const kind=kindSchema.parse(b.kind);
  if(b.action==='delete'){
   const id=z.string().uuid().parse(b.id);
-  const refs=await db.prepare('SELECT data FROM records WHERE owner=? AND kind=?').bind(owner,kind==='proxy'?'account':'group').all();
+  // AM-4: a proxy is also in use while a VK account is bound to it
+  const refs=kind==='proxy'
+   ?await db.prepare("SELECT data FROM records WHERE owner=? AND kind IN ('account','vk_account')").bind(owner).all()
+   :await db.prepare('SELECT data FROM records WHERE owner=? AND kind=?').bind(owner,'group').all();
   if((kind==='proxy'||kind==='account')&&refs.results.some((r:any)=>{const v=JSON.parse(r.data);return v.proxyId===id||v.accountId===id}))return reply({error:'Сначала измените привязку в аккаунтах или группах'},409);
   if(kind==='group'){
    const leads=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='lead'").bind(owner).all();
