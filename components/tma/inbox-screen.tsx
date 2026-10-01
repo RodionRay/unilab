@@ -86,14 +86,14 @@ export function InboxScreen({
         meta={counts ? `${workspace.name} · ${unreadLeft ? `${unreadLeft} непрочитанных` : "всё прочитано"}` : workspace.name}
         action={<RefreshButton onClick={() => void feed.reload()} busy={feed.refreshing} />}
       />
-      <div className="overflow-x-auto px-3 pb-2 [scrollbar-width:none]">
+      <div className="overflow-x-auto px-3 pb-2 [mask-image:linear-gradient(to_right,#000_88%,transparent)] [scrollbar-width:none]">
         <ToggleGroup
           type="single"
           value={filter}
           onValueChange={(v) => v && setFilter(v as InboxFilter)}
           aria-label="Фильтр входящих"
           spacing={1}
-          className="gap-1"
+          className="gap-1 pr-8"
         >
           {FILTERS.map((f) => {
             const n = f.id === "hot" ? counts?.hot : f.id === "unread" ? unreadLeft : undefined;
@@ -180,7 +180,6 @@ function InboxRowView({ item, unread, onOpen }: { item: InboxRow; unread: boolea
           {hot ? <Flame className="size-4 shrink-0 translate-y-0.5 fill-current text-(--tma-accent)" aria-label="горячий лид" /> : null}
           <span className="tma-num ml-auto shrink-0 text-[14px] text-(--tma-hint)">{formatListTime(item.at)}</span>
         </span>
-        <span className="truncate text-[14px] text-(--tma-hint)">{item.source}</span>
         {hot ? <HotQuote item={item} unread={unread} /> : <PlainPreview item={item} unread={unread} />}
       </span>
     </button>
@@ -192,8 +191,9 @@ function HotQuote({ item, unread }: { item: InboxRow; unread: boolean }) {
   return (
     <span className="mt-1 flex items-end gap-2">
       <span className="flex min-w-0 flex-1 flex-col gap-1">
-        <span className="tma-tail-in w-fit max-w-full rounded-[16px] bg-(--tma-page) px-3 py-2 text-[15px] leading-snug text-(--tma-text) [.tma-root[data-surface=grouped]_&]:bg-(--tma-bg)">
-          <span className="tma-clamp-2">«{item.preview}»</span>
+        <span className="tma-tail-in flex w-fit max-w-full flex-col rounded-[16px] bg-(--tma-page) px-3 pt-1.5 pb-2 text-[15px] leading-snug text-(--tma-text)">
+          <span className="truncate text-[13px] font-semibold text-(--tma-link)">{item.source}</span>
+          <span className="tma-clamp-2">{item.preview}</span>
         </span>
         {item.reason ? (
           <span className="truncate pl-1 text-[13px] text-(--tma-hint)">
@@ -210,6 +210,7 @@ function PlainPreview({ item, unread }: { item: InboxRow; unread: boolean }) {
   return (
     <span className="flex items-start gap-2">
       <span className={cn("tma-clamp-2 min-w-0 flex-1 text-[15px] leading-snug", unread ? "text-(--tma-text)" : "text-(--tma-hint)")}>
+        {item.source && !item.conversation ? <span className="text-(--tma-text)">{item.source}: </span> : null}
         {item.preview}
       </span>
       <span className="flex shrink-0 flex-col items-end gap-1 pt-0.5">

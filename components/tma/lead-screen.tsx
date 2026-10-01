@@ -153,9 +153,9 @@ function LeadView({ lead, reload, hasMainButton }: { lead: Lead; reload(): Promi
 
   return (
     <>
-      <div ref={scroller} className="tma-scroll" data-testid="lead-scroll">
+      <div ref={scroller} className="tma-scroll flex flex-col" data-testid="lead-scroll">
         <LeadHeader lead={lead} />
-        <ol aria-label="Переписка" className="flex flex-col gap-1.5 px-3 pt-1 pb-4">
+        <ol aria-label="Переписка" className="mt-auto flex flex-col gap-1.5 px-3 pt-1 pb-3">
           <li className="flex flex-col">
             <OriginalBubble lead={lead} collapsedByDefault={lead.messages.length > 0} />
           </li>

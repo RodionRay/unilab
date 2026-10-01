@@ -89,22 +89,30 @@ function AccountRow({ account, onChecked }: { account: AccountItem; onChecked():
   }
 
   return (
-    <article className="flex flex-col gap-2 px-4 py-3" data-testid="account-row">
-      <div className="flex items-start gap-3">
-        <div className="min-w-0 flex-1">
-          <h3 className="truncate text-[16px] font-semibold">{account.name}</h3>
-          <p className="tma-num truncate text-[13px] text-(--tma-hint)">
-            {account.phone}
-            {account.username ? ` · @${account.username}` : ""}
-          </p>
-        </div>
-        <span className={cn("shrink-0 pt-0.5 text-[13px] font-medium", HEALTH_TONE[account.health])}>{account.statusLabel}</span>
+    <article className="flex flex-col gap-1.5 py-2.5 pr-2 pl-4" data-testid="account-row">
+      <div className="flex items-baseline gap-3 pr-2">
+        <h3 className="min-w-0 flex-1 truncate text-[16px] font-semibold">{account.name}</h3>
+        <span className={cn("shrink-0 text-[14px] font-medium", HEALTH_TONE[account.health])}>{account.statusLabel}</span>
+      </div>
+      <div className="-my-1.5 flex items-center gap-2">
+        <p className="tma-num min-w-0 flex-1 truncate text-[13px] text-(--tma-hint)">
+          {account.phone} · {busy ? "проверяем…" : formatChecked(account.lastCheckedAt)}
+        </p>
+        <button
+          type="button"
+          onClick={() => void check()}
+          disabled={busy}
+          className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-full px-2 text-[15px] font-medium text-(--tma-link)"
+        >
+          {busy ? <Spinner className="size-4" /> : null}
+          Проверить
+        </button>
       </div>
       {account.reason ? (
-        <p className={cn("text-[14px] leading-snug", account.health === "error" ? "text-(--tma-destructive)" : "text-(--tma-text)")}>{account.reason}</p>
+        <p className={cn("pr-2 text-[14px] leading-snug", account.health === "error" ? "text-(--tma-destructive)" : "text-(--tma-text)")}>{account.reason}</p>
       ) : null}
       {account.caps.length > 0 ? (
-        <dl className="flex flex-col gap-2 pt-0.5">
+        <dl className="flex flex-col gap-2 pt-0.5 pr-2 pb-1">
           {account.caps.map((c) => {
             const pct = c.limit > 0 ? Math.min(100, Math.round((c.used / c.limit) * 100)) : 0;
             const full = c.limit > 0 && c.used >= c.limit;
@@ -126,20 +134,8 @@ function AccountRow({ account, onChecked }: { account: AccountItem; onChecked():
           })}
         </dl>
       ) : null}
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-[13px] text-(--tma-hint)">{busy ? "проверяем…" : formatChecked(account.lastCheckedAt)}</span>
-        <button
-          type="button"
-          onClick={() => void check()}
-          disabled={busy}
-          className="-mr-2 flex min-h-11 items-center gap-1.5 rounded-full px-3 text-[15px] font-medium text-(--tma-link)"
-        >
-          {busy ? <Spinner className="size-4" /> : null}
-          Проверить
-        </button>
-      </div>
       {error ? (
-        <p role="alert" className="-mt-1 text-[13px] text-(--tma-destructive)">
+        <p role="alert" className="pr-2 text-[13px] text-(--tma-destructive)">
           {error}
         </p>
       ) : null}

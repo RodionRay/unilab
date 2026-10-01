@@ -51,13 +51,13 @@ export function dayKey(iso: string): string {
   return at ? `${at.getFullYear()}-${at.getMonth()}-${at.getDate()}` : "";
 }
 
-/** «проверен в 14:02» / «проверен вчера» — relative to now, no seconds. */
+/** «проверен 14:02» / «проверен вчера» / «проверен 28 сент» — relative to now, no seconds. */
 export function formatChecked(iso: string, now: Date = new Date()): string {
   const at = parse(iso);
   if (!at) return "ещё не проверялся";
   const ago = daysAgo(at, now);
-  if (ago <= 0) return `проверен в ${TIME.format(at)}`;
-  if (ago === 1) return `проверен вчера в ${TIME.format(at)}`;
+  if (ago <= 0) return `проверен ${TIME.format(at)}`;
+  if (ago === 1) return "проверен вчера";
   return `проверен ${DAY_MONTH.format(at).replace(/\.$/, "")}`;
 }
 

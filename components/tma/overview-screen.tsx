@@ -5,7 +5,7 @@ import { ChevronRight } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import type { OverviewFeed } from "@/lib/tma/contract";
-import { useOnline } from "@/components/tma/context";
+import { useFeedQuery, useOnline, useTmaSession } from "@/components/tma/context";
 import type { FeedResult } from "@/components/tma/context";
 import { formatNumber, plural } from "@/components/tma/format";
 import { ErrorState, InlineNotice, PullScroll, RefreshButton, ScreenHeader, Section } from "@/components/tma/parts";
@@ -44,6 +44,7 @@ export function OverviewScreen({ feed, onGo }: { feed: FeedResult<OverviewFeed>;
                 <Stat label="Инвайты" value={d.today.invites} onClick={() => onGo("tasks")} />
               </div>
             </Section>
+            <Attention onGo={onGo} />
             <Section title="Аккаунты">
               <NavRow
                 onClick={() => onGo("accounts")}
@@ -89,9 +90,59 @@ export function OverviewScreen({ feed, onGo }: { feed: FeedResult<OverviewFeed>;
   );
 }
 
+const ATTENTION_LIMIT = 4;
+
+/** Problem accounts and failed tasks by name, with the reason in words — the things to fix today. */
+function Attention({ onGo }: { onGo(tab: TabId): void }) {
+  const { client } = useTmaSession();
+  const accounts = useFeedQuery("overview:accounts", () => client.feed("accounts"));
+  const tasks = useFeedQuery("overview:tasks", () => client.feed("tasks"));
+  if (accounts.status === "loading" || tasks.status === "loading") {
+    return (
+      <Section title="Требуют внимания">
+        <div aria-busy="true" aria-label="Загрузка" className="flex flex-col gap-3 p-4">
+          <Skeleton className="h-4 w-1/2" />
+          <Skeleton className="h-3.5 w-4/5" />
+          <Skeleton className="h-4 w-2/5" />
+        </div>
+      </Section>
+    );
+  }
+  const rows = [
+    ...(tasks.data?.items ?? [])
+      .filter((t) => t.status === "error")
+      .map((t) => ({ id: t.id, tab: "tasks" as const, title: t.name, kind: "ошибка задачи", danger: true, detail: t.error || "Остановлена с ошибкой" })),
+    ...(accounts.data?.items ?? [])
+      .filter((a) => a.health === "error" || a.health === "paused" || a.health === "setup")
+      .map((a) => ({ id: a.id, tab: "accounts" as const, title: a.name, kind: a.statusLabel.toLowerCase(), danger: a.health === "error", detail: a.reason || a.statusLabel })),
+  ];
+  if (rows.length === 0) return null;
+  const shown = rows.slice(0, ATTENTION_LIMIT);
+  return (
+    <Section title="Требуют внимания" aside={rows.length > ATTENTION_LIMIT ? `ещё ${rows.length - ATTENTION_LIMIT}` : undefined}>
+      <ul>
+        {shown.map((r) => (
+          <li key={r.id} className="border-b border-(--tma-separator) last:border-b-0">
+            <button type="button" onClick={() => onGo(r.tab)} className="flex w-full items-center gap-3 py-2.5 pr-3 pl-4 text-left active:bg-(--tma-fill)">
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="flex items-baseline gap-2">
+                  <span className="min-w-0 truncate text-[16px] font-semibold">{r.title}</span>
+                  <span className={cn("shrink-0 text-[13px]", r.danger ? "text-(--tma-destructive)" : "text-(--tma-hint)")}>{r.kind}</span>
+                </span>
+                <span className="tma-clamp-2 text-[14px] leading-snug text-(--tma-hint)">{r.detail}</span>
+              </span>
+              <ChevronRight className="size-5 shrink-0 text-(--tma-hint)" aria-hidden />
+            </button>
+          </li>
+        ))}
+      </ul>
+    </Section>
+  );
+}
+
 function Stat({ label, value, onClick, className }: { label: string; value: number; onClick(): void; className?: string }) {
   return (
-    <button type="button" onClick={onClick} className={cn("flex min-w-0 flex-col px-4 py-3 text-left active:bg-(--tma-fill)", className)}>
+    <button type="button" onClick={onClick} className={cn("flex min-w-0 flex-col px-3 py-3 text-left active:bg-(--tma-fill) min-[380px]:px-4", className)}>
       <span className="tma-num text-[22px] leading-7 font-semibold">{formatNumber(value)}</span>
       <span className="truncate text-[13px] text-(--tma-hint)">{label}</span>
     </button>
