@@ -150,11 +150,9 @@ export const GROUP_CATALOG: CatalogGroup[] = [
   g("ozon-sellers", "OZON чат поставщиков", "https://t.me/ozon_mplace", ["marketplaces", "ozon", "ecommerce"], "Селлеры Ozon: FBO/FBS, акции, карточки.", "Селлеры Ozon"),
   g("ozon-mpgroup", "Ozon | Чат поставщиков", "https://t.me/mpgroup_ozon", ["marketplaces", "ozon", "ecommerce"], "Поддержка поставщиков Ozon, обмен опытом.", "Селлеры Ozon"),
   g("ozon-sllr", "OZON seller", "https://t.me/ozon_sllr", ["marketplaces", "ozon", "ecommerce"], "Сообщество селлеров Ozon.", "Селлеры Ozon"),
-  g("ozon-business", "Ozon Business", "https://t.me/ozonbusiness", ["marketplaces", "ozon", "business"], "Бизнес-канал/чат Ozon.", "Селлеры Ozon"),
 
   // ——— Яндекс Маркет / Мегамаркет ———
   g("ym-sellers", "Чат продавцов Яндекс Маркета 2.0", "https://t.me/chat_marketplace_ym2", ["marketplaces", "yandex_market", "ecommerce"], "Крупный чат продавцов Яндекс Маркета.", "Селлеры ЯМ"),
-  g("you-marketplaces", "Поставщики МП | объявления", "https://t.me/youmarketplaces", ["marketplaces", "yandex_market", "megamarket", "ecommerce"], "WB / Ozon / ЯМ / Мегамаркет.", "Мультиселлеры"),
 
   // ——— Мульти-МП ———
   g("mp-multi", "Чат селлеры WB / Ozon / YM", "https://t.me/mp_seller", ["marketplaces", "ecommerce", "analytics", "inventory", "pricing", "yandex_market"], "Общий чат мультиселлеров.", "Мультиселлеры"),
