@@ -1,7 +1,7 @@
 # STATE (partial — task note only; regenerate via /project-sync)
 
 ## Now
-- Bulk «скрыть был в сети»: task/bulk-hide-last-seen-2026-10-01 (stacked on fix-lastseen-save-race 7d6a61c), in progress — docs/project/tasks/handoff-2026-10-01-6be12118.md
+- Bulk «скрыть был в сети»: task/bulk-hide-last-seen-2026-10-01 (stacked on fix-lastseen-save-race 7d6a61c) @41e7cbb pushed, staff 2ff5a4a; PR after fix-lastseen-save-race lands — docs/project/tasks/handoff-2026-10-01-6be12118.md
 - task/remove-lead-ignore-stopwords-2026-10-01 (worktree ~/worktrees/wt-unilab-remove-lead-ignore-stopwords), commit 260664e pushed.
   Removes lead ignore / stop-word learning. Gate: vitest 670/670, tsc 0 new, build ok; UI NOT verified visually.
   Handoff: docs/project/tasks/handoff-2026-10-01-9cb70af9.md
