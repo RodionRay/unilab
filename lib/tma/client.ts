@@ -20,8 +20,7 @@ import type {
   TmaErrorCode,
 } from "@/lib/tma/contract";
 
-/** Local extension (contract gap): the match reason of a found lead, shown on hot rows when the server sends it. */
-export type InboxRow = InboxItem & { reason?: string };
+export type InboxRow = InboxItem;
 export type InboxPage = Omit<InboxFeed, "items"> & { items: InboxRow[] };
 export type InboxFilter = "all" | "hot" | "unread" | "conversations";
 

@@ -108,7 +108,7 @@ describe('REQ-M1 · inbox',()=>{
   expect(pages[0].counts).toEqual({hot:0,unread:32});
   expect(pages[0].items[0]).toEqual({
    id:expect.any(String),name:'L63',username:'',temperature:'warm',preview:'Ищу поставщика',at:expect.any(String),
-   unread:true,needsManager:false,conversation:false,source:'',
+   unread:true,needsManager:false,conversation:false,source:'',reason:'',
   });
  });
 

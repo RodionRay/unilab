@@ -27,7 +27,6 @@ export const TMA_ACTIONS = [
   "pause_audience",
   "start_invite",
   "pause_invite",
-  "mark_auto_rescan",
 ] as const;
 export type TmaAction = (typeof TMA_ACTIONS)[number];
 
@@ -96,6 +95,8 @@ export type InboxItem = {
   needsManager: boolean;
   conversation: boolean;
   source: string;
+  /** Why the lead matched (≤200 chars), empty when unknown. */
+  reason: string;
 };
 export type InboxFeed = { view: "inbox"; items: InboxItem[]; nextCursor: string | null; counts: { hot: number; unread: number } };
 

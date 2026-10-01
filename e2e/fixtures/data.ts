@@ -70,6 +70,7 @@ const page1: InboxRow[] = [
     needsManager: true,
     conversation: true,
     source: "Маркетологи СПб",
+    reason: "",
   },
   {
     id: LEAD_OLEG,
@@ -95,6 +96,7 @@ const page1: InboxRow[] = [
     needsManager: false,
     conversation: true,
     source: "SMM-чат Москва",
+    reason: "",
   },
   {
     id: "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
@@ -107,6 +109,7 @@ const page1: InboxRow[] = [
     needsManager: false,
     conversation: false,
     source: "Инфобизнес изнутри",
+    reason: "",
   },
   {
     id: "c3d4e5f6-a7b8-4c9d-8e1f-2a3b4c5d6e7f",
@@ -119,6 +122,7 @@ const page1: InboxRow[] = [
     needsManager: false,
     conversation: true,
     source: "Маркетологи СПб",
+    reason: "",
   },
   {
     id: "d4e5f6a7-b8c9-4d0e-9f2a-3b4c5d6e7f80",
@@ -131,6 +135,7 @@ const page1: InboxRow[] = [
     needsManager: false,
     conversation: false,
     source: "SMM-чат Москва",
+    reason: "",
   },
   {
     id: "e5f6a7b8-c9d0-4e1f-8a3b-4c5d6e7f8091",
@@ -143,6 +148,7 @@ const page1: InboxRow[] = [
     needsManager: false,
     conversation: false,
     source: "Таргет и трафик",
+    reason: "",
   },
   {
     id: "f6a7b8c9-d0e1-4f2a-9b4c-5d6e7f8091a2",
@@ -155,6 +161,7 @@ const page1: InboxRow[] = [
     needsManager: false,
     conversation: false,
     source: "Работа в маркетинге",
+    reason: "",
   },
 ];
 
@@ -170,6 +177,7 @@ const page2: InboxRow[] = [
     needsManager: false,
     conversation: false,
     source: "Реклама Урал",
+    reason: "",
   },
   {
     id: "1b2c3d4e-5f6a-4b7c-9d8e-9f0a1b2c3d4e",
@@ -182,6 +190,7 @@ const page2: InboxRow[] = [
     needsManager: false,
     conversation: false,
     source: "Бьюти-маркетинг",
+    reason: "",
   },
 ];
 
@@ -393,7 +402,7 @@ export const tasks: TasksFeed = {
       progress: { done: 12, total: 38 },
       error: "",
       updatedAt: at(0, "14:00"),
-      actions: ["mark_auto_rescan"],
+      actions: [],
     },
     {
       id: "22222222-bbbb-4ccc-8ddd-000000000004",

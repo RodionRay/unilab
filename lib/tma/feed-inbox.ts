@@ -70,6 +70,7 @@ function inboxItem(id: string, lead: LeadData, activity: string): InboxItem {
     needsManager: lead.needsManager === true,
     conversation: lead.conversationOpen === true || replies.length > 0,
     source: str(lead.source),
+    reason: str(lead.reason).slice(0, PREVIEW_MAX),
   };
 }
 

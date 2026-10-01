@@ -44,7 +44,6 @@ const VERBS: Verb[] = [
   { action: "start_audience", label: "Запустить", confirm: (t) => `Запустить сбор аудитории «${t.name}»?` },
   { action: "pause_invite", label: "Пауза", confirm: (t) => `Поставить инвайтинг «${t.name}» на паузу?` },
   { action: "start_invite", label: "Запустить", confirm: (t) => `Запустить инвайтинг «${t.name}»? Приглашения начнут уходить с аккаунтов.` },
-  { action: "mark_auto_rescan", label: "Отметить обход", confirm: () => "Отметить автообход групп выполненным сейчас?" },
 ];
 
 export function TasksScreen() {

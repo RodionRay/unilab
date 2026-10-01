@@ -123,7 +123,8 @@ Source: read-only scout of origin/dev @671338d + Telegram docs (core.telegram.or
 - REQ-M3 Accounts: per-account health (status, warm-up cap used/limit, pause/error reason, last check), action
   «Проверить» (`check_account`).
 - REQ-M4 Tasks: list mailing / audience / invite / auto-rescan tasks with status + progress; start/pause
-  (`start_*`/`pause_*`, `mark_auto_rescan`) with confirm.
+  (`start_*`/`pause_*`) with confirm. Auto-rescan is shown read-only (status, last error): on/off is a settings
+  save, outside `TMA_ACTIONS`; a narrow toggle action → v1.1 (decision 2026-10-01, `mark_auto_rescan` only logs).
 - REQ-M5 Overview: today's key numbers (new leads, replies, messages sent, invites, account errors) from one
   aggregate read.
 - REQ-M6 When a private notice's `web_app` button is pressed, the app shall open directly on that lead.
@@ -153,6 +154,7 @@ Source: read-only scout of origin/dev @671338d + Telegram docs (core.telegram.or
 - D3 (Q3) Opt-in private DM notices with «Открыть» per member; group notices unchanged.
 - D4 (Q4) Stand: quick tunnel + dedicated test bot; `scripts/tma-dev.mjs` re-sets the menu button. → A5 decided.
 - D5 (Q5) Telegram theme params + UniLab accent. → A10 decided.
+- D6 (orchestrator) Auto-rescan read-only in the mini app; `mark_auto_rescan` removed from `TMA_ACTIONS` (it only logs).
 
 ## Milestones / waves (split by file ownership) — as executed
 - **W0 done** — bot branches merged locally into `task/tg-mini-app-2026-10-01` (69c1413). The PR must merge after
