@@ -1822,94 +1822,6 @@ button.studio-metric:hover .studio-metric-card {
   font-weight: 500;
 }
 
-.ai-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(260px, 0.85fr);
-  gap: 20px;
-  align-items: start;
-}
-
-.ai-block {
-  margin-top: 22px;
-  padding-top: 18px;
-  border-top: 1px solid var(--spike-border);
-}
-
-.ai-block:first-of-type {
-  margin-top: 18px;
-}
-
-.ai-block h3 {
-  margin: 0 0 10px;
-  font-size: 0.75rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--spike-muted);
-}
-
-.ai-block p {
-  margin: 0;
-  font-size: 0.9375rem;
-  line-height: 1.65;
-  color: var(--spike-text);
-}
-
-.ai-filter-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-}
-
-.ai-filter-card {
-  border: 1px solid var(--spike-border);
-  border-radius: 16px;
-  padding: 14px 16px;
-  background: rgba(255,255,255,0.04);
-  min-height: 120px;
-}
-
-.ai-filter-card.plus {
-  background: linear-gradient(180deg, rgba(75,208,139,0.1) 0%, #1f1f1f 100%);
-  border-color: #d4eadc;
-}
-
-.ai-filter-card.minus {
-  background: linear-gradient(180deg, rgba(255,169,44,0.08) 0%, #1f1f1f 100%);
-  border-color: rgba(255, 169, 44, 0.35);
-}
-
-.ai-filter-card h3 {
-  margin: 0 0 12px;
-  font-size: 0.8125rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--spike-muted);
-}
-
-.ai-last-minus {
-  margin: 0 0 12px;
-  padding: 10px 12px;
-  border-radius: 12px;
-  border: 1px dashed rgba(255, 169, 44, 0.55);
-  background: rgba(255, 169, 44, 0.08);
-}
-
-.ai-last-minus-title {
-  margin: 0 0 8px;
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  color: #ffd58a;
-}
-
-.kw.minus.is-new {
-  box-shadow: 0 0 0 1px rgba(255, 169, 44, 0.7);
-  background: rgba(255, 169, 44, 0.22);
-}
-
 .kw-list {
   display: flex;
   flex-wrap: wrap;
@@ -1927,21 +1839,6 @@ button.studio-metric:hover .studio-metric-card {
   font-weight: 600;
   line-height: 1.3;
   word-break: break-word;
-}
-
-.kw.plus {
-  background: rgba(75, 208, 139, 0.12);
-  color: #1a7a4c;
-}
-
-.kw.minus {
-  background: rgba(255,169,44,0.12);
-  color: #b45309;
-}
-
-.kw.niche {
-  background: var(--spike-primary-light);
-  color: var(--spike-primary);
 }
 
 .kw-editor {
@@ -2025,28 +1922,6 @@ button.studio-metric:hover .studio-metric-card {
   filter: brightness(0.96);
   outline: 2px solid rgba(255, 169, 44, 0.4);
   outline-offset: 1px;
-}
-
-.ai-tips {
-  background: linear-gradient(165deg, rgba(255,169,44,0.06) 0%, #1f1f1f 55%);
-}
-
-.ai-tips-list {
-  margin: 0;
-  padding-left: 1.15rem;
-  display: grid;
-  gap: 12px;
-}
-
-.ai-tips-list li {
-  font-size: 0.875rem;
-  line-height: 1.55;
-  color: var(--spike-text);
-}
-
-.ai-tips-list strong {
-  font-weight: 700;
-  color: var(--spike-text);
 }
 
 .section-grid {
@@ -3357,8 +3232,7 @@ textarea:focus-visible,
 @media (max-width: 1100px) {
   .stats,
   .split,
-  .section-grid,
-  .ai-layout {
+  .section-grid {
     grid-template-columns: 1fr 1fr;
   }
   .dash-grid,
@@ -3370,11 +3244,7 @@ textarea:focus-visible,
     grid-column: 1 / -1;
   }
   .split,
-  .section-grid,
-  .ai-layout {
-    grid-template-columns: 1fr;
-  }
-  .ai-filter-grid {
+  .section-grid {
     grid-template-columns: 1fr;
   }
   .group-metrics {
@@ -4910,52 +4780,6 @@ button[data-slot="button"][data-variant="ghost"]:hover {
 }
 .task-log-text {
   word-break: break-word;
-}
-
-.lead-core-panel .lead-core-checklist {
-  list-style: none;
-  margin: 0 0 12px;
-  padding: 0;
-  display: grid;
-  gap: 8px;
-}
-.lead-core-checklist li {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  font-size: 0.9rem;
-  line-height: 1.4;
-}
-.lead-core-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.lead-core-verdict {
-  margin-top: 12px;
-  padding: 12px 14px;
-  border-radius: 12px;
-  border: 1px solid var(--spike-border);
-}
-.lead-core-verdict.is-pass {
-  border-color: color-mix(in srgb, var(--spike-success, #4bd08b) 40%, var(--spike-border));
-  background: color-mix(in srgb, var(--spike-success, #4bd08b) 10%, transparent);
-}
-.lead-core-verdict.is-reject {
-  border-color: color-mix(in srgb, var(--spike-danger, #ff6b6b) 35%, var(--spike-border));
-  background: color-mix(in srgb, var(--spike-danger, #ff6b6b) 8%, transparent);
-}
-.lead-core-verdict ul {
-  margin: 8px 0 0;
-  padding-left: 1.1rem;
-  font-size: 0.85rem;
-  color: var(--spike-muted);
-}
-.lead-core-flags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 10px;
 }
 
 .mailing-soft-block {
