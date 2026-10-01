@@ -1,0 +1,6 @@
+{
+  "_synthetic": "Hand-written from VK API 5.199 docs (dev.vk.com), not a live response; spike S0 replaces it with a sanitised live one.",
+  "group": {"response": {"type": "group", "object_id": 22000}},
+  "user": {"response": {"type": "user", "object_id": 700100}},
+  "missing": {"response": []}
+}

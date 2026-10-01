@@ -1,0 +1,6 @@
+{
+  "_synthetic": "Hand-written from VK API 5.199 docs (dev.vk.com), not a live response; spike S0 replaces it with a sanitised live one.",
+  "response": [
+    {"id": 700100, "first_name": "Ирина", "last_name": "Тестова", "can_access_closed": true, "is_closed": false}
+  ]
+}

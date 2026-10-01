@@ -1,0 +1,16 @@
+{
+  "_synthetic": "Hand-written from VK API 5.199 docs (dev.vk.com), not a live response; spike S0 replaces it with a sanitised live one.",
+  "response": {
+    "count": 2,
+    "items": [
+      {"id": 9001, "owner_id": -22000, "from_id": -22000, "date": 1790001000, "post_type": "post", "text": "Обсуждаем, где заказать сайт для магазина", "comments": {"count": 3}},
+      {"id": 9000, "owner_id": -22000, "from_id": 700400, "date": 1790000900, "post_type": "post", "text": "Предложенная запись: ищу дизайнера", "comments": {"count": 0}}
+    ],
+    "profiles": [
+      {"id": 700400, "first_name": "Олег", "last_name": "Предложкин"}
+    ],
+    "groups": [
+      {"id": 22000, "name": "Нишевая группа", "screen_name": "niche_test", "is_closed": 0, "type": "page"}
+    ]
+  }
+}

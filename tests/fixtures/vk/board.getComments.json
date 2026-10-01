@@ -1,0 +1,16 @@
+{
+  "_synthetic": "Hand-written from VK API 5.199 docs (dev.vk.com), not a live response; spike S0 replaces it with a sanitised live one.",
+  "response": {
+    "count": 2,
+    "items": [
+      {"id": 120, "from_id": 700700, "date": 1790002000, "text": "Нужен монтажёр видео на постоянку, пишите"},
+      {"id": 119, "from_id": -22000, "date": 1790001900, "text": "Правила раздела: объявления только с бюджетом"}
+    ],
+    "profiles": [
+      {"id": 700700, "first_name": "Денис", "last_name": "Обсуждалкин"}
+    ],
+    "groups": [
+      {"id": 22000, "name": "Нишевая группа", "screen_name": "niche_test", "is_closed": 0, "type": "page"}
+    ]
+  }
+}
