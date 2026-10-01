@@ -1,0 +1,12 @@
+# e2e-ai 2026-10-01T12:12:06.378Z scenario=full base=http://127.0.0.1:8011
+PASS 1 funnel headline, two project tabs, tab switch updates URL + card — headline «Из 797 сообщений за 7 дней AI нашёл 27 лидов»; project=a1000000-0000-4000-8000-000000000002; card «Карточки товаров под ключ»
+PASS 2 edit «Кто лид» + save -> one project_update with only that key — patch keys ["audience"], status 200
+PASS 3 expand funnel row «Стоп-слова» -> samples visible — 3 samples shown
+PASS 4 approval queue: edited send -> send_lead_message; dismiss -> dismiss_draft — sent c3000000-0000-4000-8000-000000000001 mode=chat (200); dismissed c3000000-0000-4000-8000-000000000002 (200); queue after: []
+PASS 5 dirty card + sidebar «Лиды» -> leave dialog, «Остаться» keeps view=ai — dialog shown; view=ai, edits kept
+PASS 6 leads view «Хороший лид» -> lead_feedback {id, verdict:good} — lead_feedback {"id":"c3000000-0000-4000-8000-000000000005","verdict":"good"} -> 200
+PASS 7 chats view hides auto drafts, shows manual draft 04 and conversation 07 — shown: ["Марина Кузнецова","Сергей Панов","Екатерина Волкова"]
+# all passed
+# e2e-ai 2026-10-01T12:12:22.349Z scenario=staff-redacted base=http://127.0.0.1:8011
+PASS 8 staff-redacted: «Кто лид» save sends no examples, no 403 — 1 project_update, patch keys ["audience"]; actions ["project_update:200","funnel:200"]
+# all passed

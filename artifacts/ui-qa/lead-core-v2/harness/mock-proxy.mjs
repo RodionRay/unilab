@@ -14,6 +14,8 @@ const LATENCY = Number(args.latency || 0);
 if (!SCENARIOS.includes(SCENARIO)) { console.error(`scenario must be one of ${SCENARIOS.join(', ')}`); process.exit(64); }
 
 const state = initialState(SCENARIO);
+// Every POST /api/workspace body with its answer status; read by e2e-ai.mjs via GET /__mock/log, cleared by DELETE.
+let postLog = [];
 const nowIso = () => new Date().toISOString();
 const find = (id, kind) => state.records.find((r) => r.id === id && (!kind || r.kind === kind));
 const projects = () => state.records.filter((r) => r.kind === 'project');
@@ -190,10 +192,11 @@ async function handlePost(req, res) {
   const chunks = []; for await (const c of req) chunks.push(c);
   let b; try { b = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { return send(res, 400, { error: 'Некорректный запрос' }); }
   const fn = ACTIONS[b.action];
-  if (!fn) return send(res, 200, { ok: true, mocked: true });
+  if (!fn) { postLog.push({ at: nowIso(), status: 200, body: b }); return send(res, 200, { ok: true, mocked: true }); }
   const denied = staffDenial(b);
-  if (denied) { console.log(`[mock] POST ${b.action} -> 403 (${denied})`); return send(res, 403, { error: denied }); }
+  if (denied) { postLog.push({ at: nowIso(), status: 403, body: b }); console.log(`[mock] POST ${b.action} -> 403 (${denied})`); return send(res, 403, { error: denied }); }
   const [status, raw] = fn(b);
+  postLog.push({ at: nowIso(), status, body: b });
   const body = SCENARIO === 'staff-redacted' ? redactLeadText(raw) : raw;
   console.log(`[mock] POST ${b.action} -> ${status}`);
   send(res, status, body);
@@ -201,6 +204,10 @@ async function handlePost(req, res) {
 
 http.createServer(async (req, res) => {
   const pathname = (req.url || '/').split('?')[0];
+  if (pathname === '/__mock/log') {
+    if (req.method === 'DELETE') { postLog = []; return send(res, 200, { ok: true }); }
+    return send(res, 200, { scenario: SCENARIO, posts: postLog });
+  }
   if (pathname !== '/api/workspace') return forward(req, res);
   if (LATENCY) await new Promise((r) => setTimeout(r, LATENCY));
   if (req.method === 'GET') return handleGet(req, res);

@@ -24,3 +24,7 @@ Answers follow `docs/leads-pipeline.md` (Actions): `funnel` → `{ok,funnel,dm}`
 `draftKind` `group_reply|dm_first|dm_continue`, manual drafts none. Scenario `staff-redacted`: GET `workspace` = `fixtures.mjs::STAFF_WORKSPACE`
 (manager, ai + groups, no leads/chats), records filtered like `visibleRecordsFor`, funnel `samples:{}`, examples `[]`; lead actions and a
 `project_update` patch with examples → 403 (logged as `-> 403` in `$H/.run/proxy.log`, the redaction check greps for it).
+
+E2E journeys: `node $H/e2e-ai.mjs | tee artifacts/ui-qa/lead-core-v2/e2e/e2e-ai.log` (proxy scenario `full` → checks 1–7;
+restart the proxy with `--scenario staff-redacted` and run again with `tee -a` → check 8). The script asserts POST bodies from the proxy's
+own log: `GET /__mock/log` → `{scenario, posts:[{at,status,body}]}` (every POST `/api/workspace`, 403s included), `DELETE /__mock/log` clears it.
