@@ -1,6 +1,6 @@
 import {afterEach,beforeAll,beforeEach,describe,expect,it,vi} from 'vitest';
 import {
-  ACCOUNT_ID,BOT_TOKEN,LEAD_ID,MAILING_ID,OWNER,PROXY_ID,SETTINGS_ID,
+  ACCOUNT_ID,BOT_TOKEN,LEAD_ID,OWNER,PROXY_ID,SETTINGS_ID,
   login,postRequest,resetWorkspace,testDb,
 } from './helpers/workspace-harness';
 
@@ -39,7 +39,7 @@ describe('workspace API: роль «Наблюдатель» только чит
 
   it.each([
     ['удаление аккаунта',{action:'delete',kind:'account',id:ACCOUNT_ID}],
-    ['запуск рассылки',{action:'start_mailing',id:MAILING_ID}],
+    ['вступление в группу',{action:'join_group',id:'e0000000-0000-4000-8000-00000000000e'}],
     ['отправка сообщения лиду',{action:'send_lead_message',id:LEAD_ID,mode:'dm',text:'Привет'}],
     ['сохранение настроек',{action:'save',kind:'settings',data:{name:'X'}}],
     ['отметка лида просмотренным',{action:'mark_lead_viewed',id:LEAD_ID}],
@@ -89,7 +89,7 @@ describe('workspace API: доступ по разделам',()=>{
     expect(res.status).toBe(403);
   });
 
-  it('менеджер с рассылками видит аккаунты только как список для выбора, без телефона',async()=>{
+  it('менеджер с группами видит аккаунты только как список для выбора, без телефона',async()=>{
     addMember('mgr-1','manager');
     login('mgr-1');
 
@@ -132,10 +132,10 @@ describe('workspace API: доступ по разделам',()=>{
 describe('workspace API: владелец без изменений',()=>{
   beforeEach(()=>login(OWNER));
 
-  it('видит все записи и токен бота',async()=>{
+  it('видит все записи живых видов и токен бота; задачи удалённых функций не отдаются',async()=>{
     const records=await visibleRecords();
 
-    expect(new Set(records.map(r=>r.kind))).toEqual(new Set(['account','proxy','lead','mailing_task','settings']));
+    expect(new Set(records.map(r=>r.kind))).toEqual(new Set(['account','proxy','lead','settings','project']));
     expect(JSON.stringify(records)).toContain(BOT_TOKEN);
   });
 
@@ -152,3 +152,44 @@ describe('workspace API: владелец без изменений',()=>{
     expect(JSON.parse(row.data).notifyBotToken).toBe('');
   });
 });
+
+describe('lead core v2: тексты лидов не уходят сотруднику без раздела «Лиды»',()=>{
+  const SECRET_TEXT='Ищу сервис остатков, мой телефон +79990000000';
+  const settingsOnly={...Object.fromEntries(Object.keys(ALL_CRM_ACCESS).map(k=>[k,false])),ai:true,settings:true} as CrmAccess;
+  async function seedProject(){
+    login(OWNER);
+    const created=await POST(postRequest({action:'project_create',data:{name:'P',goodExamples:[SECRET_TEXT],badExamples:[SECRET_TEXT]}}));
+    const id=(await created.json() as {id:string}).id;
+    testDb().sqlite.prepare("INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,'scan_day',?,NULL,?)")
+      .run(`scan-day:${id}:${new Date().toISOString().slice(0,10)}`,OWNER,JSON.stringify({projectId:id,day:new Date().toISOString().slice(0,10),counts:{leads:1},samples:{leads:[{text:SECRET_TEXT}]},runs:['r']}),new Date().toISOString());
+    return id;
+  }
+
+  it('ai/settings без leads: GET, funnel и project_update без примеров и сэмплов',async()=>{
+    const id=await seedProject();
+    addMember('ai-1','manager',settingsOnly);login('ai-1');
+
+    const records=await visibleRecords();
+    const funnel=await (await POST(postRequest({action:'funnel',projectId:id,days:1}))).json() as Record<string,unknown>;
+    const upd=await (await POST(postRequest({action:'project_update',id,patch:{minScore:60}}))).json() as Record<string,unknown>;
+    const wipe=await POST(postRequest({action:'project_update',id,patch:{goodExamples:[]}}));
+
+    expect(records.some(r=>r.kind==='project')).toBe(true);
+    expect(JSON.stringify(records)).not.toContain(SECRET_TEXT);
+    expect(JSON.stringify(funnel)).not.toContain(SECRET_TEXT);
+    expect((funnel.funnel as {counts:{leads:number}}).counts.leads).toBe(1);
+    expect(JSON.stringify(upd)).not.toContain(SECRET_TEXT);
+    expect(wipe.status).toBe(403);
+  });
+
+  it('с разделом «Лиды» примеры и сэмплы видны',async()=>{
+    const id=await seedProject();
+    addMember('lead-1','manager',{...settingsOnly,leads:true});login('lead-1');
+
+    const funnel=await (await POST(postRequest({action:'funnel',projectId:id,days:1}))).json();
+
+    expect(JSON.stringify(await visibleRecords())).toContain(SECRET_TEXT);
+    expect(JSON.stringify(funnel)).toContain(SECRET_TEXT);
+  });
+});
+

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Telegram worker actions: check / join / scan / collect / invite."""
+"""Telegram worker actions: check / join / scan / send / inbox / profile."""
 from __future__ import annotations
 
 import argparse
@@ -14,6 +14,7 @@ import socket
 import sys
 import tempfile
 import zipfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -666,7 +667,12 @@ def parse_group_ref(url: str) -> dict[str, str]:
     )
     if m:
         return {"kind": "invite", "value": m.group(1)}
-    m = re.search(r"(?:https?://)?t\.me/([a-zA-Z0-9_]{5,32})", u, re.I)
+    # t.me/c/<id>/<msg> — ссылка на сообщение приватного канала: только внутренний id
+    m = re.search(r"(?:https?://)?t\.me/c/(\d+)", u, re.I)
+    if m:
+        return {"kind": "channel_id", "value": m.group(1)}
+    # t.me/s/<name> — веб-превью публичного канала
+    m = re.search(r"(?:https?://)?t\.me/(?:s/)?([a-zA-Z0-9_]{5,32})", u, re.I)
     if m:
         return {"kind": "username", "value": m.group(1)}
     raise RuntimeError("Некорректная ссылка на группу/канал")
@@ -691,20 +697,172 @@ async def _is_member(client, entity) -> bool:
             return False
 
 
-async def join_group(client, url: str, peer_hint: dict | None = None) -> dict[str, Any]:
-    from telethon.tl.functions.messages import ImportChatInviteRequest, CheckChatInviteRequest
+async def _join_entity(client, entity) -> dict[str, Any]:
+    """JoinChannel в уже найденный entity + проверка членства. FloodWait — наверх вызывающему."""
     from telethon.tl.functions.channels import JoinChannelRequest
     from telethon.errors import (
         UserAlreadyParticipantError,
         InviteRequestSentError,
-        FloodWaitError,
         ChannelPrivateError,
         UserBannedInChannelError,
         RPCError,
     )
 
+    title = getattr(entity, "title", None) or getattr(entity, "username", "") or ""
+    peer = _peer_fields(entity)
+    # Уже участник — сразу ok
+    if await _is_member(client, entity):
+        return {
+            "ok": True,
+            "status": "active",
+            "join": "already",
+            "title": title,
+            "error": "",
+            "member": True,
+            **peer,
+        }
+    try:
+        await client(JoinChannelRequest(entity))
+    except UserAlreadyParticipantError:
+        return {
+            "ok": True,
+            "status": "active",
+            "join": "already",
+            "title": title,
+            "error": "",
+            "member": True,
+            **peer,
+        }
+    except InviteRequestSentError:
+        return {
+            "ok": True,
+            "status": "pending",
+            "join": "requested",
+            "title": title,
+            "error": "Заявка на вступление отправлена",
+            "member": False,
+            **peer,
+        }
+    except UserBannedInChannelError:
+        return {
+            "ok": False,
+            "status": "error",
+            "join": "banned",
+            "title": title,
+            "error": "Аккаунт забанен в этой группе",
+            "member": False,
+        }
+    except ChannelPrivateError:
+        return {
+            "ok": False,
+            "status": "error",
+            "join": "private",
+            "title": title,
+            "error": "Группа приватная — нужен инвайт-ссылка",
+            "member": False,
+        }
+    except RPCError as e:
+        if is_frozen_rpc(e):
+            return frozen_action_error("вступление в канал/группу")
+        raise
+    # Проверяем фактическое членство после JoinChannel
+    ok_member = await _is_member(client, entity)
+    if not ok_member:
+        return {
+            "ok": False,
+            "status": "error",
+            "join": "failed",
+            "title": title,
+            "error": "Telegram не подтвердил вступление. Попробуйте снова или инвайт-ссылку.",
+            "member": False,
+        }
+    return {
+        "ok": True,
+        "status": "active",
+        "join": "joined",
+        "title": title,
+        "error": "",
+        "member": True,
+        **peer,
+    }
+
+
+async def _resolve_for_join(client, url: str, peer_hint: dict | None):
+    """entity группы/канала по ссылке или готовый ответ-ошибка join_group."""
+    entity, resolve_err = await _resolve_entity(client, url, peer_hint=peer_hint)
+    if resolve_err:
+        return None, {
+            "ok": False,
+            "status": "error",
+            "join": resolve_err.get("join") or "missing",
+            "usernameMissing": bool(resolve_err.get("usernameMissing")),
+            "accountBlind": bool(resolve_err.get("accountBlind")),
+            "error": str(resolve_err.get("error") or "Не удалось найти группу")[:400],
+            "member": False,
+        }
+    if entity is None:
+        return None, {
+            "ok": False,
+            "status": "error",
+            "join": "missing",
+            "usernameMissing": True,
+            "error": f"Слот не видит @{parse_group_ref(url)['value']}",
+            "member": False,
+        }
+    return entity, None
+
+
+async def _join_linked_discussion(client, url: str, peer_hint: dict | None) -> dict[str, Any]:
+    """Вступить ТОЛЬКО в привязанное обсуждение канала, в котором аккаунт уже состоит."""
+    from telethon.tl.functions.channels import GetFullChannelRequest
+
+    channel, err = await _resolve_for_join(client, url, peer_hint)
+    if err:
+        return err
+    if not await _is_member(client, channel):
+        return {
+            "ok": False,
+            "status": "setup",
+            "join": "need_join",
+            "error": "Аккаунт не в канале — сначала нажмите «Вступить»",
+            "member": False,
+        }
+    full = await client(GetFullChannelRequest(channel))
+    linked_id = getattr(getattr(full, "full_chat", None), "linked_chat_id", None)
+    if not linked_id:
+        return {
+            "ok": False,
+            "status": "error",
+            "join": "no_discussion",
+            "error": "У канала нет обсуждения",
+            "member": False,
+        }
+    linked = await client.get_entity(int(linked_id))
+    res = await _join_entity(client, linked)
+    # peer обсуждения не должен перезаписать peer канала в записи группы
+    res.pop("channelId", None)
+    res.pop("accessHash", None)
+    res["discussionId"] = str(getattr(linked, "id", "") or "")
+    res["discussionTitle"] = str(res.pop("title", "") or "")
+    return res
+
+
+async def join_group(
+    client, url: str, peer_hint: dict | None = None, target: str = "group"
+) -> dict[str, Any]:
+    """target="discussion" — вступление только в обсуждение уже вступленного канала."""
+    from telethon.tl.functions.messages import ImportChatInviteRequest, CheckChatInviteRequest
+    from telethon.errors import (
+        UserAlreadyParticipantError,
+        InviteRequestSentError,
+        FloodWaitError,
+        RPCError,
+    )
+
     ref = parse_group_ref(url)
     try:
+        if target == "discussion":
+            return await _join_linked_discussion(client, url, peer_hint)
         if ref["kind"] == "invite":
             try:
                 await client(CheckChatInviteRequest(hash=ref["value"]))
@@ -752,104 +910,10 @@ async def join_group(client, url: str, peer_hint: dict | None = None) -> dict[st
                 if is_frozen_rpc(e):
                     return frozen_action_error("вступление по инвайту")
                 raise
-        else:
-            entity, resolve_err = await _resolve_entity(client, url, peer_hint=peer_hint)
-            if resolve_err:
-                return {
-                    "ok": False,
-                    "status": "error",
-                    "join": resolve_err.get("join") or "missing",
-                    "usernameMissing": bool(resolve_err.get("usernameMissing")),
-                    "accountBlind": bool(resolve_err.get("accountBlind")),
-                    "error": str(resolve_err.get("error") or "Не удалось найти группу")[:400],
-                    "member": False,
-                }
-            if entity is None:
-                return {
-                    "ok": False,
-                    "status": "error",
-                    "join": "missing",
-                    "usernameMissing": True,
-                    "error": f"Слот не видит @{ref['value']}",
-                    "member": False,
-                }
-            title = getattr(entity, "title", None) or getattr(entity, "username", "") or ""
-            peer = _peer_fields(entity)
-            # Уже участник — сразу ok
-            if await _is_member(client, entity):
-                return {
-                    "ok": True,
-                    "status": "active",
-                    "join": "already",
-                    "title": title,
-                    "error": "",
-                    "member": True,
-                    **peer,
-                }
-            try:
-                await client(JoinChannelRequest(entity))
-            except UserAlreadyParticipantError:
-                return {
-                    "ok": True,
-                    "status": "active",
-                    "join": "already",
-                    "title": title,
-                    "error": "",
-                    "member": True,
-                    **peer,
-                }
-            except InviteRequestSentError:
-                return {
-                    "ok": True,
-                    "status": "pending",
-                    "join": "requested",
-                    "title": title,
-                    "error": "Заявка на вступление отправлена",
-                    "member": False,
-                    **peer,
-                }
-            except UserBannedInChannelError:
-                return {
-                    "ok": False,
-                    "status": "error",
-                    "join": "banned",
-                    "title": title,
-                    "error": "Аккаунт забанен в этой группе",
-                    "member": False,
-                }
-            except ChannelPrivateError:
-                return {
-                    "ok": False,
-                    "status": "error",
-                    "join": "private",
-                    "title": title,
-                    "error": "Группа приватная — нужен инвайт-ссылка",
-                    "member": False,
-                }
-            except RPCError as e:
-                if is_frozen_rpc(e):
-                    return frozen_action_error("вступление в канал/группу")
-                raise
-            # Проверяем фактическое членство после JoinChannel
-            ok_member = await _is_member(client, entity)
-            if not ok_member:
-                return {
-                    "ok": False,
-                    "status": "error",
-                    "join": "failed",
-                    "title": title,
-                    "error": "Telegram не подтвердил вступление. Попробуйте снова или инвайт-ссылку.",
-                    "member": False,
-                }
-            return {
-                "ok": True,
-                "status": "active",
-                "join": "joined",
-                "title": title,
-                "error": "",
-                "member": True,
-                **peer,
-            }
+        entity, err = await _resolve_for_join(client, url, peer_hint)
+        if err:
+            return err
+        return await _join_entity(client, entity)
     except FloodWaitError as e:
         return {
             "ok": False,
@@ -865,24 +929,71 @@ async def join_group(client, url: str, peer_hint: dict | None = None) -> dict[st
         raise
 
 
+# Messages returned per scan (REQ-5): the app judges them in ≤4 batches of 20.
+SCAN_OUTPUT_CAP = 80
+# Raw messages read per feed when paging forward from the cursor / first-scan start.
+SCAN_FETCH_CAP = 1000
+# First scan of a group (no cursor) looks back one day only, whatever the group depth (S8).
+FIRST_SCAN_DEPTH = timedelta(days=1)
+MIN_SCAN_TEXT_LENGTH = 3
+# Channel without enough discussion messages: newest posts whose comments are read.
+COMMENT_FALLBACK_POSTS = 40
+COMMENT_FALLBACK_REPLIES = 40
+COMMENT_FALLBACK_BELOW = 8
+
+
+def history_window(cursor: str, first_scan_since: datetime) -> dict[str, Any]:
+    """iter_messages kwargs for scan_group: oldest-first from the per-group cursor (last seen id) or,
+    on the first scan, from `first_scan_since`, so paging across scans never skips a message."""
+    raw = str(cursor or "").strip()
+    if raw.isdigit() and int(raw) > 0:
+        return {"reverse": True, "offset_id": int(raw), "limit": SCAN_FETCH_CAP}
+    return {"reverse": True, "offset_date": first_scan_since, "limit": SCAN_FETCH_CAP}
+
+
+def _sender_name(sender: Any) -> str:
+    full = " ".join(
+        x for x in [getattr(sender, "first_name", None) or "", getattr(sender, "last_name", None) or ""] if x
+    ).strip()
+    return full or getattr(sender, "username", "") or str(getattr(sender, "id", ""))
+
+
+def _peer_id_of(entity: Any) -> str:
+    from telethon.utils import get_peer_id
+
+    try:
+        return str(get_peer_id(entity))
+    except Exception:
+        return str(getattr(entity, "id", "") or "")
+
+
 async def scan_group(
     client,
     url: str,
-    keywords: list[str],
-    minus_keywords: list[str],
-    limit: int = 40,
+    *,
     days: int = 0,
+    cursor: str = "",
+    now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Скан лидов в переписках: группы + обсуждения/комментарии к каналам.
+    """Сырые сообщения переписки для LLM-судьи (REQ-5): группы + обсуждения/комментарии к каналам.
 
-    Посты канала и авторы-каналы НЕ считаются лидами.
+    Фильтров по ключам, минус-словам, рекламе и намерению нет — лид решает судья приложения.
+    Отбрасываются только: посты канала, авторы не-люди (боты/каналы), сообщения старше глубины,
+    сбой `get_sender`. Ответ ≤ SCAN_OUTPUT_CAP сообщений в порядке возрастания id ленты.
+
+    Окно: с `cursor` (последний обработанный id ленты группы/обсуждения) вперёд; первый скан
+    (нет курсора) — за FIRST_SCAN_DEPTH, независимо от `days`. Старше окна (первый скан —
+    FIRST_SCAN_DEPTH, далее `days` > 0) сообщение считается `skippedOld`. Курсор в ответе — последний обработанный id ленты
+    group/discussion; id комментариев (fallback по постам канала) курсор не двигают.
+
+    Счётчики (события за прогон): `fetched` — сообщения с текстом ≥ MIN_SCAN_TEXT_LENGTH, впервые
+    увиденные в прогоне; пустые/короткие (медиа, сервисные, «ок») в `fetched` не входят, но курсор
+    двигают. Инвариант: fetched = len(messages) + skippedNotUser + skippedOld + skippedError.
     """
-    from datetime import datetime, timedelta, timezone
     from telethon.tl.functions.messages import CheckChatInviteRequest
     from telethon.tl.functions.channels import GetFullChannelRequest
-    from telethon.tl.types import ChatInviteAlready, User, Channel
+    from telethon.tl.types import ChatInviteAlready, User
     from telethon.errors import RPCError
-    from telethon.utils import get_peer_id
 
     async def member_of(entity) -> bool:
         return await _is_member(client, entity)
@@ -892,125 +1003,80 @@ async def scan_group(
             getattr(entity, "megagroup", False)
         )
 
-    kws = [k.strip().lower() for k in keywords if k and k.strip()]
-    minus = [k.strip().lower() for k in minus_keywords if k and k.strip()]
-    # Только общий intent; нишевые алиасы не хардкодим — приходят в keywords из настроек AI
-    intent_markers = (
-        "ищу сервис", "ищу crm", "ищем сервис", "нужен сервис", "нужна crm",
-        "подскажите сервис", "кто пользуется", "кто пользовался",
-        "кто может", "кто делает", "как настроить", "как подключить",
-        "помогите настроить", "нужен инструмент", "ищу инструмент",
-        "нужен подрядчик", "ищу подрядчика",
-    )
-    cutoff = None
-    if days and days > 0:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, min(90, days)))
-
-    fetch_limit = max(20, min(limit * 3, 200))
+    clock = now or datetime.now(timezone.utc)
+    first_scan_since = clock - FIRST_SCAN_DEPTH
+    window = history_window(cursor, first_scan_since)
+    if "offset_date" in window:
+        cutoff: datetime | None = first_scan_since
+    elif days and days > 0:
+        cutoff = clock - timedelta(days=max(1, min(90, days)))
+    else:
+        cutoff = None
     out: list[dict[str, Any]] = []
-    fetched = 0
-    skipped_minus = 0
-    skipped_kw = 0
-    skipped_not_user = 0
+    counts = {"fetched": 0, "skippedNotUser": 0, "skippedOld": 0, "skippedError": 0}
     seen_msg: set[str] = set()
     scan_mode = "group"
     discussion_id = ""
     discussion_title = ""
+    last_id = int(cursor) if str(cursor or "").isdigit() else 0
 
-    def passes_kw(text: str) -> bool:
-        nonlocal skipped_kw
-        low = text.lower()
-        if kws:
-            hit = any(k in low for k in kws if len(k) >= 2)
-            intentish = any(x in low for x in intent_markers)
-            if not hit and not intentish:
-                skipped_kw += 1
-                return False
-        else:
-            # без плюс-слов из настроек — только явный intent
-            if not any(x in low for x in intent_markers):
-                skipped_kw += 1
-                return False
-        return True
+    def full() -> bool:
+        return len(out) >= SCAN_OUTPUT_CAP
+
+    async def read_feed(peer, kind: str) -> None:
+        """Лента чата/обсуждения по окну курсора; курсор двигается только по обработанным id."""
+        nonlocal last_id
+        async for m in client.iter_messages(peer, **window):
+            if full():
+                break
+            await add_msg(m, kind=kind, peer_entity=peer)
+            last_id = max(last_id, int(getattr(m, "id", 0) or 0))
+
+    def is_old(m) -> bool:
+        md = getattr(m, "date", None)
+        if cutoff is None or md is None:
+            return False
+        if md.tzinfo is None:
+            md = md.replace(tzinfo=timezone.utc)
+        return md < cutoff
 
     async def add_msg(m, *, kind: str, peer_entity) -> None:
-        nonlocal fetched, skipped_minus, skipped_not_user
         text = (getattr(m, "message", None) or "").strip()
-        if len(text) < 3:
+        if len(text) < MIN_SCAN_TEXT_LENGTH:
             return
         mid = str(getattr(m, "id", "") or "")
         if mid and mid in seen_msg:
             return
-        fetched += 1
-        if cutoff and getattr(m, "date", None):
-            md = m.date
-            if md.tzinfo is None:
-                md = md.replace(tzinfo=timezone.utc)
-            if md < cutoff:
-                return
-        low = text.lower()
-        if minus and any(x in low for x in minus):
-            skipped_minus += 1
-            return
-        # чужая реклама / эзотерика / CTA @ / рассылки — не кандидат
-        ad_markers = (
-            "матриц", "судьб", "таро", "гадан", "астролог", "нумеролог",
-            "эзотерик", "писать @", "пишите @", "пиши @", "писать@",
-            "передано через @", "занимаюсь разбором", "есть отзывы)",
-            "вам срочное сообщение", "каталоге решений", "нельзя пропустить",
-            "гайд для продавцов", "подписывайтесь",
-        )
-        if any(x in low for x in ad_markers):
-            skipped_minus += 1
-            return
-        if not passes_kw(text):
+        if mid:
+            seen_msg.add(mid)
+        counts["fetched"] += 1
+        if is_old(m):
+            counts["skippedOld"] += 1
             return
         try:
             sender = await m.get_sender()
         except Exception:
+            counts["skippedError"] += 1
             return
-        if not isinstance(sender, User):
-            skipped_not_user += 1
+        if not isinstance(sender, User) or getattr(sender, "bot", False):
+            counts["skippedNotUser"] += 1
             return
-        if getattr(sender, "bot", False):
-            skipped_not_user += 1
-            return
-        sender_name = (
-            " ".join(
-                x
-                for x in [
-                    getattr(sender, "first_name", None) or "",
-                    getattr(sender, "last_name", None) or "",
-                ]
-                if x
-            ).strip()
-            or getattr(sender, "username", "")
-            or str(getattr(sender, "id", ""))
-        )
-        peer_id = ""
-        try:
-            peer_id = str(get_peer_id(peer_entity))
-        except Exception:
-            peer_id = str(getattr(peer_entity, "id", "") or "")
-        if mid:
-            seen_msg.add(mid)
         out.append(
             {
                 "tgMsgId": mid,
                 "message": text[:8000],
-                "name": sender_name or "Участник",
+                "name": _sender_name(sender) or "Участник",
                 "date": m.date.isoformat() if getattr(m, "date", None) else "",
                 "senderId": str(getattr(sender, "id", "") or ""),
                 "senderUsername": (getattr(sender, "username", None) or "") or "",
                 "senderAccessHash": str(getattr(sender, "access_hash", "") or ""),
                 "messageKind": kind,
-                "peerId": peer_id,
+                "peerId": _peer_id_of(peer_entity),
                 "replyToMsgId": str(
                     getattr(getattr(m, "reply_to", None), "reply_to_msg_id", "") or ""
                 ),
             }
         )
-
     try:
         ref = parse_group_ref(url)
         if ref["kind"] == "invite":
@@ -1082,48 +1148,42 @@ async def scan_group(
                     or ""
                 )
                 if not await member_of(linked):
-                    # Пробуем вступить в обсуждение тем же аккаунтом
-                    try:
-                        from telethon.tl.functions.channels import JoinChannelRequest
-
-                        await client(JoinChannelRequest(linked))
-                    except Exception:
-                        return {
-                            "ok": False,
-                            "status": "setup",
-                            "join": "need_join",
-                            "error": (
-                                "Нужно вступить в обсуждение канала "
-                                f"«{discussion_title or discussion_id}» — иначе комментарии недоступны"
-                            ),
-                            "messages": [],
-                            "member": False,
-                            "title": title,
-                            "scanMode": scan_mode,
-                            "needDiscussionJoin": True,
-                        }
-                async for m in client.iter_messages(linked, limit=fetch_limit):
-                    await add_msg(m, kind="discussion", peer_entity=linked)
-                    if len(out) >= max(limit, 40):
-                        break
+                    # Сам скан не вступает (REQ-6): любое вступление — только ручное,
+                    # через join_group с темпом и дневной квотой.
+                    return {
+                        "ok": False,
+                        "status": "setup",
+                        "join": "need_join",
+                        "error": (
+                            "Нужно вступить в обсуждение канала "
+                            f"«{discussion_title or discussion_id}» — иначе комментарии недоступны"
+                        ),
+                        "messages": [],
+                        "member": False,
+                        "title": title,
+                        "scanMode": scan_mode,
+                        "needDiscussionJoin": True,
+                    }
+                await read_feed(linked, "discussion")
                 scan_mode = "discussion_messages"
 
             # Fallback: комментарии к постам (reply_to), сами посты не берём
-            if len(out) < 8:
+            # (курсор не трогаем: id комментариев из другой ленты)
+            if len(out) < COMMENT_FALLBACK_BELOW:
                 posts_checked = 0
-                async for post in client.iter_messages(entity, limit=min(40, fetch_limit)):
+                async for post in client.iter_messages(entity, limit=COMMENT_FALLBACK_POSTS):
+                    if full():
+                        break
                     posts_checked += 1
                     try:
                         async for reply in client.iter_messages(
-                            entity, reply_to=post.id, limit=40
+                            entity, reply_to=post.id, limit=COMMENT_FALLBACK_REPLIES
                         ):
-                            await add_msg(reply, kind="comment", peer_entity=entity)
-                            if len(out) >= max(limit, 40):
+                            if full():
                                 break
+                            await add_msg(reply, kind="comment", peer_entity=entity)
                     except Exception:
                         continue
-                    if len(out) >= max(limit, 40):
-                        break
                 if posts_checked and not linked:
                     scan_mode = "channel_comments"
                 elif linked and posts_checked:
@@ -1131,12 +1191,7 @@ async def scan_group(
         else:
             # Группа / супергруппа / чат — лента переписки
             scan_mode = "group_messages"
-            async for m in client.iter_messages(entity, limit=fetch_limit):
-                await add_msg(m, kind="group", peer_entity=entity)
-                if len(out) >= max(limit, 40):
-                    break
-
-        # Без keyword-less fallback: пустой out — нормально (лучше 0, чем шум)
+            await read_feed(entity, "group")
 
     except RPCError as e:
         if is_frozen_rpc(e):
@@ -1147,66 +1202,14 @@ async def scan_group(
         "ok": True,
         "status": "active",
         "title": title,
-        "messages": out[: max(limit, 40)],
+        "messages": out,
         "error": "",
         "member": True,
-        "fetched": fetched,
-        "skippedMinus": skipped_minus,
-        "skippedKw": skipped_kw,
-        "skippedNotUser": skipped_not_user,
+        **counts,
         "scanMode": scan_mode,
         "discussionId": discussion_id,
         "discussionTitle": discussion_title,
-    }
-
-
-def _user_status_bucket(user) -> str:
-    from telethon.tl.types import (
-        UserStatusOnline,
-        UserStatusRecently,
-        UserStatusLastWeek,
-        UserStatusLastMonth,
-        UserStatusOffline,
-        UserStatusEmpty,
-    )
-
-    st = getattr(user, "status", None)
-    if isinstance(st, UserStatusOnline):
-        return "online"
-    if isinstance(st, UserStatusRecently):
-        return "recently"
-    if isinstance(st, UserStatusLastWeek):
-        return "last_week"
-    if isinstance(st, UserStatusLastMonth):
-        return "last_month"
-    if isinstance(st, (UserStatusOffline, UserStatusEmpty)) or st is None:
-        return "long_ago"
-    return "long_ago"
-
-
-def _serialize_audience_user(user, *, is_admin: bool = False) -> dict[str, Any] | None:
-    if not user or getattr(user, "bot", False) or getattr(user, "deleted", False):
-        return None
-    uid = getattr(user, "id", None)
-    if not uid:
-        return None
-    name = " ".join(
-        x
-        for x in [
-            getattr(user, "first_name", None) or "",
-            getattr(user, "last_name", None) or "",
-        ]
-        if x
-    ).strip()
-    return {
-        "userId": str(uid),
-        "username": getattr(user, "username", None) or "",
-        "name": name or (getattr(user, "username", None) or str(uid)),
-        "premium": bool(getattr(user, "premium", False)),
-        "isAdmin": bool(is_admin),
-        "status": _user_status_bucket(user),
-        # access_hash этой сессии — чужой слот фермы его не примет
-        "accessHash": str(getattr(user, "access_hash", "") or ""),
+        "cursor": str(last_id) if last_id else "",
     }
 
 
@@ -1342,6 +1345,36 @@ async def _account_resolve_blind(client) -> bool:
         return False
 
 
+PRIVATE_LINK_ERROR = (
+    "Ссылка t.me/c/… открывается только участникам: слот не состоит в канале — "
+    "нужна инвайт-ссылка или аккаунт, который уже в канале"
+)
+
+
+async def _resolve_channel_id(client, channel_id: int):
+    """t.me/c/<id>: без access_hash канал виден только слоту, который в нём состоит."""
+    from telethon.tl.types import PeerChannel
+
+    try:
+        async for dialog in client.iter_dialogs(limit=500):
+            ent = getattr(dialog, "entity", None)
+            if ent is not None and getattr(ent, "id", None) == channel_id:
+                return ent, None
+    except Exception:
+        pass
+    try:
+        return await client.get_entity(PeerChannel(channel_id)), None
+    except (ValueError, TypeError):
+        return None, {
+            "ok": False,
+            "status": "error",
+            "join": "private",
+            "error": PRIVATE_LINK_ERROR,
+            "users": [],
+            "hasMore": False,
+        }
+
+
 async def _resolve_entity(client, url: str, peer_hint: dict | None = None):
     from telethon.tl.functions.messages import CheckChatInviteRequest
     from telethon.tl.types import ChatInviteAlready
@@ -1364,6 +1397,8 @@ async def _resolve_entity(client, url: str, peer_hint: dict | None = None):
                 "hasMore": False,
             }
         return invite.chat, None
+    if ref["kind"] == "channel_id":
+        return await _resolve_channel_id(client, int(ref["value"]))
     uname = str(ref.get("value") or "").lstrip("@")
     want = uname.lower()
     hint_cid = str((peer_hint or {}).get("channelId") or "").strip()
@@ -1426,550 +1461,6 @@ async def _resolve_entity(client, url: str, peer_hint: dict | None = None):
         raise
 
 
-async def collect_audience(client, payload: dict[str, Any]) -> dict[str, Any]:
-    """Батч сбора участников / авторов сообщений / комментаторов."""
-    from datetime import datetime, timedelta, timezone
-    from telethon.errors import RPCError, UserNotParticipantError, ChatAdminRequiredError
-    from telethon.tl.types import ChannelParticipantsAdmins, Channel
-
-    url = str(payload.get("url") or "")
-    collect_mode = str(payload.get("collectMode") or "discussions")
-    range_mode = str(payload.get("rangeMode") or "count")
-    message_limit = max(50, min(50000, int(payload.get("messageLimit") or 5000)))
-    period_days = max(1, min(365, int(payload.get("periodDays") or 30)))
-    audience_scope = str(payload.get("audienceScope") or "no_admins")
-    premium_filter = str(payload.get("premiumFilter") or "all")
-    status_filter = payload.get("statusFilters")
-    if status_filter is None:
-        status_filter = payload.get("statusFilter") or "all"
-    if isinstance(status_filter, str):
-        status_allowed = set() if status_filter in ("", "all") else {status_filter}
-    else:
-        status_allowed = {
-            str(x)
-            for x in (status_filter or [])
-            if x and str(x) != "all"
-        }
-    batch_size = max(20, min(200, int(payload.get("batchSize") or 80)))
-    cursor = str(payload.get("cursor") or "")
-    seen_ids = set(str(x) for x in (payload.get("seenIds") or []) if x)
-    peer_hint = payload.get("peerHint") if isinstance(payload.get("peerHint"), dict) else None
-
-    try:
-        entity, err = await _resolve_entity(client, url, peer_hint=peer_hint)
-        if err:
-            return err
-        title = getattr(entity, "title", None) or getattr(entity, "username", "") or url
-
-        # Канал (broadcast) без списка участников → собираем авторов постов/комментарии
-        is_broadcast = bool(getattr(entity, "broadcast", False)) and not bool(
-            getattr(entity, "megagroup", False)
-        )
-        if is_broadcast and collect_mode == "discussions":
-            collect_mode = "comments"
-
-        admin_ids: set[str] = set()
-        try:
-            async for admin in client.iter_participants(entity, filter=ChannelParticipantsAdmins()):
-                if getattr(admin, "id", None):
-                    admin_ids.add(str(admin.id))
-        except Exception:
-            pass
-
-        def accept(u: dict[str, Any] | None) -> bool:
-            if not u:
-                return False
-            if u["userId"] in seen_ids:
-                return False
-            if audience_scope == "no_admins" and (u["isAdmin"] or u["userId"] in admin_ids):
-                return False
-            if premium_filter == "only" and not u["premium"]:
-                return False
-            if premium_filter == "exclude" and u["premium"]:
-                return False
-            if status_allowed and u["status"] not in status_allowed:
-                return False
-            return True
-
-        async def collect_from_messages(target, mode_label: str) -> dict[str, Any]:
-            users: list[dict[str, Any]] = []
-            next_cursor = cursor
-            has_more = False
-            offset_id = int(cursor) if str(cursor).isdigit() else 0
-            fetched = 0
-            scanned = 0
-            cutoff = None
-            if range_mode == "period":
-                cutoff = datetime.now(timezone.utc) - timedelta(days=period_days)
-            limit_left = max(batch_size * 8, 200)
-            kwargs: dict[str, Any] = {"limit": limit_left}
-            if offset_id > 0:
-                kwargs["offset_id"] = offset_id
-            async for msg in client.iter_messages(target, **kwargs):
-                fetched += 1
-                if getattr(msg, "id", None) is not None:
-                    next_cursor = str(msg.id)
-                if cutoff and getattr(msg, "date", None):
-                    md = msg.date if msg.date.tzinfo else msg.date.replace(tzinfo=timezone.utc)
-                    if md < cutoff:
-                        has_more = False
-                        break
-                if range_mode == "count" and offset_id == 0 and fetched > message_limit:
-                    has_more = False
-                    break
-                try:
-                    sender = await msg.get_sender()
-                except Exception:
-                    continue
-                # Только пользователи, не каналы/чаты
-                from telethon.tl.types import User
-
-                if not isinstance(sender, User):
-                    continue
-                is_admin = str(getattr(sender, "id", "")) in admin_ids
-                u = _serialize_audience_user(sender, is_admin=is_admin)
-                scanned += 1
-                if accept(u):
-                    users.append(u)  # type: ignore[arg-type]
-                    seen_ids.add(u["userId"])  # type: ignore[index]
-                    if len(users) >= batch_size:
-                        has_more = True
-                        break
-            else:
-                # Дочитали окно сообщений: конец ленты, если fetch не упёрся в лимит
-                has_more = fetched >= limit_left
-            return {
-                "ok": True,
-                "title": title,
-                "users": users,
-                "cursor": next_cursor,
-                "hasMore": has_more,
-                "scanned": scanned,
-                "mode": mode_label,
-                "error": "",
-            }
-
-        if collect_mode == "comments" or is_broadcast:
-            target = entity
-            mode_label = "channel_messages"
-            linked = None
-            if is_broadcast:
-                try:
-                    from telethon.tl.functions.channels import GetFullChannelRequest
-
-                    full_ch = await client(GetFullChannelRequest(entity))
-                    linked_id = getattr(full_ch.full_chat, "linked_chat_id", None)
-                    if linked_id:
-                        linked = await client.get_entity(int(linked_id))
-                        target = linked
-                        mode_label = "discussion_messages"
-                except Exception:
-                    linked = None
-
-            # 1) Авторы сообщений в обсуждении / канале
-            primary = await collect_from_messages(target, mode_label)
-            if primary["users"] or primary.get("hasMore") or int(primary.get("scanned") or 0) > 0:
-                return primary
-
-            # 2) Комментарии к постам канала (reply_to)
-            if is_broadcast:
-                users: list[dict[str, Any]] = []
-                next_cursor = cursor
-                has_more = False
-                offset_id = int(cursor) if str(cursor).isdigit() else 0
-                fetched = 0
-                scanned = 0
-                cutoff = None
-                if range_mode == "period":
-                    cutoff = datetime.now(timezone.utc) - timedelta(days=period_days)
-                kwargs: dict[str, Any] = {"limit": max(40, batch_size)}
-                if offset_id > 0:
-                    kwargs["offset_id"] = offset_id
-                from telethon.tl.types import User
-
-                async for post in client.iter_messages(entity, **kwargs):
-                    fetched += 1
-                    if getattr(post, "id", None) is not None:
-                        next_cursor = str(post.id)
-                    if cutoff and getattr(post, "date", None):
-                        md = post.date if post.date.tzinfo else post.date.replace(tzinfo=timezone.utc)
-                        if md < cutoff:
-                            has_more = False
-                            break
-                    try:
-                        async for reply in client.iter_messages(entity, reply_to=post.id, limit=50):
-                            scanned += 1
-                            try:
-                                sender = await reply.get_sender()
-                            except Exception:
-                                continue
-                            if not isinstance(sender, User):
-                                continue
-                            is_admin = str(getattr(sender, "id", "")) in admin_ids
-                            u = _serialize_audience_user(sender, is_admin=is_admin)
-                            if accept(u):
-                                users.append(u)  # type: ignore[arg-type]
-                                seen_ids.add(u["userId"])  # type: ignore[index]
-                                if len(users) >= batch_size:
-                                    has_more = True
-                                    break
-                    except Exception:
-                        continue
-                    if len(users) >= batch_size:
-                        has_more = True
-                        break
-                else:
-                    has_more = fetched >= kwargs["limit"]
-                if users or fetched:
-                    return {
-                        "ok": True,
-                        "title": title,
-                        "users": users,
-                        "cursor": next_cursor,
-                        "hasMore": has_more,
-                        "scanned": scanned,
-                        "mode": "channel_comments",
-                        "error": "",
-                    }
-
-            # 3) Участники linked-группы (часто мало без прав)
-            if linked is not None:
-                try:
-                    users = []
-                    skip = int(cursor) if str(cursor).isdigit() else 0
-                    scanned = 0
-                    has_more = False
-                    next_cursor = str(skip)
-                    async for user in client.iter_participants(linked):
-                        scanned += 1
-                        if scanned <= skip:
-                            continue
-                        uid = getattr(user, "id", None)
-                        if not uid:
-                            continue
-                        is_admin = str(uid) in admin_ids
-                        u = _serialize_audience_user(user, is_admin=is_admin)
-                        if accept(u):
-                            users.append(u)  # type: ignore[arg-type]
-                            seen_ids.add(u["userId"])  # type: ignore[index]
-                            if len(users) >= batch_size:
-                                has_more = True
-                                next_cursor = str(scanned)
-                                break
-                    else:
-                        next_cursor = str(scanned)
-                        has_more = False
-                    return {
-                        "ok": True,
-                        "title": title,
-                        "users": users,
-                        "cursor": next_cursor,
-                        "hasMore": has_more,
-                        "scanned": scanned,
-                        "mode": "discussion_participants",
-                        "error": "",
-                    }
-                except Exception:
-                    pass
-            return primary
-        # discussions = участники чата/супергруппы (курсор = skip count, не userId)
-        users: list[dict[str, Any]] = []
-        skip = int(cursor) if str(cursor).isdigit() else 0
-        scanned = 0
-        has_more = False
-        next_cursor = str(skip)
-        try:
-            async for user in client.iter_participants(entity):
-                scanned += 1
-                if scanned <= skip:
-                    continue
-                uid = getattr(user, "id", None)
-                if not uid:
-                    continue
-                is_admin = str(uid) in admin_ids
-                u = _serialize_audience_user(user, is_admin=is_admin)
-                if accept(u):
-                    users.append(u)  # type: ignore[arg-type]
-                    seen_ids.add(u["userId"])  # type: ignore[index]
-                    if len(users) >= batch_size:
-                        has_more = True
-                        next_cursor = str(scanned)
-                        break
-                if range_mode == "count" and len(seen_ids) >= message_limit:
-                    has_more = False
-                    next_cursor = str(scanned)
-                    break
-            else:
-                next_cursor = str(scanned)
-                has_more = False
-        except (ChatAdminRequiredError, RPCError) as e:
-            if "CHAT_ADMIN_REQUIRED" in str(e).upper() or isinstance(e, ChatAdminRequiredError):
-                return await collect_from_messages(entity, "messages_fallback")
-            raise
-
-        return {
-            "ok": True,
-            "title": title,
-            "users": users,
-            "cursor": next_cursor,
-            "hasMore": has_more,
-            "scanned": scanned,
-            "mode": "participants",
-            "error": "",
-        }
-    except UserNotParticipantError:
-        return {
-            "ok": False,
-            "join": "need_join",
-            "error": "Аккаунт не в группе — сначала вступите",
-            "users": [],
-            "hasMore": False,
-        }
-    except RPCError as e:
-        if is_frozen_rpc(e):
-            return frozen_action_error("сбор аудитории")
-        raise
-    except Exception as e:
-        import traceback
-
-        return {
-            "ok": False,
-            "error": f"{type(e).__name__}: {e}"[:400],
-            "trace": traceback.format_exc()[-1500:],
-            "users": [],
-            "hasMore": False,
-        }
-
-async def invite_users(client, payload: dict[str, Any]) -> dict[str, Any]:
-    """Батч инвайтов в целевую группу. mode: ordinary | advanced."""
-    import asyncio
-    from telethon.errors import (
-        FloodWaitError,
-        RPCError,
-        UserPrivacyRestrictedError,
-        UserAlreadyParticipantError,
-        ChatAdminRequiredError,
-        PeerFloodError,
-        UserNotParticipantError,
-        ChannelPrivateError,
-    )
-    from telethon.tl.functions.channels import (
-        InviteToChannelRequest,
-        EditAdminRequest,
-        GetParticipantRequest,
-    )
-    from telethon.tl.types import ChatAdminRights, Channel, InputPeerUser, InputUser
-
-    target_url = str(payload.get("targetUrl") or payload.get("url") or "")
-    source_url = str(payload.get("sourceUrl") or "")
-    mode = str(payload.get("mode") or "ordinary")
-    raw_users = payload.get("users") or []
-    if not isinstance(raw_users, list) or not raw_users:
-        return {"ok": False, "error": "Нет пользователей для инвайта", "results": []}
-
-    try:
-        entity, err = await _resolve_entity(client, target_url)
-        if err:
-            return {**err, "results": []}
-        title = getattr(entity, "title", None) or getattr(entity, "username", "") or target_url
-
-        # Канал-витрина без megagroup — нельзя инвайтить как в группу
-        if bool(getattr(entity, "broadcast", False)) and not bool(getattr(entity, "megagroup", False)):
-            return {
-                "ok": False,
-                "error": "Цель — канал, не группа. Инвайт участников работает только в супергруппу/чат.",
-                "results": [],
-                "title": title,
-            }
-
-        source_entity = None
-        if source_url:
-            try:
-                source_entity, _ = await _resolve_entity(client, source_url)
-            except Exception:
-                source_entity = None
-
-        async def resolve_peer(uid: str, uname: str, access_hash: str = ""):
-            from telethon.tl.types import InputPeerUser, InputUser
-
-            uid_ok = bool(uid and str(uid).lstrip("-").isdigit())
-            uid_i = int(uid) if uid_ok else 0
-            ah_ok = bool(access_hash and str(access_hash).lstrip("-").isdigit())
-            ah_i = int(access_hash) if ah_ok else 0
-            clean = (uname or "").strip().lstrip("@")
-
-            # 1) Участник исходного чата — свежий access_hash ЭТОЙ сессии
-            #    (ResolveUsername на ферме часто врёт, ручной поиск в TG — другой клиент)
-            if source_entity is not None and uid_ok:
-                for peer_try in (
-                    InputPeerUser(uid_i, ah_i) if ah_ok else None,
-                    InputPeerUser(uid_i, 0),
-                    InputUser(uid_i, ah_i) if ah_ok else None,
-                    InputUser(uid_i, 0),
-                    uid_i,
-                ):
-                    if peer_try is None:
-                        continue
-                    try:
-                        part = await client(GetParticipantRequest(source_entity, peer_try))
-                        users = list(getattr(part, "users", None) or [])
-                        if users:
-                            return await client.get_input_entity(users[0])
-                        # participant без users — пробуем кэш после RPC
-                        return await client.get_input_entity(uid_i)
-                    except Exception:
-                        continue
-
-            # 2) @username → ResolveUsername; при лжи фермы — contacts.Search
-            if clean:
-                try:
-                    return await client.get_input_entity(clean)
-                except Exception:
-                    pass
-                try:
-                    found = await _resolve_username_via_search(client, clean)
-                    if found is not None:
-                        return await client.get_input_entity(found)
-                except Exception:
-                    pass
-
-            # 3) access_hash сборщика (валиден только если слот тот же)
-            if uid_ok and ah_ok:
-                try:
-                    peer = InputPeerUser(uid_i, ah_i)
-                    # лёгкая проверка — иначе InviteToChannel даст PEER_ID_INVALID
-                    await client.get_entity(peer)
-                    return peer
-                except Exception:
-                    pass
-
-            # 4) кэш / диалоги этой сессии
-            if uid_ok:
-                try:
-                    return await client.get_input_entity(uid_i)
-                except Exception:
-                    pass
-            return None
-
-        results: list[dict[str, Any]] = []
-
-        for item in raw_users[:20]:
-            uid = str(item.get("userId") or item.get("id") or "")
-            uname = str(item.get("username") or "")
-            access_hash = str(item.get("accessHash") or item.get("senderAccessHash") or "")
-            try:
-                peer = await resolve_peer(uid, uname, access_hash)
-                if peer is None:
-                    results.append({"userId": uid, "username": uname, "ok": False, "error": "no_entity"})
-                    continue
-
-                if mode == "advanced":
-                    rights = ChatAdminRights(
-                        change_info=False,
-                        post_messages=False,
-                        edit_messages=False,
-                        delete_messages=False,
-                        ban_users=False,
-                        invite_users=True,
-                        pin_messages=False,
-                        add_admins=False,
-                        anonymous=False,
-                        manage_call=False,
-                        other=False,
-                    )
-                    empty = ChatAdminRights(
-                        change_info=False,
-                        post_messages=False,
-                        edit_messages=False,
-                        delete_messages=False,
-                        ban_users=False,
-                        invite_users=False,
-                        pin_messages=False,
-                        add_admins=False,
-                        anonymous=False,
-                        manage_call=False,
-                        other=False,
-                    )
-                    try:
-                        await client(
-                            EditAdminRequest(
-                                channel=entity,
-                                user_id=peer,
-                                admin_rights=rights,
-                                rank=" ",
-                            )
-                        )
-                        await asyncio.sleep(0.4)
-                        await client(
-                            EditAdminRequest(
-                                channel=entity,
-                                user_id=peer,
-                                admin_rights=empty,
-                                rank="",
-                            )
-                        )
-                        results.append({"userId": uid, "username": uname, "ok": True, "error": "", "method": "advanced"})
-                    except UserAlreadyParticipantError:
-                        results.append({"userId": uid, "username": uname, "ok": True, "error": "already", "method": "advanced"})
-                    except Exception as e:
-                        try:
-                            await client(InviteToChannelRequest(entity, [peer]))
-                            results.append({"userId": uid, "username": uname, "ok": True, "error": "", "method": "ordinary_fallback"})
-                        except Exception as e2:
-                            results.append({"userId": uid, "username": uname, "ok": False, "error": str(e2)[:120]})
-                else:
-                    if isinstance(entity, Channel) or getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False):
-                        await client(InviteToChannelRequest(entity, [peer]))
-                    else:
-                        from telethon.tl.functions.messages import AddChatUserRequest
-
-                        chat_id = getattr(entity, "id", None)
-                        await client(AddChatUserRequest(chat_id=chat_id, user_id=peer, fwd_limit=0))
-                    results.append({"userId": uid, "username": uname, "ok": True, "error": "", "method": "ordinary"})
-            except UserAlreadyParticipantError:
-                results.append({"userId": uid, "username": uname, "ok": True, "error": "already", "method": mode})
-            except UserPrivacyRestrictedError:
-                results.append({"userId": uid, "username": uname, "ok": False, "error": "privacy"})
-            except ChatAdminRequiredError:
-                results.append({"userId": uid, "username": uname, "ok": False, "error": "need_admin"})
-            except PeerFloodError:
-                return {
-                    "ok": False,
-                    "status": "spamblock",
-                    "error": "PEER_FLOOD",
-                    "results": results,
-                    "title": title,
-                }
-            except FloodWaitError as e:
-                return {
-                    "ok": False,
-                    "status": "floodwait",
-                    "error": f"FloodWait {e.seconds}s",
-                    "floodWait": int(e.seconds),
-                    "results": results,
-                    "title": title,
-                }
-            except RPCError as e:
-                if is_frozen_rpc(e):
-                    return {**frozen_action_error("инвайт"), "results": results}
-                results.append({"userId": uid, "username": uname, "ok": False, "error": str(e)[:120]})
-            except Exception as e:
-                results.append({"userId": uid, "username": uname, "ok": False, "error": str(e)[:120]})
-
-        ok_n = sum(1 for r in results if r.get("ok"))
-        return {
-            "ok": True,
-            "title": title,
-            "results": results,
-            "invited": ok_n,
-            "error": "",
-        }
-    except RPCError as e:
-        if is_frozen_rpc(e):
-            return {**frozen_action_error("инвайт"), "results": []}
-        raise
-
-
 async def send_message(
     client,
     *,
@@ -1985,6 +1476,7 @@ async def send_message(
 ) -> dict[str, Any]:
     from telethon.errors import (
         FloodWaitError,
+        PeerFloodError,
         RPCError,
         UserPrivacyRestrictedError,
         UserBannedInChannelError,
@@ -2304,6 +1796,9 @@ async def send_message(
                 "Смените аккаунт фермы или подождите 24ч."
             )[:400],
         }
+    except PeerFloodError as e:
+        # str(PeerFloodError) = «Too many requests …» — это спамблок аккаунта, не FloodWait
+        return {"ok": False, "status": "spamblock", "error": f"PEER_FLOOD: {e}"[:400]}
     except FloodWaitError as e:
         return {"ok": False, "status": "flood", "error": f"FloodWait {e.seconds}с", "waitSec": int(e.seconds)}
     except RPCError as e:
@@ -2366,62 +1861,133 @@ async def send_message(
         return {"ok": False, "error": msg[:400]}
 
 
-async def poll_dm_inbox(client, *, since_ts: int = 0, limit_dialogs: int = 20) -> dict[str, Any]:
-    """Входящие ЛС после since_ts (unix). Без ботов и Saved Messages."""
-    import time as _time
+INBOX_DEFAULT_LOOKBACK_SEC = 36 * 3600
+INBOX_MAX_USER_DIALOGS = 30
+INBOX_MAX_DIALOGS_SCANNED = 400
+INBOX_MESSAGES_PER_DIALOG = 100
 
-    now = int(_time.time())
-    floor = int(since_ts) if int(since_ts or 0) > 0 else now - 36 * 3600
+
+def _unix_ts(date: Any) -> int:
+    return int(date.timestamp()) if date is not None else 0
+
+
+def _is_dm_dialog(dialog: Any) -> bool:
+    if not getattr(dialog, "is_user", False):
+        return False
+    entity = dialog.entity
+    return not (getattr(entity, "bot", False) or getattr(entity, "is_self", False))
+
+
+async def _incoming_after(client: Any, dialog: Any, floor: int) -> list[dict[str, Any]]:
+    """Incoming messages of one private dialog newer than floor (newest first until the floor)."""
+    entity = dialog.entity
+    user_id = str(getattr(entity, "id", "") or "")
+    username = str(getattr(entity, "username", None) or "").strip()
+    name = " ".join(
+        x
+        for x in (
+            str(getattr(entity, "first_name", None) or "").strip(),
+            str(getattr(entity, "last_name", None) or "").strip(),
+        )
+        if x
+    ).strip()
+    out: list[dict[str, Any]] = []
+    async for m in client.iter_messages(entity, limit=INBOX_MESSAGES_PER_DIALOG):
+        if not m:
+            continue
+        date = getattr(m, "date", None)
+        ts = _unix_ts(date)
+        if ts and ts <= floor:
+            break
+        if getattr(m, "out", False):
+            continue
+        text = str(getattr(m, "message", None) or getattr(m, "raw_text", None) or "").strip()
+        has_media = bool(getattr(m, "media", None))
+        if not text and not has_media:
+            continue
+        out.append(
+            {
+                "userId": user_id,
+                "username": username,
+                "name": name or username or user_id,
+                "text": (text or "[медиа]")[:4000],
+                "messageId": str(getattr(m, "id", "") or ""),
+                "at": date.isoformat() if date is not None else "",
+                "ts": ts,
+                "hasMedia": has_media,
+            }
+        )
+    return out
+
+
+async def poll_dm_inbox(
+    client: Any,
+    *,
+    since_ts: int = 0,
+    offset_date: int = 0,
+    max_user_dialogs: int = INBOX_MAX_USER_DIALOGS,
+    now: int | None = None,
+) -> dict[str, Any]:
+    """Incoming DMs newer than since_ts (unix), bots and Saved Messages excluded.
+
+    Dialogs come newest first; every private dialog above the floor is read down to the floor. The pass is
+    complete at the first non-pinned dialog at/below the floor. When the dialog budget or a FloodWait stops it
+    earlier, complete=False and nextOffsetDate lets the next call resume from the first unscanned dialog, so
+    the caller's cursor never jumps over unscanned dialogs.
+    """
+    import time as _time
+    from datetime import datetime, timezone
+
+    started = int(now if now is not None else _time.time())
+    floor = int(since_ts) if int(since_ts or 0) > 0 else started - INBOX_DEFAULT_LOOKBACK_SEC
+    offset = max(0, int(offset_date or 0))
+    budget = max(1, min(60, int(max_user_dialogs or INBOX_MAX_USER_DIALOGS)))
     messages: list[dict[str, Any]] = []
-    try:
-        async for dialog in client.iter_dialogs(limit=max(8, min(40, int(limit_dialogs or 20)))):
-            if not getattr(dialog, "is_user", False):
-                continue
-            entity = dialog.entity
-            if getattr(entity, "bot", False) or getattr(entity, "is_self", False):
-                continue
-            user_id = str(getattr(entity, "id", "") or "")
-            username = str(getattr(entity, "username", None) or "").strip()
-            name = " ".join(
-                x
-                for x in (
-                    str(getattr(entity, "first_name", None) or "").strip(),
-                    str(getattr(entity, "last_name", None) or "").strip(),
-                )
-                if x
-            ).strip()
-            try:
-                hist = await client.get_messages(entity, limit=8)
-            except Exception:
-                continue
-            for m in hist or []:
-                if not m or getattr(m, "out", False):
-                    continue
-                date = getattr(m, "date", None)
-                ts = int(date.timestamp()) if date is not None else 0
-                if ts and ts <= floor:
-                    continue
-                text = str(getattr(m, "message", None) or getattr(m, "raw_text", None) or "").strip()
-                has_media = bool(getattr(m, "media", None))
-                if not text and not has_media:
-                    continue
-                if not text and has_media:
-                    text = "[медиа]"
-                messages.append(
-                    {
-                        "userId": user_id,
-                        "username": username,
-                        "name": name or username or user_id,
-                        "text": text[:4000],
-                        "messageId": str(getattr(m, "id", "") or ""),
-                        "at": date.isoformat() if date is not None else "",
-                        "ts": ts,
-                        "hasMedia": has_media,
-                    }
-                )
+
+    def result(complete: bool, resume_ts: int = 0) -> dict[str, Any]:
+        next_offset = 0
+        if not complete:
+            next_offset = resume_ts + 1 if resume_ts else offset
+            if offset and next_offset >= offset:
+                next_offset = offset - 1
         messages.sort(key=lambda x: int(x.get("ts") or 0))
-        return {"ok": True, "messages": messages[-80:], "error": ""}
-    except Exception as e:
+        return {
+            "ok": True,
+            "messages": messages,
+            "complete": complete,
+            "nextOffsetDate": next_offset,
+            "scanStartedTs": started,
+            "error": "",
+        }
+
+    kwargs: dict[str, Any] = {"limit": None}
+    if offset:
+        kwargs["offset_date"] = datetime.fromtimestamp(offset, tz=timezone.utc)
+    scanned = 0
+    user_dialogs = 0
+    try:
+        async for dialog in client.iter_dialogs(**kwargs):
+            d_ts = _unix_ts(getattr(dialog, "date", None))
+            if d_ts and d_ts <= floor:
+                if getattr(dialog, "pinned", False):
+                    continue
+                return result(True)
+            if scanned >= INBOX_MAX_DIALOGS_SCANNED:
+                return result(False, d_ts)
+            scanned += 1
+            if not _is_dm_dialog(dialog):
+                continue
+            if user_dialogs >= budget:
+                return result(False, d_ts)
+            user_dialogs += 1
+            try:
+                messages.extend(await _incoming_after(client, dialog, floor))
+            except Exception as e:  # noqa: BLE001 — one broken peer must not stop the inbox
+                if type(e).__name__ == "FloodWaitError":
+                    return result(False, d_ts)
+                print(f"inbox: dialog {getattr(dialog.entity, 'id', '?')} skipped: {str(e)[:200]}", file=sys.stderr)
+        return result(True)
+    except Exception as e:  # noqa: BLE001 — reported to the app, which keeps its cursor
         return {"ok": False, "error": str(e)[:400], "messages": []}
 
 
@@ -2718,24 +2284,16 @@ async def run_action(payload: dict[str, Any]) -> dict[str, Any]:
             url = payload.get("url") or ""
             if action == "join":
                 peer_hint = payload.get("peerHint") if isinstance(payload.get("peerHint"), dict) else None
-                res = await join_group(client, url, peer_hint=peer_hint)
+                target = "discussion" if payload.get("target") == "discussion" else "group"
+                res = await join_group(client, url, peer_hint=peer_hint, target=target)
                 # Диагностика: новая авторизация на каждый вызов — главный подозреваемый в «слепоте»
                 res["sessionRefreshed"] = bool(getattr(client, "_uniseller_session_refreshed", False))
                 return res
             if action == "scan":
-                keywords = payload.get("keywords") or []
-                if isinstance(keywords, str):
-                    keywords = [x.strip() for x in keywords.replace(";", ",").split(",")]
-                minus = payload.get("minusKeywords") or payload.get("minus_keywords") or []
-                if isinstance(minus, str):
-                    minus = [x.strip() for x in minus.replace(";", ",").split(",")]
-                limit = int(payload.get("limit") or 40)
+                # keywords / minusKeywords / limit are still accepted from older apps and ignored (REQ-5).
                 days = int(payload.get("days") or 0)
-                return await scan_group(client, url, keywords, minus, limit, days=days)
-            if action == "collect":
-                return await collect_audience(client, payload)
-            if action == "invite":
-                return await invite_users(client, payload)
+                cursor = str(payload.get("minId") or "")
+                return await scan_group(client, url, days=days, cursor=cursor)
             if action == "send":
                 return await send_message(
                     client,
@@ -2761,7 +2319,12 @@ async def run_action(payload: dict[str, Any]) -> dict[str, Any]:
                 return await poll_dm_inbox(
                     client,
                     since_ts=int(payload.get("sinceTs") or payload.get("since_ts") or 0),
-                    limit_dialogs=int(payload.get("limitDialogs") or 20),
+                    offset_date=int(payload.get("offsetDate") or 0),
+                    max_user_dialogs=int(
+                        payload.get("maxUserDialogs")
+                        or payload.get("limitDialogs")
+                        or INBOX_MAX_USER_DIALOGS
+                    ),
                 )
             if action == "update_profile":
                 return await update_profile(client, payload)

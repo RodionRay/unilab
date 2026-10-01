@@ -28,7 +28,7 @@ export function AiAssistantWidget({
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: "assistant",
-      content: `Здравствуйте! Я ассистент ${PRODUCT_NAME}. Спрошу про тёплые заявки из Telegram, очередь вступлений, AI-отбор, аудиторию, инвайтинг или рассылку — подскажу по сервису.`,
+      content: `Здравствуйте! Я ассистент ${PRODUCT_NAME}. Спросите про тёплые заявки из Telegram, вступление в группы, AI-отбор или ответы лидам — подскажу по сервису.`,
     },
   ]);
   const listRef = useRef<HTMLDivElement>(null);

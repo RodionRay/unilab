@@ -28,15 +28,13 @@ export const ROUTES = Object.freeze({
   "/check-proxy": "check_proxy",
   "/join-group": "join",
   "/scan-group": "scan",
-  "/collect-audience": "collect",
-  "/invite-users": "invite",
   "/send-message": "send",
   "/inbox-dms": "inbox",
   "/update-profile": "update_profile",
   "/upload-photo": "upload_photo",
 });
 
-const LONG_ACTIONS = new Set(["upload_photo", "collect", "invite"]);
+const LONG_ACTIONS = new Set(["upload_photo"]);
 
 /** @param {string} action */
 export function timeoutForAction(action) {

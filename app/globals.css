@@ -2832,14 +2832,20 @@ textarea:focus-visible,
   overflow: hidden;
 }
 
+/* Fixed actions track: each row is its own grid, so an `auto` track sized by one
+   row's buttons would shift that row's columns against the header and other rows.
+   Width fits the widest set (Обсуждение + Скан + 3 icon buttons). The table layout
+   switches to stacked cards by the list's own width, not the viewport (sidebar eats ~330px). */
 .groups-list {
   display: grid;
+  container: groups-list / inline-size;
+  --groups-actions-w: 368px;
 }
 
 .groups-list-cols,
 .groups-row {
   display: grid;
-  grid-template-columns: 36px minmax(0, 1.5fr) minmax(110px, 0.85fr) minmax(88px, 0.55fr) minmax(78px, 0.5fr) auto;
+  grid-template-columns: 36px minmax(0, 1.2fr) minmax(110px, 1fr) minmax(128px, 0.55fr) minmax(78px, 0.5fr) var(--groups-actions-w);
   gap: 10px;
   align-items: center;
   padding: 10px 14px;
@@ -2945,7 +2951,7 @@ textarea:focus-visible,
   font-weight: 700;
 }
 
-@media (max-width: 900px) {
+@container groups-list (max-width: 980px) {
   .groups-sync-label { display: inline; }
 }
 
@@ -2960,24 +2966,40 @@ textarea:focus-visible,
   align-items: center;
   justify-content: flex-end;
   gap: 4px;
+  min-width: 0;
 }
 
-@media (max-width: 900px) {
+/* Row utilities (history, edit, delete) move and wrap as one unit, pinned to the row's end. */
+.groups-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.groups-actions button:focus-visible {
+  outline: 2px solid var(--spike-primary);
+  outline-offset: 2px;
+}
+
+@container groups-list (max-width: 980px) {
   .groups-list-cols {
     display: none;
   }
+  /* Actions get their own full-width line so buttons never narrow the name/URL column. */
   .groups-row {
-    grid-template-columns: 28px 1fr auto;
+    grid-template-columns: 28px minmax(0, 1fr) auto;
     grid-template-areas:
-      "check main actions"
+      "check main main"
       "check acc status"
-      "check sync sync";
+      "check sync sync"
+      "check actions actions";
     gap: 8px 10px;
     padding: 12px;
   }
   .groups-check { grid-area: check; align-self: start; padding-top: 2px; }
   .groups-main { grid-area: main; }
-  .groups-actions { grid-area: actions; }
+  .groups-actions { grid-area: actions; justify-content: flex-start; }
   .groups-acc { grid-area: acc; max-width: none; }
   .groups-sync { grid-area: sync; }
   .groups-status { grid-area: status; }

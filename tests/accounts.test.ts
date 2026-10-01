@@ -66,7 +66,7 @@ describe('аккаунты',()=>{
   });
 });
 
-describe('группы как источники для инвайтов',()=>{
+describe('группы как источники лидов',()=>{
   it('принимает публичные и invite-ссылки',()=>{
     expect(groupSchema.parse({name:'Sellers',url:'https://t.me/sellers_group',accountId:''}).url).toBe(
       'https://t.me/sellers_group',

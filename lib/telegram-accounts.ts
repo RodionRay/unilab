@@ -48,14 +48,13 @@ export const DEFAULT_ACCOUNT_LIMITS: AccountLimits = {
 };
 
 /**
- * Мягкие суточные лимиты под Telegram API / антиспам (как в TGLab и практике ферм).
+ * Мягкие суточные лимиты под Telegram API / антиспам для user-сессий.
  * Не официальная квота Bot API — ориентир для user-сессий.
  */
 export const TELEGRAM_RECOMMENDED_LIMITS = {
   invite: 40,
   message: 40,
   chat: 20,
-  memberInvite: 40,
 } as const;
 
 export type AccountFormat = "tdata" | "session" | "session_json" | "manual";
@@ -95,16 +94,47 @@ export function isDayLimitCooldown(data: {
   return String(data.status || "") === "cooldown" && isOnCooldown(data.cooldownUntil);
 }
 
-/** Можно ли ставить в работу (рассылка / инвайт / сбор / группы). */
+/**
+ * Вид дневного лимита отлёжки (`cooldownReason: day_<kind>`); null — отлёжка без известного
+ * лимита (старые записи, ручная), она блокирует аккаунт целиком.
+ */
+export function dayLimitCooldownKind(data: { cooldownReason?: unknown } | null | undefined): DayLimitKind | null {
+  const m = /^day_(invite|message|chat)$/.exec(String(data?.cooldownReason || ""));
+  return m ? (m[1] as DayLimitKind) : null;
+}
+
+/**
+ * Живая отлёжка закрывает этот вид действий: дневной лимит — только свой вид
+ * (ЛС на отлёжке не мешают вступлениям), отлёжка без вида — все.
+ */
+export function isDayLimitedFor(
+  data: { status?: string | null; cooldownUntil?: string | null; cooldownReason?: unknown } | null | undefined,
+  kind: DayLimitKind,
+): boolean {
+  if (!isDayLimitCooldown(data)) return false;
+  const limited = dayLimitCooldownKind(data);
+  return limited === null || limited === kind;
+}
+
+/**
+ * Можно ли ставить в работу (вступление, скан, ответ лиду). Дневной лимит одного вида
+ * аккаунт не выключает: его вид закрывает has*Quota перед действием.
+ */
 export function isAccountUsable(data: {
   status?: string | null;
   cooldownUntil?: string | null;
+  cooldownReason?: unknown;
 } | null | undefined): boolean {
   if (!data) return false;
   const st = String(data.status || "");
+  // Спамблок от PEER_FLOOD ставит таймер (withSpamblockStatus) — после него аккаунт снова пробуем.
+  // Спамблок без таймера (проверка @SpamBot) снимается только новой проверкой.
+  if (st === "spamblock") {
+    const until = Date.parse(String(data.cooldownUntil || ""));
+    return Number.isFinite(until) && until <= Date.now();
+  }
   if (
     [
-      "spamblock",
       "frozen",
       "unauthorized",
       "disconnected",
@@ -117,12 +147,21 @@ export function isAccountUsable(data: {
   ) {
     return false;
   }
-  // Отлёжка только при явном status=cooldown и живом таймере (дневной лимит).
+  // Отлёжка только при явном status=cooldown и живом таймере; дневной лимит вида — не на весь аккаунт.
   if (st === "cooldown") {
-    return !isOnCooldown(data.cooldownUntil);
+    return !isOnCooldown(data.cooldownUntil) || dayLimitCooldownKind(data) !== null;
   }
   // active / пустой / legacy — cooldownUntil без статуса cooldown игнорируем (старые фейлы коннекта).
   return !st || st === "active" || st === "ok" || st === "connected";
+}
+
+/** FloodWait аккаунта ещё идёт — не слать с него (статус не меняется, это не отлёжка). */
+export function isAccountFlooded(
+  data: { floodUntil?: unknown } | null | undefined,
+  now = Date.now(),
+): boolean {
+  const t = Date.parse(String(data?.floodUntil || ""));
+  return Number.isFinite(t) && t > now;
 }
 
 /**
@@ -169,13 +208,12 @@ export function cooldownHoursFromNow(hours: number): string {
   return new Date(Date.now() + hours * 3600_000).toISOString();
 }
 
-export type DayLimitKind = "invite" | "message" | "chat" | "memberInvite";
+export type DayLimitKind = "invite" | "message" | "chat";
 
 const DAY_LIMIT_LABELS: Record<DayLimitKind, string> = {
   invite: "вступлений",
-  message: "сообщений (рассылка/ЛС)",
+  message: "сообщений в ЛС",
   chat: "комментариев",
-  memberInvite: "инвайтов участников",
 };
 
 /**
@@ -267,9 +305,20 @@ export function bumpChatCounters<T extends Record<string, unknown>>(
   };
 }
 
-/** Если после операции дневной лимит кончился — увести в отлёжку до полуночи. */
+const QUOTA_CHECKS: ReadonlyArray<[DayLimitKind, (data: Record<string, unknown>) => boolean]> = [
+  ["invite", (d) => hasInviteQuota(d as Parameters<typeof hasInviteQuota>[0])],
+  ["message", (d) => hasMessageQuota(d as Parameters<typeof hasMessageQuota>[0])],
+  ["chat", (d) => hasChatQuota(d as Parameters<typeof hasChatQuota>[0])],
+];
+
+/**
+ * Если после операции дневной лимит кончился — увести в отлёжку до полуночи.
+ * `spent` — вид квоты, которую только что потратили: проверяется только он (ЛС не уводит
+ * в отлёжку из-за исчерпанных вступлений). Без него — любой исчерпанный лимит.
+ */
 export function applyQuotaCooldownIfExhausted<T extends Record<string, unknown>>(
   data: T,
+  spent?: DayLimitKind,
 ): T {
   const st = String((data as { status?: string }).status || "");
   if (st === "spamblock" || st === "frozen") return data;
@@ -277,17 +326,9 @@ export function applyQuotaCooldownIfExhausted<T extends Record<string, unknown>>
     return data;
   }
 
-  if (!hasInviteQuota(data as Parameters<typeof hasInviteQuota>[0])) {
-    return withDayLimitCooldown(data, "invite");
-  }
-  if (!hasMessageQuota(data as Parameters<typeof hasMessageQuota>[0])) {
-    return withDayLimitCooldown(data, "message");
-  }
-  if (!hasMemberInviteQuota(data as Parameters<typeof hasMemberInviteQuota>[0])) {
-    return withDayLimitCooldown(data, "memberInvite");
-  }
-  if (!hasChatQuota(data as Parameters<typeof hasChatQuota>[0])) {
-    return withDayLimitCooldown(data, "chat");
+  for (const [kind, hasQuota] of QUOTA_CHECKS) {
+    if (spent && kind !== spent) continue;
+    if (!hasQuota(data)) return withDayLimitCooldown(data, kind);
   }
   // Сброс «осиротевшего» таймера от старых FloodWait/коннект-фейлов.
   if (
@@ -375,18 +416,6 @@ export function hasMessageQuota(data: {
   );
 }
 
-export function hasMemberInviteQuota(data: {
-  limits?: { memberInvite?: unknown };
-  memberInvitesToday?: number;
-  memberInviteDay?: string;
-} | null | undefined): boolean {
-  if (!data) return false;
-  return hasDayQuota(
-    dayCounter(data.memberInviteDay, data.memberInvitesToday),
-    data.limits?.memberInvite ?? 40,
-  );
-}
-
 export function bumpMessageCounters(
   state: { messagesToday?: number; messagesDay?: string },
   add: number,
@@ -407,19 +436,25 @@ export type JoinPaceState = {
   lastJoinAt?: string;
   joinsToday?: number;
   joinsDay?: string;
+  /** Конец FloodWait от Telegram на вступления: пауза темпа, не отлёжка. */
+  joinFloodUntil?: string;
 };
 
-/** Сколько секунд ждать до следующего join. 0 = можно сейчас. */
+/** Сколько секунд ждать до следующего join (пауза темпа или FloodWait). 0 = можно сейчас. */
 export function joinWaitSec(
   state: JoinPaceState,
   now = Date.now(),
 ): number {
-  if (!state.lastJoinAt) return 0;
-  const last = Date.parse(state.lastJoinAt);
-  if (!Number.isFinite(last)) return 0;
+  const floodUntil = Date.parse(String(state.joinFloodUntil || ""));
+  const floodWait = Number.isFinite(floodUntil) && floodUntil > now
+    ? Math.ceil((floodUntil - now) / 1000)
+    : 0;
+  const last = Date.parse(String(state.lastJoinAt || ""));
+  if (!Number.isFinite(last)) return floodWait;
   const elapsed = (now - last) / 1000;
   const need = JOIN_GAP_DEFAULT_SEC;
-  return elapsed >= need ? 0 : Math.ceil(need - elapsed);
+  const paceWait = elapsed >= need ? 0 : Math.ceil(need - elapsed);
+  return Math.max(paceWait, floodWait);
 }
 
 export function normalizeJoinsToday(state: JoinPaceState): number {
@@ -436,22 +471,12 @@ export function normalizeMessagesToday(data: {
   return dayCounter(data.messagesDay, data.messagesToday);
 }
 
-export function normalizeMemberInvitesToday(data: {
-  memberInvitesToday?: number;
-  memberInviteDay?: string;
-} | null | undefined): number {
-  if (!data) return 0;
-  return dayCounter(data.memberInviteDay, data.memberInvitesToday);
-}
-
 export type AccountLimitsUsage = {
   joins: number;
   messages: number;
-  memberInvites: number;
   inviteLimit: number;
   messageLimit: number;
   chatLimit: number;
-  memberInviteLimit: number;
 };
 
 /** Суточные счётчики и лимиты для UI менеджера аккаунтов. */
@@ -460,30 +485,24 @@ export function accountLimitsUsage(data: {
     invite?: unknown;
     message?: unknown;
     chat?: unknown;
-    memberInvite?: unknown;
   };
   joinsToday?: number;
   joinsDay?: string;
   messagesToday?: number;
   messagesDay?: string;
-  memberInvitesToday?: number;
-  memberInviteDay?: string;
 } | null | undefined): AccountLimitsUsage {
   const limits = data?.limits || {};
   const inviteLimit = Number(limits.invite);
   const messageLimit = Number(limits.message);
   const chatLimit = Number(limits.chat);
-  const memberInviteLimit = Number(limits.memberInvite);
   return {
     joins: normalizeJoinsToday(data || {}),
     messages: normalizeMessagesToday(data),
-    memberInvites: normalizeMemberInvitesToday(data),
     inviteLimit: Number.isFinite(inviteLimit) ? inviteLimit : DEFAULT_ACCOUNT_LIMITS.invite,
     messageLimit: Number.isFinite(messageLimit)
       ? messageLimit
       : DEFAULT_ACCOUNT_LIMITS.message,
     chatLimit: Number.isFinite(chatLimit) ? chatLimit : DEFAULT_ACCOUNT_LIMITS.chat,
-    memberInviteLimit: Number.isFinite(memberInviteLimit) ? memberInviteLimit : 40,
   };
 }
 
