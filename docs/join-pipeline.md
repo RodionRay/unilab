@@ -100,3 +100,27 @@ reason «Ссылка не открывается …». Approving it (or editin
 already in the tried list the group is marked dead at once (small farms); when untried accounts exist but
 are capped/paused the group is deferred (`409 {deferred:true}`, retried in 30 min) — never reported as a
 farm-wide limit.
+
+## 4. Chats that do not exist — t.me probe (`lib/tme-probe.ts`)
+
+The public preview page `https://t.me/<username>` answers without a Telegram account:
+a joinable chat/channel shows «N members» / «N subscribers»; a missing username, a user or a bot does
+not (`isDeadTmePage`). Network errors, non-200 and unrecognisable pages are `unknown` and never mean
+dead (`probeTmeUsername`, timeout 8 s, one retry). Invite links are not probed.
+
+- `join_group`: before the first join of a public @username (`tmeCheckedAt` empty) the server probes
+  t.me. Dead → `settleDeadGroup`, answer `409 {parked, deadLink, gate:'dead', removed}`, no account is
+  reserved or spent. Live → `tmeCheckedAt` is stored and not probed again.
+- `settleDeadGroup` (route): `tmeMissingPatch` marks the group `joinDead` + `tmeMissing` with the copy
+  «Чат @x не существует в Telegram» (also the gate reason in `joinGateFor`). Without leads
+  (`leadsTotal` 0 and no lead with its `groupId`) the group record is deleted and a tombstone
+  (`kind='dead_group'`, `data.key` = `telegramEntityKey(url)`) is stored once per key.
+- `purgeDeadGroups` cleans stored data: on every heal tick (`healDeadGroupAccounts`) it probes up to
+  4 groups with `joinDead` / `usernameMissing` and no `tmeCheckedAt` (in parallel); on every list
+  (`GET`) it only removes already-confirmed dead groups without leads (no network).
+  A group the farm «does not see» but t.me shows alive keeps the witness rule of §3.
+- Tombstones: `GET` returns `deadGroupKeys` (tombstones are not in `records`); the catalog dialog hides
+  and never saves those chats, `import_catalog` skips them. Approving a kept dead group clears
+  `tmeMissing` / `tmeCheckedAt` (explicit retry, probed again).
+- Catalog upkeep: `npx tsx scripts/probe-catalog.ts [--json]` probes every catalog username
+  (concurrency ≤ 4) and lists dead / unknown ones for removal from `lib/group-catalog.ts`.

@@ -1,6 +1,7 @@
 /** Решения по вступлению в группы (чистая логика для тестов и route). */
 
 import { isCatalogPlaceholderUrl } from "@/lib/group-catalog";
+import { tmeMissingMessage } from "@/lib/tme-probe";
 import {
   hasInviteQuota,
   isAccountUsable,
@@ -312,6 +313,15 @@ export function deadLinkPatch(message: string): Record<string, unknown> {
     joinState: "",
     joinStateAt: "",
     joinStateError: msg,
+  };
+}
+
+/** t.me confirmed the @username does not exist: dead with plain copy, no witnesses needed. */
+export function tmeMissingPatch(username: string, now = Date.now()): Record<string, unknown> {
+  return {
+    ...deadLinkPatch(tmeMissingMessage(username)),
+    tmeMissing: true,
+    tmeCheckedAt: new Date(now).toISOString(),
   };
 }
 

@@ -478,6 +478,8 @@ function WorkspaceHome(){
   const [accountImportProgress,setAccountImportProgress]=useState('');
   const [proxyCheckProgress,setProxyCheckProgress]=useState<{done:number;total:number;active:number;inactive:number}|null>(null);
   const [telegramConnected,setTelegramConnected]=useState(false);
+  /** Ключи ссылок чатов, удалённых как несуществующие в Telegram: каталог их не предлагает. */
+  const [deadGroupKeys,setDeadGroupKeys]=useState<string[]>([]);
   const [accountCheckProgress,setAccountCheckProgress]=useState<{done:number;total:number;active:number}|null>(null);
   const [catalogOpen,setCatalogOpen]=useState(false);
   const [catalogQuery,setCatalogQuery]=useState('');
@@ -579,6 +581,7 @@ function WorkspaceHome(){
       const data=await api();
       setRecords(data.records);
       setTelegramConnected(!!data.telegramConnected);
+      setDeadGroupKeys(Array.isArray(data.deadGroupKeys)?data.deadGroupKeys.map(String):[]);
       setAiMeta(data.ai||null);
       if(data.workspace){
         setWorkspaceMeta({
@@ -1209,6 +1212,13 @@ function WorkspaceHome(){
           }
         }catch(err){
           const data=(err as Error & {data?:any}).data;
+          if(data?.removed){
+            // t.me: чата не существует, лидов нет — сервер удалил группу; убираем из очереди и списка.
+            setJoinQueueSync(prev=>prev.map(q=>q.id===g.id?{...q,status:'done',error:String(data.error||'Чат не существует').slice(0,120)}:q));
+            toast.message(String(data.error||'Чат не существует в Telegram — убран из списка'));
+            await refresh();
+            continue;
+          }
           if(data?.parked||data?.deferred){
             // Фильтр релевантности: не ошибка — группа ждёт решения владельца.
             setJoinQueueSync(prev=>prev.map(q=>q.id===g.id?{...q,status:'done',error:String(data.error||'На подтверждение').slice(0,120)}:q));
@@ -2549,7 +2559,7 @@ function WorkspaceHome(){
   /** Сохранить чаты каталога в «Группы и каналы». join=true — сразу фоновое вступление. */
   async function saveCatalogGroupsToDb(overrideIds?:string[],opts?:{join?:boolean}){
     const selectedIds=overrideIds?.length?overrideIds:catalogSelected;
-    const picks=GROUP_CATALOG.filter(g=>selectedIds.includes(g.id));
+    const picks=GROUP_CATALOG.filter(g=>selectedIds.includes(g.id)&&!(g.url&&deadGroupKeys.includes(telegramEntityKey(g.url))));
     const ready=picks.filter(g=>g.verified&&g.url&&!isCatalogPlaceholderUrl(g.url));
     const needLink=picks.filter(g=>!g.verified||!g.url||isCatalogPlaceholderUrl(g.url));
     if(!ready.length&&!needLink.length){toast.message('Выберите чаты со ссылкой');return}
@@ -2829,7 +2839,9 @@ function WorkspaceHome(){
 
   const existingGroupUrlSet=new Set(list('group').map(r=>telegramEntityKey(r.data.url)).filter(Boolean));
   const catalogMarketNiches=MARKET_SECTIONS.find(m=>m.id===catalogMarket)?.niches||[];
+  const deadGroupKeySet=new Set(deadGroupKeys);
   const catalogBaseHits=catalogHits.filter(h=>{
+    if(h.url&&deadGroupKeySet.has(telegramEntityKey(h.url)))return false;
     if(catalogMarket==='db')return true;
     if(!catalogHideAdded)return true;
     if(!h.url)return true;

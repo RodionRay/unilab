@@ -18,6 +18,7 @@ import {
 import { hasAssistantFitConfig, workerKeywordsFromSettings, type LeadCoreSettings } from "@/lib/lead-core";
 import { findMinusHit, splitTerms } from "@/lib/lead-filter";
 import { scanStopTerms } from "@/lib/lead-stopwords";
+import { tmeMissingMessage } from "@/lib/tme-probe";
 
 /** Bump when the formula changes: stored scores with another version are recomputed. */
 export const JOIN_RELEVANCE_VERSION = 2;
@@ -401,6 +402,8 @@ export type JoinGateGroup = RelevanceGroup & {
   /** Owner queued the group (enqueue_joins, earlier dev contract) — same as joinDecision «approved». */
   joinWanted?: boolean;
   joinDead?: boolean;
+  /** t.me confirmed the @username does not exist (lib/tme-probe) — stronger than the farm's «не видит». */
+  tmeMissing?: boolean;
   /** Was a member; membership was reset by an account swap — restoring it is not a new join decision. */
   joinRejoin?: boolean;
   joinRelevance?: unknown;
@@ -446,7 +449,10 @@ export function joinGateFor(group: JoinGateGroup): JoinGate {
     score,
   });
   if (groupIsMember(group)) return gate(true, "joined", "");
-  if (group.joinDead) return gate(false, "dead", "Несколько аккаунтов не видят @username — проверьте ссылку");
+  if (group.joinDead) {
+    const username = group.tmeMissing ? extractTelegramUsername(String(group.url || "")) : null;
+    return gate(false, "dead", username ? tmeMissingMessage(username) : "Несколько аккаунтов не видят @username — проверьте ссылку");
+  }
   if (group.joinDecision === "skipped") return gate(false, "skipped", "пропущено вручную");
   if (group.joinRejoin) return gate(true, "joined", "восстановление членства после смены аккаунта");
   if (group.joinDecision === "approved" || group.joinWanted === true) return gate(true, "approved", "одобрено вручную");
