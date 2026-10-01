@@ -1088,7 +1088,7 @@ button.studio-metric:hover .studio-metric-card {
 
 .leads-list-cols {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1.8fr) auto auto minmax(100px, 0.8fr) auto;
+  grid-template-columns: minmax(0, 1.8fr) auto auto minmax(100px, 0.8fr) auto;
   gap: 10px;
   align-items: center;
   padding: 10px 16px;
@@ -1888,27 +1888,8 @@ button.studio-metric:hover .studio-metric-card {
   color: var(--spike-muted);
 }
 
-.ai-last-minus {
-  margin: 0 0 12px;
-  padding: 10px 12px;
-  border-radius: 12px;
-  border: 1px dashed rgba(255, 169, 44, 0.55);
-  background: rgba(255, 169, 44, 0.08);
-}
 
-.ai-last-minus-title {
-  margin: 0 0 8px;
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  color: #ffd58a;
-}
 
-.kw.minus.is-new {
-  box-shadow: 0 0 0 1px rgba(255, 169, 44, 0.7);
-  background: rgba(255, 169, 44, 0.22);
-}
 
 .kw-list {
   display: flex;
@@ -2093,14 +2074,7 @@ button.studio-metric:hover .studio-metric-card {
   background: var(--spike-hover);
 }
 
-.lead-row.selected {
-  border-color: rgba(255, 213, 138, 0.45);
-  background: rgba(255, 169, 44, 0.08);
-}
 
-.lead-row.ignored {
-  opacity: 0.72;
-}
 
 .lead-bulk-bar {
   display: flex;
@@ -2116,9 +2090,6 @@ button.studio-metric:hover .studio-metric-card {
   color: rgba(255, 255, 255, 0.85);
 }
 
-.lead-bulk-hint {
-  margin-bottom: 12px;
-}
 
 .farm-logo-preview {
   display: block;

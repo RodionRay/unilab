@@ -3,7 +3,7 @@ import {GROUP_CATALOG,isCatalogPlaceholderUrl} from '@/lib/group-catalog';
 import {JOIN_SUCCESS_PATCH,JOIN_WORKER_ERROR_RETRY_MS,accountBlindPatch,type JoinAccountState,type JoinProxyState,evaluateAccountJoinReadiness,isAccountBlindResult,isAccountResolveBlind,isJoinFarmCandidate,joinFailurePatch,planGroupHeal,sanitizeJoinStateError} from '@/lib/processes/join-flow';
 import {database,seal,unseal} from '@/lib/server-store';
 import {aiChatText,envAiApiKey,resolveAiConfig} from '@/lib/ai-client';
-import {buildProjectBrief,leadMessageFingerprint,normalizeLeadMessage,parseLeadTemperature,ratingFromTemperatures,strongPlusTerms} from '@/lib/lead-filter';
+import {buildProjectBrief,leadMessageFingerprint,parseLeadTemperature,ratingFromTemperatures,strongPlusTerms} from '@/lib/lead-filter';
 import {
  explainLeadDecision,
  workerKeywordsFromSettings,
@@ -22,7 +22,7 @@ import {
  type AiBatchOutcome,
  type AiPick,
 } from '@/lib/processes/scan-flow';
-import {appendLearnExamples,extractTermsFromHotMessages,extractStopTermsFromMessage,mergeKeywords,mergeKeywordsPreferNew,parseKeywordCsv} from '@/lib/ai-keywords';
+import {appendLearnExamples,extractTermsFromHotMessages,mergeKeywords,mergeKeywordsPreferNew,parseKeywordCsv} from '@/lib/ai-keywords';
 import {sanitizeMinusTerms,scanStopTerms} from '@/lib/lead-stopwords';
 import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpChatCounters,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasMemberInviteQuota,hasMessageQuota,isAccountFlooded,isAccountUsable,isDayLimitCooldown,isDayLimitedFor,dayLimitCooldownKind,isOnCooldown,joinWaitSec,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
 import {INVITE_SOFT_FAIL_LIMIT,interpretInviteWorkerResult,inviteAccountStillLive,inviteBatchLimit,inviteUserPatch} from '@/lib/processes/invite-tick';
@@ -87,9 +87,6 @@ const settingsSchema=z.object({
  autoRescanEnabled:z.boolean().default(true),
  autoRescanMinutes:z.coerce.number().int().min(5).max(180).default(30),
  lastAutoRescanAt:z.string().max(40).default(''),
- /** Последние стоп-слова, добавленные кнопкой «В стоп-слова». */
- lastMinusAdded:z.array(z.string().max(80)).max(20).default([]),
- lastMinusAddedAt:z.string().max(40).default(''),
  /** Журнал переобходов групп (глобальный). */
  rescanLog:z.array(z.object({
   at:z.string().max(40),
@@ -239,7 +236,6 @@ const schemas={
   reason:z.string().max(500).default(''),
   viewed:z.boolean().default(false),
   viewedAt:z.string().max(40).default(''),
-  excludeFromTraining:z.boolean().default(false),
   senderId:z.string().max(40).default(''),
   senderUsername:z.string().max(64).default(''),
   /** Telethon access_hash — нужен для ЛС без кэша сессии */
@@ -1552,7 +1548,6 @@ async function recordMailingOutreach(owner:string,taskId:string,cand:MailingOutr
    reason:'Исходящее из рассылки — ждём ответ',
    viewed:false,
    viewedAt:'',
-   excludeFromTraining:false,
    senderId:String(cand.userId||'').slice(0,40),
    senderUsername:String(cand.username||result.senderUsername||'').slice(0,64),
    senderAccessHash:String(freshHash||cand.accessHash||'').slice(0,40),
@@ -1725,7 +1720,6 @@ async function recordIncomingDm(db:D1LikeDatabase,owner:string,accountId:string,
   reason:'Клиент ответил на рассылку',
   viewed:false,
   viewedAt:'',
-  excludeFromTraining:false,
   senderId:String(msg.userId||'').slice(0,40),
   senderUsername:String(msg.username||'').slice(0,64),
   messageKind:'',
@@ -2500,28 +2494,16 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    });
    const existing=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='lead'").bind(owner).all();
    const seen=new Set<string>();
-   const excludedTexts=new Set<string>();
    for(const r of existing.results){
     try{
      const d=JSON.parse(String(r.data));
      seen.add(leadMessageFingerprint(d.message||'',d.groupId||'',d.tgMsgId||''));
-     if(d.excludeFromTraining){
-      const fp=normalizeLeadMessage(d.message||'');
-      if(fp)excludedTexts.add(fp);
-     }
     }catch{/* */}
    }
    // Удалённые пользователем лиды — как существующие (REQ-L6)
    for(const t of Array.isArray(gdata.leadTombstones)?gdata.leadTombstones:[])seen.add(leadMessageFingerprint('',id,String(t)));
-   const isNewMessage=(msg:{tgMsgId?:unknown;message?:string})=>{
-    if(seen.has(leadMessageFingerprint(msg.message||'',id,String(msg.tgMsgId||''))))return false;
-    const fp=normalizeLeadMessage(msg.message||'');
-    return !fp||!excludedTexts.has(fp);
-   };
-   candidates=candidates.filter((msg:{message?:string})=>{
-    const fp=normalizeLeadMessage(msg.message||'');
-    return !fp||!excludedTexts.has(fp);
-   });
+   const isNewMessage=(msg:{tgMsgId?:unknown;message?:string})=>
+    !seen.has(leadMessageFingerprint(msg.message||'',id,String(msg.tgMsgId||'')));
    const prefilterCount=candidates.length;
    // Дедуп до AI: уже известные сообщения не отправляем в модель повторно
    candidates=candidates.filter(isNewMessage);
@@ -2575,7 +2557,6 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      reason:kept.reason,
      viewed:false,
      viewedAt:'',
-     excludeFromTraining:false,
      senderId:String(msg.senderId||''),
      senderUsername:String(msg.senderUsername||''),
      senderAccessHash:String(msg.senderAccessHash||'').slice(0,40),
@@ -2694,39 +2675,6 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   if(!done)return reply({error:'Лид не найден'},404);
   return done.result?reply({ok:true,already:true}):reply({ok:true,lead:done.lead});
  }
- if(b.action==='set_lead_training_exclude'){
-  const id=z.string().uuid().parse(b.id);
-  const exclude=z.boolean().parse(b.exclude??true);
-  const row:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'lead').first();
-  if(!row)return reply({error:'Лид не найден'},404);
-  const data=JSON.parse(row.data);
-  const next={
-   ...data,
-   excludeFromTraining:exclude,
-   ...(exclude&&!data.viewed?{viewed:true,viewedAt:new Date().toISOString()}:{}),
-  };
-  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'lead').run();
-  return reply({ok:true,lead:next});
- }
- if(b.action==='bulk_set_lead_training_exclude'){
-  const ids=z.array(z.string().uuid()).min(1).max(200).parse(b.ids);
-  const exclude=z.boolean().parse(b.exclude??true);
-  let updated=0;
-  const now=new Date().toISOString();
-  for(const id of ids){
-   const row:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'lead').first();
-   if(!row)continue;
-   const data=JSON.parse(row.data);
-   const next={
-    ...data,
-    excludeFromTraining:exclude,
-    ...(exclude&&!data.viewed?{viewed:true,viewedAt:now}:{}),
-   };
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'lead').run();
-   updated++;
-  }
-  return reply({ok:true,updated,exclude});
- }
  if(b.action==='rebuild_product'){
   const config:any=await db.prepare('SELECT * FROM records WHERE owner=? AND kind=? LIMIT 1').bind(owner,'settings').first();
   const apiKey=await resolveApiKey(owner,config);
@@ -2792,20 +2740,15 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const settings=JSON.parse(config.data);
   const leads=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='lead'").bind(owner).all();
   const hotMsgs:string[]=[];
-  const coldMsgs:string[]=[];
   for(const row of leads.results){
    try{
     const d=JSON.parse(row.data as string);
-    if(d.excludeFromTraining)continue;
-    const t=parseLeadTemperature(d.temperature);
-    if(t==='hot')hotMsgs.push(String(d.message||''));
-    if(t==='cold'||d.viewed)coldMsgs.push(String(d.message||''));
+    if(parseLeadTemperature(d.temperature)==='hot')hotMsgs.push(String(d.message||''));
    }catch{/* */}
   }
   if(!hotMsgs.length)return reply({error:'Нет горячих лидов для обучения. Сначала найдите горячие запросы.'},409);
   const apiKey=await resolveApiKey(owner,config);
   let plusAdd:string[]=extractTermsFromHotMessages(hotMsgs);
-  let minusAdd:string[]=[];
   let learnBits:string[]=hotMsgs.slice(0,8).map(m=>m.replace(/\s+/g,' ').trim().slice(0,140)).filter(Boolean);
   if(apiKey){
    try{
@@ -2813,14 +2756,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      apiKey,
      maxTokens:900,
      temperature:0.2,
-     system:'Ты помогаешь обучить фильтр лидов. Верни ТОЛЬКО JSON {"plus":["..."],"minus":["..."],"examples":["короткая цитата целевого запроса"]}. plus — слова/фразы горячих запросов; minus — шум из холодных; examples — 3–6 коротких формулировок.',
-     user:`Горячие:\n${hotMsgs.slice(0,12).map((m,i)=>`${i+1}. ${m.slice(0,400)}`).join('\n')}\n\nХолодные/просмотренные:\n${coldMsgs.slice(0,10).map((m,i)=>`${i+1}. ${m.slice(0,300)}`).join('\n')}\n\nТекущие плюс: ${settings.keywords}\nТекущие минус: ${settings.minusKeywords}`,
+     system:'Ты помогаешь обучить фильтр лидов. Верни ТОЛЬКО JSON {"plus":["..."],"examples":["короткая цитата целевого запроса"]}. plus — слова/фразы горячих запросов; examples — 3–6 коротких формулировок.',
+     user:`Горячие:\n${hotMsgs.slice(0,12).map((m,i)=>`${i+1}. ${m.slice(0,400)}`).join('\n')}\n\nТекущие плюс: ${settings.keywords}`,
     });
     const match=text.match(/\{[\s\S]*\}/);
     if(match){
      const parsed=JSON.parse(match[0]);
      if(Array.isArray(parsed.plus))plusAdd=[...plusAdd,...parsed.plus.map(String)];
-     if(Array.isArray(parsed.minus))minusAdd=parsed.minus.map(String);
      if(Array.isArray(parsed.examples))learnBits=parsed.examples.map((x:string)=>String(x).slice(0,140));
     }
    }catch{/* heuristic only */}
@@ -2828,139 +2770,15 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const learnedKeywords=mergeKeywordsPreferNew(settings.keywords||'',plusAdd,8000);
   const learnedExamples=appendLearnExamples(settings.learnExamples||'',learnBits).slice(0,4000);
   const learnedSignals=mergeKeywordsPreferNew(settings.hotSignals||'',plusAdd.slice(0,8),4000);
-  minusAdd=sanitizeMinusTerms(minusAdd,{...settings,keywords:learnedKeywords,learnExamples:learnedExamples,hotSignals:learnedSignals});
   const next={
    ...settings,
    keywords:learnedKeywords,
-   minusKeywords:mergeKeywordsPreferNew(settings.minusKeywords||'',minusAdd,8000),
    learnExamples:learnedExamples,
    hotSignals:learnedSignals,
   };
   const data=settingsSchema.parse(next);
   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(data),owner,config.id,'settings').run();
-  return reply({ok:true,data,trainedOn:hotMsgs.length,plusAdded:plusAdd.length,minusAdded:minusAdd.length});
- }
- if(b.action==='train_from_ignored'){
-  const config:any=await db.prepare('SELECT * FROM records WHERE owner=? AND kind=? LIMIT 1').bind(owner,'settings').first();
-  if(!config)return reply({error:'Сначала сохраните настройки AI'},404);
-  const settings=JSON.parse(config.data);
-  const leads=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='lead'").bind(owner).all();
-  const ignoredMsgs:string[]=[];
-  for(const row of leads.results){
-   try{
-    const d=JSON.parse(row.data as string);
-    if(!d.excludeFromTraining)continue;
-    const msg=String(d.message||'').trim();
-    if(msg.length>=3)ignoredMsgs.push(msg);
-   }catch{/* */}
-  }
-  if(!ignoredMsgs.length)return reply({error:'Нет игнорированных лидов. Пометьте шум кнопкой «Не учитывать».'},409);
-  const apiKey=await resolveApiKey(owner,config);
-  let minusAdd:string[]=extractTermsFromHotMessages(ignoredMsgs,{max:20,minCount:ignoredMsgs.length>=4?2:1});
-  if(apiKey){
-   try{
-    const text=await aiChatText({
-     apiKey,
-     maxTokens:700,
-     temperature:0.15,
-     system:'Ты помогаешь собрать стоп-слова фильтра лидов. Верни ТОЛЬКО JSON {"minus":["слово или короткая фраза"]}. minus — типичный шум из игнорированных сообщений (вакансии, оффтоп, спам, нерелевант). 8–20 пунктов, короткие, без дублей с входными плюс-словами.',
-     user:`Игнорированные (не целевые) сообщения:\n${ignoredMsgs.slice(0,20).map((m,i)=>`${i+1}. ${m.slice(0,350)}`).join('\n')}\n\nТекущие плюс (не дублируй): ${settings.keywords}\nТекущие минус: ${settings.minusKeywords}`,
-    });
-    const match=text.match(/\{[\s\S]*\}/);
-    if(match){
-     const parsed=JSON.parse(match[0]);
-     if(Array.isArray(parsed.minus))minusAdd=[...minusAdd,...parsed.minus.map(String)];
-    }
-   }catch{/* heuristic only */}
-  }
-  // Не пускать в стоп-лист слова продукта/плюса/контекста маркетплейсов — иначе скан режет целевые лиды
-  minusAdd=sanitizeMinusTerms(minusAdd,settings);
-  const next={
-   ...settings,
-   minusKeywords:mergeKeywordsPreferNew(settings.minusKeywords||'',minusAdd,8000),
-   avoidTopics:mergeKeywordsPreferNew(settings.avoidTopics||'',minusAdd.slice(0,6),4000),
-  };
-  const data=settingsSchema.parse(next);
-  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(data),owner,config.id,'settings').run();
-  return reply({ok:true,data,trainedOn:ignoredMsgs.length,minusAdded:minusAdd.length});
- }
- if(b.action==='reject_lead_stopwords'){
-  const id=z.string().uuid().parse(b.id);
-  const row:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'lead').first();
-  if(!row)return reply({error:'Лид не найден'},404);
-  const lead=JSON.parse(row.data);
-  const msg=String(lead.message||'').trim();
-  if(msg.length<3)return reply({error:'Пустое сообщение'},400);
-
-  const config:any=await db.prepare('SELECT * FROM records WHERE owner=? AND kind=? LIMIT 1').bind(owner,'settings').first();
-  if(!config)return reply({error:'Сначала сохраните настройки AI'},404);
-  const settings=JSON.parse(config.data);
-
-  // 1) Пометить как не лид
-  const leadNext={
-   ...lead,
-   excludeFromTraining:true,
-   viewed:true,
-   viewedAt:lead.viewedAt||new Date().toISOString(),
-   temperature:lead.temperature||'cold',
-  };
-  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(leadNext),owner,id,'lead').run();
-
-  // 2) Стоп-слова из этого сообщения
-  let minusAdd=extractStopTermsFromMessage(msg,{max:8,plusKeywords:settings.keywords||''});
-  const apiKey=await resolveApiKey(owner,config);
-  if(apiKey){
-   try{
-    const text=await aiChatText({
-     apiKey,
-     settings,
-     maxTokens:400,
-     temperature:0.1,
-     system:
-      'Сообщение — НЕ целевой лид (оффтоп/спам/чужая тема). Верни ТОЛЬКО JSON {"minus":["…"]}: 3–8 коротких стоп-слов или фраз (2–4 слова), по которым такие сообщения можно отсечь в фильтре. '+
-      'Не бери общие слова вроде «помогите/подскажите/нужен/ищу» — они нужны для реальных лидов. Без markdown.',
-     user:`Сообщение:\n${msg.slice(0,600)}\n\nУже в минусе: ${settings.minusKeywords||'—'}\nПлюс (не дублируй): ${settings.keywords||'—'}`,
-    });
-    const match=text.match(/\{[\s\S]*\}/);
-    if(match){
-     const parsed=JSON.parse(match[0]);
-     if(Array.isArray(parsed.minus))minusAdd=[...minusAdd,...parsed.minus.map(String)];
-    }
-   }catch{/* heuristic only */}
-  }
-  // Без коротких/общих слов, контекста маркетплейсов и терминов продукта (уникальные, порядок сохранён)
-  const minusCandidates=minusAdd.map(t=>String(t||'').trim().slice(0,60)).filter(Boolean);
-  minusAdd=sanitizeMinusTerms(minusCandidates,settings).slice(0,10);
-  // UI: «ничего не добавлено — слова пересекаются с продуктом» vs «уже были в минусе»
-  const minusSkippedAsProduct=minusAdd.length?0:minusCandidates.length;
-  // Если всё уже было в минусе — всё равно добавим короткую цитату-фразу из сообщения
-  if(!minusAdd.length){
-   const clip=msg.replace(/\s+/g,' ').trim().slice(0,48).toLowerCase();
-   if(clip.length>=8)minusAdd=sanitizeMinusTerms([clip],settings);
-  }
-
-  const next={
-   ...settings,
-   minusKeywords:mergeKeywordsPreferNew(settings.minusKeywords||'',minusAdd,8000),
-   avoidTopics:mergeKeywordsPreferNew(settings.avoidTopics||'',minusAdd.slice(0,4),4000),
-   lastMinusAdded:minusAdd,
-   lastMinusAddedAt:new Date().toISOString(),
-  };
-  let data:any;
-  try{
-   data=settingsSchema.parse(next);
-  }catch{
-   // не роняем reject из‑за лишних полей/лимитов — сохраняем ключевые поля вручную
-   data={
-    ...settings,
-    minusKeywords:String(next.minusKeywords||'').slice(0,8000),
-    avoidTopics:String(next.avoidTopics||'').slice(0,4000),
-    lastMinusAdded:minusAdd,
-    lastMinusAddedAt:next.lastMinusAddedAt,
-   };
-  }
-  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(data),owner,config.id,'settings').run();
-  return reply({ok:true,lead:leadNext,data,minusAdded:minusAdd,minusSkippedAsProduct,minusKeywords:data.minusKeywords});
+  return reply({ok:true,data,trainedOn:hotMsgs.length,plusAdded:plusAdd.length});
  }
  if(b.action==='send_lead_message'){
   const id=z.string().uuid().parse(b.id);

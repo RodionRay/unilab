@@ -5,7 +5,6 @@ const fresh:LeadTabData={status:'new',temperature:'hot',viewed:false};
 const viewedHot:LeadTabData={status:'new',temperature:'hot',viewed:true};
 const viewedWarmWorking:LeadTabData={status:'working',temperature:'warm',viewed:true};
 const viewedArchived:LeadTabData={status:'archived',temperature:'warm',viewed:true};
-const ignored:LeadTabData={status:'new',temperature:'hot',viewed:true,excludeFromTraining:true};
 
 describe('REQ-L3 lead tabs: viewed split only in «Все» / «Новые»',()=>{
   it('«Все» and «Новые» hide viewed leads',()=>{
@@ -28,12 +27,8 @@ describe('REQ-L3 lead tabs: viewed split only in «Все» / «Новые»',()
     expect(leadVisibleInTab({status:'new',viewed:false},'warm')).toBe(true);
   });
 
-  it('«Просмотренные» shows only viewed, «Игнор» only ignored, ignored hidden elsewhere',()=>{
+  it('«Просмотренные» shows only viewed',()=>{
     expect(leadVisibleInTab(viewedHot,'viewed')).toBe(true);
     expect(leadVisibleInTab(fresh,'viewed')).toBe(false);
-    expect(leadVisibleInTab(ignored,'ignored')).toBe(true);
-    expect(leadVisibleInTab(fresh,'ignored')).toBe(false);
-    expect(leadVisibleInTab(ignored,'hot')).toBe(false);
-    expect(leadVisibleInTab(ignored,'viewed')).toBe(false);
   });
 });

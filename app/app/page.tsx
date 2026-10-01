@@ -1,7 +1,7 @@
 "use client";
 import {useState,useEffect,useCallback,useRef,useMemo,Suspense} from 'react';
 import {useSearchParams} from 'next/navigation';
-import {Users,Radio,Shield,Sparkles,Plus,ArrowRight,Search,ChevronRight,ExternalLink,Pencil,Trash2,Check,Upload,Plug,Loader2,LogOut,RefreshCw,X,CloudUpload,FileArchive,Ban,ImagePlus,UserRound,Shuffle,UserPlus,Database,ScrollText,History,FilterX,Send,MessageSquare,Timer,Network,Gauge,AlertTriangle,BarChart3,Folder,CircleX} from 'lucide-react';
+import {Users,Radio,Shield,Sparkles,Plus,ArrowRight,Search,ChevronRight,ExternalLink,Pencil,Trash2,Check,Upload,Plug,Loader2,LogOut,RefreshCw,X,CloudUpload,FileArchive,ImagePlus,UserRound,Shuffle,UserPlus,Database,ScrollText,History,Send,MessageSquare,Timer,Network,Gauge,AlertTriangle,BarChart3,Folder,CircleX} from 'lucide-react';
 import {Button} from '@/components/ui/button';
 import {OverviewDashboard} from '@/components/product/overview-dashboard';
 import {LeadCorePanel} from '@/components/product/lead-core-panel';
@@ -101,7 +101,7 @@ const defaults:any={
   account:{name:'',phone:'',proxyId:'',status:'setup',format:'manual',sessionMode:'keep',limits:{...DEFAULT_ACCOUNT_LIMITS,memberInvite:40},cooldownUntil:'',firstName:'',lastName:'',username:'',about:'',hasPhoto:false,error:''},
   proxy:{name:'',host:'',port:'1080',protocol:'socks5',username:'',status:'inactive',exitIp:'',lastChecked:'',checkError:''},
   group:{name:'',url:'',accountId:'',status:'setup',error:'',membership:'none',joinedAt:'',joinState:'',joinStateAt:'',joinStateError:'',leadsTotal:0,leadsHot:0,leadsWarm:0,leadsCold:0,scanMatched:0,rating:0,lastScanned:'',scanLog:[]},
-  lead:{name:'',message:'',source:'Вручную',status:'new',temperature:'warm',draft:'',tgMsgId:'',groupId:'',reason:'',viewed:false,viewedAt:'',excludeFromTraining:false,senderId:'',senderUsername:'',senderAccessHash:'',messageKind:'',peerId:'',replyToMsgId:'',replies:[],conversationOpen:false,conversationAt:'',incomingLastText:'',needsManager:false,mailingTaskId:'',accountId:''},
+  lead:{name:'',message:'',source:'Вручную',status:'new',temperature:'warm',draft:'',tgMsgId:'',groupId:'',reason:'',viewed:false,viewedAt:'',senderId:'',senderUsername:'',senderAccessHash:'',messageKind:'',peerId:'',replyToMsgId:'',replies:[],conversationOpen:false,conversationAt:'',incomingLastText:'',needsManager:false,mailingTaskId:'',accountId:''},
   settings:{
     name:'Мой бизнес',
     model:'deepseek-chat',
@@ -128,8 +128,6 @@ AI будет использовать этот текст для отбора �
     autoRescanEnabled:true,
     autoRescanMinutes:30,
     lastAutoRescanAt:'',
-    lastMinusAdded:[],
-    lastMinusAddedAt:'',
     rescanLog:[],
     scanDepthDays:7,
     profileName:'',
@@ -482,7 +480,6 @@ function WorkspaceHome(){
   const [aiMeta,setAiMeta]=useState<{provider?:string;hasEnvKey?:boolean}|null>(null);
   const [lastLeadFunnel,setLastLeadFunnel]=useState<{worker?:number;core?:number;matched?:number;added?:number}|null>(null);
   const [leadGroupFilter,setLeadGroupFilter]=useState('all');
-  const [leadSelected,setLeadSelected]=useState<string[]>([]);
   const [groupFilter,setGroupFilter]=useState<'all'|'need'|'joined'|'pending'|'error'>('all');
   const [groupSelected,setGroupSelected]=useState<string[]>([]);
   const [bulkAccountId,setBulkAccountId]=useState('');
@@ -655,7 +652,7 @@ function WorkspaceHome(){
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[records]);
-  const navigate=(name:NavName)=>{setView(name);setQuery('');setFilter('all');setLeadGroupFilter('all');setLeadSelected([]);setAccountSelected([]);setGroupFilter('all');setGroupSelected([]);setAudienceSearch('');setInviteSearch('');setMailingSearch('')};
+  const navigate=(name:NavName)=>{setView(name);setQuery('');setFilter('all');setLeadGroupFilter('all');setAccountSelected([]);setGroupFilter('all');setGroupSelected([]);setAudienceSearch('');setInviteSearch('');setMailingSearch('')};
   const openTask=(kind:'audience_task'|'invite_task'|'mailing_task',item?:RecordItem)=>{
     setInviteWizardStep(item?2:1);
     setModal({kind,item});
@@ -671,7 +668,6 @@ function WorkspaceHome(){
   const goLeads=(opts?:{groupId?:string;filter?:string})=>{
     setView('Лиды');
     setQuery('');
-    setLeadSelected([]);
     setLeadGroupFilter(opts?.groupId||'all');
     setFilter(opts?.filter||'all');
   };
@@ -710,10 +706,9 @@ function WorkspaceHome(){
   const list=(kind:Kind)=>records.filter(r=>r.kind===kind);
   const settings=list('settings')[0];
   const aiKeyReady=!!(settings?.hasSecret||aiMeta?.hasEnvKey);
-  const freshLeads=list('lead').filter(r=>!r.data.viewed&&!r.data.excludeFromTraining);
-  const viewedLeads=list('lead').filter(r=>!!r.data.viewed&&!r.data.excludeFromTraining);
-  const excludedLeads=list('lead').filter(r=>!!r.data.excludeFromTraining);
-  const chatLeads=list('lead').filter(r=>(!!r.data.draft||!!r.data.conversationOpen)&&!r.data.excludeFromTraining);
+  const freshLeads=list('lead').filter(r=>!r.data.viewed);
+  const viewedLeads=list('lead').filter(r=>!!r.data.viewed);
+  const chatLeads=list('lead').filter(r=>(!!r.data.draft||!!r.data.conversationOpen));
   const freshChats=chatLeads.filter(r=>!r.data.viewed);
   const viewedChats=chatLeads.filter(r=>!!r.data.viewed);
 
@@ -738,7 +733,7 @@ function WorkspaceHome(){
   const navBadges=useMemo(()=>{
     // Только непрочитанные ответы клиента — не все открытые переписки
     // Бейдж «Переписки» — только needsManager (непрочитанный ответ клиента)
-    const needManager=list('lead').filter(r=>!!r.data.needsManager&&!r.data.excludeFromTraining).length;
+    const needManager=list('lead').filter(r=>!!r.data.needsManager).length;
     const groups=list('group').filter(r=>{
       const d=r.data||{};
       return d.status==='error'||d.membership==='pending'||JOIN_BUSY.has(String(d.joinState||''));
@@ -1694,76 +1689,12 @@ function WorkspaceHome(){
     finally{setBusy(false)}
   }
 
-  async function setLeadTrainingExclude(item:RecordItem,exclude:boolean){
-    setBusy(true);
-    try{
-      const r=await api({action:'set_lead_training_exclude',id:item.id,exclude});
-      const next=r.lead||{...item.data,excludeFromTraining:exclude,viewed:exclude?true:item.data.viewed};
-      setRecords(prev=>prev.map(row=>row.id===item.id?{...row,data:{...row.data,...next}}:row));
-      setDetail(d=>d&&d.id===item.id?{...d,data:{...d.data,...next}}:d);
-      setLeadSelected(prev=>prev.filter(id=>id!==item.id));
-      toast.success(exclude?'Лид исключён из обучения и следующих поисков':'Лид снова учитывается');
-    }catch(e){toast.error((e as Error).message)}
-    finally{setBusy(false)}
-  }
-
-  /** Не лид → сразу стоп-слова в минус + исключить из учёта */
-  async function rejectLeadToStopwords(item:RecordItem){
-    setBusy(true);
-    try{
-      const r=await api({action:'reject_lead_stopwords',id:item.id});
-      await refresh();
-      const added=Array.isArray(r.minusAdded)?r.minusAdded.filter(Boolean):[];
-      if(added.length){
-        toast.success(`В стоп-слова AI: ${added.slice(0,6).join(', ')}${added.length>6?'…':''}`);
-      }else if(Number(r.minusSkippedAsProduct)>0){
-        toast.message('Лид скрыт. В стоп-слова ничего не добавлено — слова пересекаются с продуктом и плюс-словами.');
-      }else{
-        toast.message('Лид скрыт. Новых стоп-слов не вышло (уже были в минусе).');
-      }
-      setDetail(null);
-    }catch(e){toast.error((e as Error).message)}
-    finally{setBusy(false)}
-  }
-
-  async function bulkExcludeSelected(exclude=true){
-    if(!leadSelected.length)return;
-    setBusy(true);
-    try{
-      const r=await api({action:'bulk_set_lead_training_exclude',ids:leadSelected,exclude});
-      const selected=new Set(leadSelected);
-      const now=new Date().toISOString();
-      setRecords(prev=>prev.map(row=>{
-        if(!selected.has(row.id)||row.kind!=='lead')return row;
-        return {...row,data:{...row.data,excludeFromTraining:exclude,...(exclude&&!row.data.viewed?{viewed:true,viewedAt:now}:{})}};
-      }));
-      setDetail(d=>d&&selected.has(d.id)?{...d,data:{...d.data,excludeFromTraining:exclude,...(exclude?{viewed:true}:{})}}:d);
-      setLeadSelected([]);
-      toast.success(exclude?`Исключено из обучения: ${r.updated||leadSelected.length}`:`Снято исключение: ${r.updated||leadSelected.length}`);
-    }catch(e){toast.error((e as Error).message)}
-    finally{setBusy(false)}
-  }
-
-  function toggleLeadSelected(id:string,on:boolean){
-    setLeadSelected(prev=>on?Array.from(new Set([...prev,id])):prev.filter(x=>x!==id));
-  }
-
   async function trainFromHot(){
     setBusy(true);
     try{
       const r=await api({action:'train_from_hot'});
       await refresh();
-      toast.success(`Обучение: +${r.plusAdded||0} плюс, +${r.minusAdded||0} минус по ${r.trainedOn} горячим`);
-    }catch(e){toast.error((e as Error).message)}
-    finally{setBusy(false)}
-  }
-
-  async function trainFromIgnored(){
-    setBusy(true);
-    try{
-      const r=await api({action:'train_from_ignored'});
-      await refresh();
-      toast.success(`Стоп-слова: +${r.minusAdded||0} из ${r.trainedOn} игнорированных`);
+      toast.success(`Обучение: +${r.plusAdded||0} плюс-слов по ${r.trainedOn} горячим`);
     }catch(e){toast.error((e as Error).message)}
     finally{setBusy(false)}
   }
@@ -2670,7 +2601,7 @@ function WorkspaceHome(){
     if(leadTabs){
       if(!leadVisibleInTab(r.data,filter))return false;
       if(view==='Лиды'&&leadGroupFilter!=='all'&&r.data.groupId!==leadGroupFilter)return false;
-    }else if(filter!=='all'&&filter!=='viewed'&&filter!=='ignored'){
+    }else if(filter!=='all'&&filter!=='viewed'){
       if(currentKind==='lead'){
         if(filter==='hot'||filter==='warm'||filter==='cold'){
           if((r.data.temperature||'warm')!==filter)return false;
@@ -2718,7 +2649,7 @@ function WorkspaceHome(){
     if(currentKind==='lead'){
       if(key==='name')return r.data.name||'';
       if(key==='temperature')return LEAD_TEMPERATURE_LABELS[(r.data.temperature||'warm') as LeadTemperature]||r.data.temperature;
-      if(key==='status')return r.data.excludeFromTraining?'Не для обучения':(r.data.status||'');
+      if(key==='status')return r.data.status||'';
       if(key==='source')return r.data.source||'';
       if(key==='created')return r.created;
     }
@@ -2852,17 +2783,9 @@ function WorkspaceHome(){
   );
 
   const renderLeads=(items:RecordItem[])=>{
-    const allOn=items.length>0&&items.every(r=>leadSelected.includes(r.id));
     return items.length?(
     <>
       <div className="leads-list-cols">
-        <label className="inline-flex items-center justify-center">
-          <Checkbox
-            checked={allOn}
-            onCheckedChange={v=>setLeadSelected(v===true?items.map(r=>r.id):[])}
-            aria-label="Выбрать все лиды"
-          />
-        </label>
         <SortHeaderButton columnKey="name" sortKey={sortKey} sortDir={sortDir} onSort={onSort}>Лид</SortHeaderButton>
         <SortHeaderButton columnKey="temperature" sortKey={sortKey} sortDir={sortDir} onSort={onSort}>Темп.</SortHeaderButton>
         <SortHeaderButton columnKey="status" sortKey={sortKey} sortDir={sortDir} onSort={onSort}>Статус</SortHeaderButton>
@@ -2870,13 +2793,7 @@ function WorkspaceHome(){
         <SortHeaderButton columnKey="created" sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="justify-self-end">Дата</SortHeaderButton>
       </div>
       {items.map(r=>(
-    <div className={`lead-row ${leadSelected.includes(r.id)?'selected':''} ${r.data.excludeFromTraining?'ignored':''}`} key={r.id}>
-      <Checkbox
-        checked={leadSelected.includes(r.id)}
-        onCheckedChange={v=>toggleLeadSelected(r.id,v===true)}
-        aria-label={`Выбрать ${r.data.name}`}
-        className="mt-1 shrink-0"
-      />
+    <div className="lead-row" key={r.id}>
       <button className="text-left flex-1 min-w-0" onClick={()=>openLead(r)}>
         <div className="flex gap-3 items-center flex-wrap">
           <span className="row-title">{r.data.name}</span>
@@ -2884,7 +2801,6 @@ function WorkspaceHome(){
           {statusBadge(r.data.status)}
           {r.data.needsManager&&<span className="badge warning">Клиент ответил</span>}
           {!r.data.needsManager&&r.data.conversationOpen&&<span className="badge success">Переписка</span>}
-          {r.data.excludeFromTraining&&<span className="badge neutral">Не для обучения</span>}
         </div>
         <p className="mt-2 text-[14px] leading-6 line-clamp-2 muted">
           {r.data.incomingLastText||r.data.message}
@@ -2897,28 +2813,6 @@ function WorkspaceHome(){
       </button>
       <div className="flex flex-col gap-1 shrink-0">
         <Button variant="ghost" onClick={()=>openLead(r)}>Открыть<ChevronRight size={16}/></Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={busy}
-          title={r.data.excludeFromTraining?'Вернуть в учёт':'Не учитывать в обучении'}
-          onClick={()=>setLeadTrainingExclude(r,!r.data.excludeFromTraining)}
-        >
-          <Ban size={15}/>
-          {r.data.excludeFromTraining?'Вернуть':'Не учитывать'}
-        </Button>
-        {!r.data.excludeFromTraining&&(
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={busy}
-            title="Не лид → стоп-слова"
-            onClick={()=>rejectLeadToStopwords(r)}
-          >
-            <FilterX size={15}/>
-            Стоп
-          </Button>
-        )}
       </div>
     </div>
   ))}
@@ -3040,8 +2934,8 @@ function WorkspaceHome(){
     );
   };
 
-  const allLeads=list('lead').filter(r=>!r.data.excludeFromTraining);
-  const draftLeads=list('lead').filter(r=>(!!r.data.draft||!!r.data.conversationOpen)&&!r.data.excludeFromTraining);
+  const allLeads=list('lead');
+  const draftLeads=list('lead').filter(r=>(!!r.data.draft||!!r.data.conversationOpen));
   const groupsAll=list('group');
   const groupsJoined=groupsAll.filter(g=>g.data.membership==='joined'||!!g.data.joinedAt);
   const groupsNeedJoin=groupsAll.filter(groupNeedsJoin);
@@ -3401,7 +3295,7 @@ function WorkspaceHome(){
               </div>
               {view==='Переписки'?(
                 <div className="flex flex-wrap items-center gap-3">
-                  <Tabs value={filter==='viewed'?'viewed':'all'} onValueChange={(v)=>{setFilter(v);setLeadSelected([])}}>
+                  <Tabs value={filter==='viewed'?'viewed':'all'} onValueChange={(v)=>setFilter(v)}>
                     <TabsList>
                       <TabsTrigger value="all">Новые{freshChats.length?` (${freshChats.length})`:''}</TabsTrigger>
                       <TabsTrigger value="viewed">Просмотренные{viewedChats.length?` (${viewedChats.length})`:''}</TabsTrigger>
@@ -3437,7 +3331,7 @@ function WorkspaceHome(){
                       ))}
                     </SelectContent>
                   </Select>
-                  <Tabs value={filter} onValueChange={(v)=>{setFilter(v);setLeadSelected([])}}>
+                  <Tabs value={filter} onValueChange={(v)=>setFilter(v)}>
                     <TabsList>
                       <TabsTrigger value="all">Все</TabsTrigger>
                       <TabsTrigger value="hot">Горячие</TabsTrigger>
@@ -3446,7 +3340,6 @@ function WorkspaceHome(){
                       <TabsTrigger value="new">Новые</TabsTrigger>
                       <TabsTrigger value="working">В работе</TabsTrigger>
                       <TabsTrigger value="viewed">Просмотренные{viewedLeads.length?` (${viewedLeads.length})`:''}</TabsTrigger>
-                      <TabsTrigger value="ignored">Игнор{excludedLeads.length?` (${excludedLeads.length})`:''}</TabsTrigger>
                       <TabsTrigger value="archived">Архив</TabsTrigger>
                     </TabsList>
                   </Tabs>
@@ -3545,32 +3438,6 @@ function WorkspaceHome(){
                 «Собрать лиды» — принудительный обход. Автообход круглосуточно через Telegram-воркер из npm run dev (каждые {settings?.data.autoRescanMinutes||30} мин на группу)
                 {settings?.data.lastAutoRescanAt?` · последний ${new Date(settings.data.lastAutoRescanAt).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}`:''}
                 {autoRescanRunning?' · идёт…':''}.
-              </div>
-            )}
-            {currentKind==='lead'&&leadSelected.length>0&&(
-              <div className="lead-bulk-bar">
-                <span>Выбрано: <strong>{leadSelected.length}</strong></span>
-                <div className="flex flex-wrap gap-2">
-                  <Button size="sm" disabled={busy} onClick={()=>bulkExcludeSelected(true)}>
-                    <Ban size={14}/>Не учитывать в обучении
-                  </Button>
-                  {filter==='ignored'&&(
-                    <Button size="sm" variant="outline" disabled={busy} onClick={()=>bulkExcludeSelected(false)}>
-                      Вернуть в учёт
-                    </Button>
-                  )}
-                  <Button size="sm" variant="outline" disabled={busy} onClick={()=>setLeadSelected(sortedList.map(r=>r.id))}>
-                    Выбрать все
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={()=>setLeadSelected([])}>Снять</Button>
-                </div>
-              </div>
-            )}
-            {currentKind==='lead'&&!leadSelected.length&&sortedList.length>0&&(
-              <div className="lead-bulk-hint">
-                <Button size="sm" variant="outline" onClick={()=>setLeadSelected(sortedList.map(r=>r.id))}>
-                  Выбрать все ({sortedList.length})
-                </Button>
               </div>
             )}
             {accountCheckProgress&&currentKind==='account'&&(
@@ -4106,19 +3973,6 @@ function WorkspaceHome(){
                     </div>
                     <div className="ai-filter-card minus">
                       <h3>Стоп / минус-слова</h3>
-                      {Array.isArray(settings?.data?.lastMinusAdded)&&settings.data.lastMinusAdded.length>0&&(
-                        <div className="ai-last-minus">
-                          <div className="ai-last-minus-title">
-                            Только что из лидов
-                            {settings.data.lastMinusAddedAt?` · ${new Date(settings.data.lastMinusAddedAt).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}`:''}
-                          </div>
-                          <div className="kw-list">
-                            {settings.data.lastMinusAdded.map((t:string)=>(
-                              <span className="kw minus is-new" key={`new-${t}`}>{t}</span>
-                            ))}
-                          </div>
-                        </div>
-                      )}
                       <div className="kw-list">
                         {(settings?.data.minusKeywords||defaults.settings.minusKeywords).split(/[,;\n]+/).filter(Boolean).map((t:string)=>(
                           <span className="kw minus" key={t}>{t.trim()}</span>
@@ -4143,9 +3997,6 @@ function WorkspaceHome(){
                   <div className="flex flex-col gap-2">
                     <Button disabled={busy||!aiKeyReady} onClick={rebuildProduct}><RefreshCw size={15}/>Пересобрать продукт + обход</Button>
                     <Button variant="outline" disabled={busy} onClick={trainFromHot}><Sparkles size={15}/>Обучить на горячих лидах</Button>
-                    <Button variant="outline" disabled={busy||!excludedLeads.length} onClick={trainFromIgnored}>
-                      <Ban size={15}/>Обучить на игноре → стоп-слова{excludedLeads.length?` (${excludedLeads.length})`:''}
-                    </Button>
                     <Button variant="outline" disabled={busy} onClick={async()=>{setBusy(true);try{const r=await rescanAllGroups({force:true});toast.success(`Обход: ${r.scanned} групп, +${r.added} лидов`)}catch(e){toast.error((e as Error).message)}finally{setBusy(false)}}}><Search size={15}/>Обход групп сейчас</Button>
                     <Button variant="outline" onClick={()=>{navigate('Группы и каналы');openCatalog()}}><Search size={15}/>Поиск тем</Button>
                   </div>
@@ -4163,9 +4014,7 @@ function WorkspaceHome(){
                     <li><strong>Строгий AI-шлюз</strong> — лид показывается только если сообщение прошло все правила ассистента; лучше меньше, чем шум.</li>
                     <li><strong>Подробный продукт</strong> — чем точнее описание и критерии, тем точнее отбор hot/warm.</li>
                     <li><strong>Клик по подсказкам</strong> — добавляйте плюс/минус в настройках одним нажатием.</li>
-                    <li><strong>В стоп-слова</strong> — сообщение не лид: сразу в минус-фильтр + скрыть из списка.</li>
-                    <li><strong>Не учитывать</strong> — шум без новых стоп-слов; потом можно «Обучить на игноре».</li>
-                    <li><strong>Обучение на горячих</strong> — после 5–10 hot нажмите «Обучить», исключённые лиды не участвуют.</li>
+                    <li><strong>Обучение на горячих</strong> — после 5–10 hot нажмите «Обучить»: плюс-слова и примеры из горячих лидов.</li>
                     <li><strong>Пересборка → обход</strong> — после правок продукта сразу сканируем группы под новые правила.</li>
                     <li><strong>Автообход</strong> — круглосуточно через tg-worker (кабинет открывать не нужно).</li>
                     <li><strong>Стоп-слова жёстко</strong> — вакансии и накрутка отсекаются до и внутри AI.</li>
@@ -5164,25 +5013,6 @@ function WorkspaceHome(){
               <Button variant="outline" disabled={busy} onClick={async()=>{if(!detail)return;await draft(detail);const updated=records.find(r=>r.id===detail.id)||detail;setChatText(prev=>prev||updated.data.draft||'')}}>
                 <Sparkles size={15}/>Черновик AI
               </Button>
-              <Button
-                variant={detail?.data.excludeFromTraining?'outline':'ghost'}
-                disabled={busy||!detail}
-                onClick={()=>detail&&setLeadTrainingExclude(detail,!detail.data.excludeFromTraining)}
-              >
-                <Ban size={15}/>
-                {detail?.data.excludeFromTraining?'Вернуть в учёт':'Не учитывать'}
-              </Button>
-              {!detail?.data.excludeFromTraining&&(
-                <Button
-                  variant="outline"
-                  disabled={busy||!detail}
-                  title="Пометить как не лид и добавить стоп-слова из сообщения"
-                  onClick={()=>detail&&rejectLeadToStopwords(detail)}
-                >
-                  <FilterX size={15}/>
-                  В стоп-слова
-                </Button>
-              )}
               <Button variant="outline" disabled={!chatText} onClick={async()=>{try{await navigator.clipboard.writeText(chatText);toast.success('Скопировано')}catch{toast.error('Не удалось скопировать')}}}>Копировать</Button>
               <Button variant="ghost" onClick={()=>{if(detail){open('lead',detail);setDetail(null)}}}>Правки</Button>
               <Button variant="ghost" onClick={()=>{setDeleting(detail);setDetail(null)}}><Trash2 size={15}/></Button>
