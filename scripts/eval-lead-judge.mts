@@ -25,7 +25,7 @@ const TARGET_RECALL = 0.8;
 const TARGET_PRECISION = 0.7;
 
 type Label = "lead" | "not_lead";
-type FixtureItem = { id: string; label: Label; source: "real" | "synthetic"; category: string; text: string };
+type FixtureItem = { id: string; label: Label; source: "real" | "synthetic" | "e1-hard"; category: string; text: string };
 type Confusion = { tp: number; fp: number; fn: number; tn: number };
 type OldCore = { explainLeadDecision: (message: string, settings: Record<string, unknown>) => { pass: boolean; score: number; summary: string } };
 type Row = FixtureItem & { predicted: boolean; isLead: boolean | null; score: number | null; reason: string; oldPass?: boolean };
