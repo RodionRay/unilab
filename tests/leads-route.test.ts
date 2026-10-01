@@ -561,6 +561,17 @@ describe('lead core v2 · workspace route',()=>{
     });
   });
 
+  describe('REQ-15 own-account id is server-owned',()=>{
+    it('a generic save of an account keeps tgUserId',async()=>{
+      patchRecord(ACCOUNT_ID,{tgUserId:'424242'});
+
+      const r=await post({action:'save',kind:'account',id:ACCOUNT_ID,data:{name:'Farm 1 renamed',phone:'+79990001122',tgUserId:'1'}});
+
+      expect(r.status).toBe(200);
+      expect(record(ACCOUNT_ID)).toMatchObject({name:'Farm 1 renamed',tgUserId:'424242'});
+    });
+  });
+
   describe('REQ-14..16 incoming DMs',()=>{
     const dm=(userId:string,text:string,messageId:string,username=`u${userId}`)=>({
       userId,username,name:`Name ${userId}`,text,messageId,at:nowIso(),ts:Math.floor(Date.now()/1000),hasMedia:false,

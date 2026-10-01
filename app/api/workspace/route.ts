@@ -2414,7 +2414,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   }
  }
  // REQ-L10: поля, которыми владеет сервер (переписка, скан, уведомления), клиентский save не затирает
- if(existing&&(kind==='lead'||kind==='group'||kind==='settings')){
+ if(existing&&(kind==='lead'||kind==='group'||kind==='settings'||kind==='account')){
   try{Object.assign(data,keepServerOwnedFields(kind,JSON.parse(existing.data),data))}catch{/* битая запись — сохраняем как пришло */}
  }
  if(kind==='group'&&existing){
