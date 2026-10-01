@@ -1,13 +1,10 @@
 import type { NextConfig } from "next";
-import { SECURITY_HEADERS } from "./lib/security/headers";
+import { securityHeaderRules } from "./lib/security/headers";
 
 const nextConfig: NextConfig = {
   async headers() {
-    // vinext's "/:path*" does not match the bare root, so "/" is listed too.
-    return ["/", "/:path*"].map((source) => ({
-      source,
-      headers: [...SECURITY_HEADERS],
-    }));
+    // Every path gets SECURITY_HEADERS except /tma/* (Telegram Mini App), which may be framed by Telegram Web.
+    return securityHeaderRules();
   },
 };
 
