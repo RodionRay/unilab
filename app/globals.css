@@ -5864,7 +5864,8 @@ button.aiw-row-main {
   }
 }
 
-@media (max-width: 599px) {
+/* below 1024 two project names plus «Новый проект» do not fit one line: tabs take the row, the action goes under */
+@media (max-width: 1023px) {
   .aiw-switcher {
     flex-wrap: wrap;
     gap: 4px;
@@ -5872,6 +5873,8 @@ button.aiw-row-main {
   .aiw-tabs {
     flex: 1 1 100%;
   }
+}
+@media (max-width: 599px) {
   .aiw-tab {
     padding: 0 12px;
   }
