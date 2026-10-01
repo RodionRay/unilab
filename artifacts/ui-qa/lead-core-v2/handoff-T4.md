@@ -59,3 +59,9 @@ r3 notes `rounds/r3/notes.md` (best = r3). Savebar keeps «Сохранить» 
 leads, chats, states/ (harness/states.mjs, 9 PNGs). Open: «Лиды» row below fold at 1440; draft-head meta wraps at 1440;
 390 second project tab cut in scroll strip; 768 save-state text sits under the assistant button; full-page PNGs show the
 fixed shell mid-page (capture artefact).
+
+## Final state (orchestrator, 2026-10-01)
+- Build rounds r1–r5 done (limit). Panel round 2: judge FIX (scorecard.md) — craft/defects 7; open: shell FAB over queue (owner call), 390 tab clip, 390 buttons <44px, «обход» wording, no-project left column.
+- Gate @f7e75ee: vitest 614/614, build OK, tsc 0 in owned files (18 elsewhere), eslint ai/ 0, page.tsx 28 (base 31).
+- e2e harness/e2e-ai.mjs 8/8 PASS on mock @4eccd5e (1440 only).
+- Next if owner extends: round 6 on FIX list 1–5, re-run critic + judge.
