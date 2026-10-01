@@ -2217,7 +2217,9 @@ async function handleBotCommand(db:D1LikeDatabase,owner:string,ctx:NotifyCtx,tok
  }
  const leadId=await leadForBotMessage(db,owner,cmd.chatId,cmd.replyTo);
  if(!leadId){
-  await say(cmd.chatId,'Не понял, какому клиенту ответ. Ответьте (Reply) на уведомление о клиенте или нажмите «Ответить» под ним.',cmd.messageId);
+  if(cmd.legacyNotice)await say(cmd.chatId,'Это уведомление старого формата — оно не привязано к клиенту. Ответьте клиенту в «Переписках» кабинета.',cmd.messageId);
+  // В группе Reply на подсказку бота — обычный разговор, повторная подсказка = спам по кругу
+  else if(!cmd.inGroup)await say(cmd.chatId,'Не понял, какому клиенту ответ. Ответьте (Reply) на уведомление о клиенте или нажмите «Ответить» под ним.',cmd.messageId);
   return '';
  }
  let out:SendLeadResult;

@@ -136,7 +136,7 @@ export function buildConversationNotice(n: ConversationNotice): BuiltNotice {
 
 /** What one inbound update asks for, after the chat-id authorization. */
 export type BotCommand =
-  | { kind: "reply"; updateId: number; chatId: string; messageId: number; replyTo: number; text: string }
+  | { kind: "reply"; updateId: number; chatId: string; messageId: number; replyTo: number; text: string; inGroup: boolean; legacyNotice: boolean }
   | { kind: "reply_button"; updateId: number; chatId: string; callbackId: string; leadId: string }
   | { kind: "start"; updateId: number; chatId: string; messageId: number }
   | { kind: "hint"; updateId: number; chatId: string; messageId: number; reason: "no_reply_to" | "not_text" }
@@ -171,11 +171,22 @@ export function parseBotUpdate(update: unknown, allowedChatId: string): BotComma
   const messageId = Number(msg.message_id) || 0;
   const text = typeof msg.text === "string" ? msg.text.trim() : "";
   if (/^\/start(@\w+)?(\s|$)/.test(text) || /^\/help(@\w+)?(\s|$)/.test(text)) return { kind: "start", updateId, chatId, messageId };
-  const replyTo = Number(obj(msg.reply_to_message)?.message_id) || 0;
+  if (!text && !MEDIA_KEYS.some((k) => msg[k] != null)) return { kind: "ignore", updateId, reason: "service" };
+  const replied = obj(msg.reply_to_message);
+  const replyTo = Number(replied?.message_id) || 0;
+  // A bot that is a group admin sees every message: staff chatter and replies to people are not addressed to it.
+  const inGroup = obj(msg.chat)?.type === "group" || obj(msg.chat)?.type === "supergroup";
+  if (inGroup && obj(replied?.from)?.is_bot !== true) return { kind: "ignore", updateId, reason: "group_chatter" };
   if (!text) return { kind: "hint", updateId, chatId, messageId, reason: "not_text" };
   if (!replyTo) return { kind: "hint", updateId, chatId, messageId, reason: "no_reply_to" };
-  return { kind: "reply", updateId, chatId, messageId, replyTo, text: text.slice(0, 4000) };
+  const legacyNotice = LEGACY_NOTICE_RE.test(String(replied?.text || ""));
+  return { kind: "reply", updateId, chatId, messageId, replyTo, text: text.slice(0, 4000), inGroup, legacyNotice };
 }
+
+/** Message fields that carry content a manager might try to forward to a client (everything else is a service event). */
+const MEDIA_KEYS = ["photo", "video", "document", "audio", "voice", "video_note", "sticker", "animation", "contact", "location", "venue", "poll", "dice"];
+/** Plain-text notices of builds before the Reply button: never mapped to a lead, so a Reply cannot be routed. */
+const LEGACY_NOTICE_RE = /^UniLab · (переписка|рассылка)(\s|$)/;
 
 /** One Bot API call; never throws, never returns the token in `error`. */
 export async function callBotApi<T = unknown>(

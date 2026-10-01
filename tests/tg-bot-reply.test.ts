@@ -220,4 +220,60 @@ describe('Telegram-бот · ответ клиенту из бота (poll_bot_u
     expect(JSON.stringify(out)).not.toContain(BOT_TOKEN);
     expect(w.botCalls.filter(c=>c.method==='getUpdates')).toHaveLength(1);
   });
+
+  describe('уведомления в группе команды (бот — админ и видит всё)',()=>{
+    const BOT={id:1,is_bot:true,first_name:'UniLabs'};
+    const PERSON={id:7,is_bot:false,first_name:'Rodion'};
+    const groupMsg=(updateId:number,extra:Record<string,unknown>)=>({
+      update_id:updateId,
+      message:{message_id:600+updateId,chat:{id:OWNER_CHAT,type:'supergroup'},from:PERSON,date:NOW_TS,...extra},
+    });
+
+    it('обычная переписка сотрудников, Reply друг другу и служебные события — бот молчит',async()=>{
+      const w=stubWorkerAndBot(worker());
+      w.queueUpdates([
+        groupMsg(120,{text:'ебать копать'}),
+        groupMsg(121,{text:'Ага',reply_to_message:{message_id:5,from:PERSON,text:'привет'}}),
+        groupMsg(122,{new_chat_members:[{id:9,is_bot:false,first_name:'Иван'}]}),
+      ]);
+
+      const out=await pollBot();
+
+      expect(out).toMatchObject({ok:true,handled:3,sent:0});
+      expect(w.sent()).toHaveLength(0);
+      expect(clientSends(w)).toHaveLength(0);
+    });
+
+    it('Reply на подсказку бота (не уведомление) — бот молчит, без подсказки по кругу',async()=>{
+      const w=stubWorkerAndBot(worker());
+      w.queueUpdates([groupMsg(123,{text:'ага',reply_to_message:{message_id:77,from:BOT,text:'Не понял, какому клиенту ответ.'}})]);
+
+      await pollBot();
+
+      expect(w.sent()).toHaveLength(0);
+      expect(clientSends(w)).toHaveLength(0);
+    });
+
+    it('Reply на уведомление старого формата — одно понятное объяснение, клиенту ничего не уходит',async()=>{
+      const w=stubWorkerAndBot(worker());
+      w.queueUpdates([groupMsg(124,{text:'понял',reply_to_message:{message_id:78,from:BOT,text:'UniLab · переписка\nКлиент ответил: @rodion4ek\nпонял'}})]);
+
+      await pollBot();
+
+      expect(clientSends(w)).toHaveLength(0);
+      expect(w.sent()).toHaveLength(1);
+      expect(String(w.sent()[0]?.body.text)).toContain('старого формата');
+    });
+
+    it('Reply на уведомление о клиенте в группе уходит клиенту',async()=>{
+      const w=stubWorkerAndBot(worker());
+      const notice=await notified(w);
+      w.queueUpdates([groupMsg(125,{text:'Ловите прайс',reply_to_message:{message_id:notice,from:BOT}})]);
+
+      const out=await pollBot();
+
+      expect(out).toMatchObject({sent:1});
+      expect(clientSends(w).map(c=>c.body.text)).toEqual(['Ловите прайс']);
+    });
+  });
 });
