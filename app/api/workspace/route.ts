@@ -52,7 +52,7 @@ import {proxyCheckTimeoutMs,workerAppTimeoutMs,workerSlots} from '@/lib/worker-t
 import {WorkerBusyError,isRetryableTickError,tickRetryPatch} from '@/lib/processes/tick-retry';
 import {commitTaskEdit,startTickSession,tickLockIsLive,tickLockWaitSec,updateTaskData,type TaskData,type TickSession,type TickTaskKind} from '@/lib/processes/tick-lock';
 import {mergeTaskSave} from '@/lib/processes/task-save-merge';
-import {updateRecordData,type RecordData} from '@/lib/record-cas';
+import {RecordConflictError,updateRecordData,type RecordData} from '@/lib/record-cas';
 import {JOIN_GATE_ROTATE_WAIT_SEC,JOIN_PENDING_ERROR,audienceJoinGate,classifyCollectFailure,insertAudienceUsers,interpretAudienceJoin,isDeadSessionError,isSlotBlindError,listAudienceUsers,loadAudienceSeenIds,type AudienceUserData} from '@/lib/processes/audience-tick';
 import {authorizeWorkspaceAction,keepOwnerSecretsOnSave,visibleRecordsFor,type WorkspaceActor} from '@/lib/security/workspace-authz';
 import {ALL_CRM_ACCESS} from '@/lib/staff-types';
@@ -888,6 +888,8 @@ async function runAccountCheck(owner:string,id:string,opts?:{
    await putAccountPatch(owner,id,next);
    return {id,ok:false,status:next.status,error:next.error,profile,proxyRotated:proxyRotated||undefined};
   }catch(e){
+   // Конфликт записи итога — не сбой сети/прокси: без ротации и без «disconnected»
+   if(e instanceof RecordConflictError)throw e;
    const msg=String((e as Error).message||e);
    lastError=msg;
    lastStatus='disconnected';
@@ -4992,7 +4994,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
  // записать их между нашим чтением existing и записью.
  const sessionReplaced=Boolean(b.secret||b.clearSecret);
  const mergeStored=(prev:RecordData|null):RecordData=>{
-  if(!prev)return kind==='account'?keepServerOwnedFields(kind,{},data):data;// битая запись — сохраняем как пришло
+  // Новая или битая запись — как будто сохранённая строка пустая: серверные поля клиент не задаёт
+  if(!prev)return keepServerOwnedFields(kind,{},data);
   const next=keepServerOwnedFields(kind,prev,data);
   // Новая/удалённая сессия — другой вход Telegram: прежнее «применено» к ней не относится.
   if(kind==='account'&&sessionReplaced)delete next.lastSeenPrivacy;
@@ -5017,7 +5020,10 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
  if(b.clearSecret!==undefined&&typeof b.clearSecret!=='boolean')return reply({error:'Некорректная команда очистки секрета'},400);if(b.clearSecret&&b.secret)return reply({error:'Нельзя одновременно заменить и удалить секрет'},400);const secret=b.clearSecret?null:b.secret?await seal(z.string().max(200000).parse(b.secret),owner):existing?.secret??null;
  // Задачи: с клиента только конфиг; прогресс/статус/лок/журнал — серверные, мерж в строку «как сейчас» (REQ-I5)
  if(existing&&(kind==='audience_task'||kind==='invite_task'||kind==='mailing_task'))await updateTaskData(db,owner,id,kind,fresh=>mergeTaskSave(kind,fresh,data));
- else if(existing){if(!await updateRecordData(db,owner,id,kind,mergeStored,{secret}))return reply({error:'Запись не найдена'},404)}
+ else if(existing){
+  // Секрет пишем только при явной замене/удалении: прочитанный до CAS не должен вернуть старую сессию поверх новой
+  if(!await updateRecordData(db,owner,id,kind,mergeStored,sessionReplaced?{secret}:{}))return reply({error:'Запись не найдена'},404);
+ }
  else await db.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)').bind(id,owner,kind,JSON.stringify(mergeStored(null)),secret,new Date().toISOString()).run();
  let provision:any=null;
  if(!existing&&kind==='account'&&secret&&b.provisionUsername===true){
@@ -5032,4 +5038,4 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   }
  }
  return reply({ok:true,id,username:provision?.profile?.username||data.username||undefined,provision});
- }catch(e){if(e instanceof z.ZodError)return reply({error:'Проверьте поля: '+e.issues.map(i=>i.path.join('.')).join(', ')},400);if(e instanceof SyntaxError)return reply({error:'Некорректный запрос'},400);internalError('POST',e,'');return reply({error:'Не удалось выполнить действие. Данные формы сохранены — повторите попытку.'},503)}}
+ }catch(e){if(e instanceof RecordConflictError)return reply({error:'Запись одновременно меняет другое действие — не сохранено, повторите'},409);if(e instanceof z.ZodError)return reply({error:'Проверьте поля: '+e.issues.map(i=>i.path.join('.')).join(', ')},400);if(e instanceof SyntaxError)return reply({error:'Некорректный запрос'},400);internalError('POST',e,'');return reply({error:'Не удалось выполнить действие. Данные формы сохранены — повторите попытку.'},503)}}

@@ -25,7 +25,13 @@ status: implemented (branch `task/account-hide-last-seen-2026-10-01`)
   (`lib/record-cas.ts::updateRecordData` + `lib/processes/scan-flow.ts::keepServerOwnedFields`, `account`:
   `lastSeenPrivacy`, `lastSeenPrivacyLease`); `check_account` и её исходы пишут только свои поля поверх строки «как сейчас»
   (`app/api/workspace/route.ts::putAccountPatch`), поэтому итог применения, записанный во время проверки или
-  между чтением и записью `save`, не теряется.
+  между чтением и записью `save`, не теряется. Если другие писатели перебили все попытки CAS —
+  `lib/record-cas.ts::RecordConflictError`, ответ 409 «не сохранено, повторите» (проверка не уходит в ротацию прокси).
+- Известное ограничение (следующая задача): остальные писатели аккаунта всё ещё переписывают `data` целиком из
+  прочитанной ранее копии и могут затереть итог применения, если завершатся во время него — в
+  `app/api/workspace/route.ts`: `rotateGroupOffDeadAccount`, actions `apply_account_profiles`,
+  `upload_account_photos`, `join_group`, `scan_group`, `send_lead_message`, `tick_audience`, `tick_invite`,
+  `tick_mailing`. UI тогда покажет «Применится после «Сохранить»», повтор безопасен.
 - Воркер: `/set-last-seen-privacy` → `set_last_seen_privacy` (`telegram-worker/src/worker-app.mjs::ROUTES`,
   `telegram-worker/src/check_account.py::set_last_seen_privacy`): `account.SetPrivacyRequest(InputPrivacyKeyStatusTimestamp,
   [DisallowAll | AllowAll])`. Идемпотентно (правило задаётся целиком). FloodWait → текст с секундами;

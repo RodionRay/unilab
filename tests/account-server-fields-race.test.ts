@@ -49,6 +49,28 @@ function raceFirstWrite(id:string,concurrent:()=>void){
   return ()=>{cfModule.env.DB=realDb};
 }
 
+/** Another writer bumps the row before each of the next `times` CAS writes to `id` while `armed()`. */
+function contendCasWrites(id:string,times:number,armed:()=>boolean=()=>true){
+  let left=times;
+  const realDb=cfModule.env.DB as {prepare:(q:string)=>{bind:(...v:unknown[])=>Record<string,(...a:unknown[])=>unknown>}};
+  cfModule.env.DB={
+    prepare(q:string){
+      const stmt=realDb.prepare(q);
+      return {bind(...values:unknown[]){
+        const bound=stmt.bind(...values);
+        return {...bound,run:async()=>{
+          if(left>0&&armed()&&/AND data=\?$/.test(q)&&values.includes(id)){
+            left--;
+            patchRow(id,{tick:(data(id).tick??0)+1});
+          }
+          return bound.run!();
+        }};
+      }};
+    },
+  };
+  return ()=>{cfModule.env.DB=realDb};
+}
+
 /** Worker answers /check-account after apply_account_last_seen committed in the meantime. */
 function workerAnswersAfterApply(id:string,answer:Record<string,unknown>|Error){
   vi.stubGlobal('fetch',vi.fn(async(url:string)=>{
@@ -148,5 +170,60 @@ describe('whole-record writers keep fields written concurrently by others',()=>{
     }finally{restore()}
 
     expect(data(GROUP_ID)).toMatchObject({name:'G 2',scanCursor:42});
+  });
+
+  it('check_account: конфликт записи итога не выдаётся за сбой сети (без ротации и disconnected)',async()=>{
+    await addLiveAccount();
+    let workerCalled=0;
+    vi.stubGlobal('fetch',vi.fn(async()=>{workerCalled++;return Response.json({ok:true,status:'active',profile:{}})}));
+    vi.spyOn(console,'error').mockImplementation(()=>{});
+    const restore=contendCasWrites(LIVE_ID,8,()=>workerCalled>0);
+    let res:Response;
+    try{res=await POST(postRequest({action:'check_account',id:LIVE_ID}))}finally{restore()}
+
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as {error:string}).error).toMatch(/не сохранен/);
+    expect(workerCalled).toBe(1);
+    expect(data(LIVE_ID).status).not.toMatch(/disconnected|proxy_error|unauthorized/);
+  });
+
+  it('save: исчерпаны попытки CAS → 409 «не сохранено», а не «данные сохранены»',async()=>{
+    await addLiveAccount();
+    vi.spyOn(console,'error').mockImplementation(()=>{});
+    const restore=contendCasWrites(LIVE_ID,100);
+    let res:Response;
+    try{res=await POST(postRequest({action:'save',kind:'account',id:LIVE_ID,data:{name:'Renamed',phone:'+79990002233'}}))}finally{restore()}
+
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as {error:string}).error).toMatch(/не сохранен/);
+    expect(data(LIVE_ID).name).toBe('Live');
+  });
+
+  it('save нового лида и группы не принимает серверные поля от клиента',async()=>{
+    const lead=await (await POST(postRequest({action:'save',kind:'lead',data:{
+      name:'L',message:'Ищу сервис для остатков',tgMsgId:'999',replies:[REPLY],senderUsername:'victim',
+    }}))).json() as {id:string};
+    const group=await (await POST(postRequest({action:'save',kind:'group',data:{
+      name:'G',url:'https://t.me/new_sellers_chat',scanCursor:5,
+    }}))).json() as {id:string};
+
+    const l=data(lead.id);
+    expect(l.replies??[]).toEqual([]);
+    expect(l.tgMsgId??'').toBe('');
+    expect(l.senderUsername??'').toBe('');
+    expect(data(group.id).scanCursor).toBeUndefined();
+  });
+
+  it('save без смены сессии не возвращает старый секрет поверх сессии, заменённой между чтением и записью',async()=>{
+    await addLiveAccount();
+    const restore=raceFirstWrite(LIVE_ID,()=>testDb().sqlite.prepare('UPDATE records SET secret=? WHERE id=?').run('rotated-session',LIVE_ID));
+    try{
+      const res=await POST(postRequest({action:'save',kind:'account',id:LIVE_ID,data:{name:'Live 2',phone:'+79990002233'}}));
+      expect(res.status).toBe(200);
+    }finally{restore()}
+
+    const row=testDb().sqlite.prepare('SELECT secret,data FROM records WHERE id=?').get(LIVE_ID) as {secret:string;data:string};
+    expect(row.secret).toBe('rotated-session');
+    expect(JSON.parse(row.data).name).toBe('Live 2');
   });
 });
