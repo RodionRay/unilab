@@ -195,4 +195,50 @@ describe('переписки · входящие ЛС (poll_dm_replies)',()=>{
 
     expect(leadsOf().filter(l=>l.senderId==='555')).toHaveLength(0);
   });
+
+  it('REQ-D3: один человек пишет двум нашим аккаунтам — две карточки, у каждой свой аккаунт',async()=>{
+    const stranger=(id:string,text:string)=>({...clientMsg(id,text),userId:'888',username:'stranger'});
+    stubWorker(call=>{
+      if(call.path!=='/inbox-dms')return {ok:true,chatId:'888',messageId:'70'};
+      if(call.body.apiId===API_ID[ACC_A])return inbox([stranger('920','привет A')]);
+      return inbox([stranger('921','привет B')]);
+    });
+
+    await poll();
+
+    const leads=leadsOf().filter(l=>l.senderId==='888');
+    expect(leads).toHaveLength(2);
+    const byAcc=Object.fromEntries(leads.map(l=>[String(l.accountId),l]));
+    expect(clientEntries(byAcc[ACC_A]!).map(x=>[x.text,x.accountId])).toEqual([['привет A',ACC_A]]);
+    expect(clientEntries(byAcc[ACC_B]!).map(x=>[x.text,x.accountId])).toEqual([['привет B',ACC_B]]);
+
+    const {calls}=stubWorker(()=>({ok:true,chatId:'888',messageId:'71'}));
+    const res=await POST(postRequest({action:'send_lead_message',id:byAcc[ACC_B]!.id,mode:'dm',text:'Ответ с B'}));
+    expect(res.status).toBe(200);
+    expect(calls.map(c=>c.body.apiId)).toEqual([API_ID[ACC_B]]);
+  });
+
+  it('REQ-D3: входящее на другой аккаунт не переносит существующую переписку на него',async()=>{
+    addChatLead();
+    stubWorker(onlyFor(ACC_B,()=>inbox([clientMsg('922','пишу второму')])));
+
+    await poll();
+
+    const old=readRecord(CHAT_LEAD);
+    expect(old.accountId).toBe(ACC_A);
+    expect(clientEntries(old)).toHaveLength(0);
+    const fresh=leadsOf().filter(l=>l.senderId==='777'&&l.id!==CHAT_LEAD);
+    expect(fresh).toHaveLength(1);
+    expect(fresh[0]).toMatchObject({accountId:ACC_B,source:'Входящее в ЛС'});
+  });
+
+  it('REQ-D3: старый лид без аккаунта принимает входящее и закрепляется за этим аккаунтом',async()=>{
+    addChatLead({accountId:''});
+    stubWorker(onlyFor(ACC_B,()=>inbox([clientMsg('923','ответ')])));
+
+    await poll();
+
+    expect(leadsOf().filter(l=>l.senderId==='777')).toHaveLength(1);
+    expect(readRecord(CHAT_LEAD)).toMatchObject({accountId:ACC_B,incomingLastText:'ответ'});
+  });
 });

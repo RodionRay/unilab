@@ -1591,6 +1591,12 @@ function normTgUser(v:unknown){
  return String(v||'').replace(/^@/,'').trim().toLowerCase();
 }
 
+/** A conversation belongs to one our account; a legacy lead without one is adopted by whichever account hears first. */
+function leadOnAccount(lead:LeadData|DmOutreach,accountId:string){
+ const aid=String(lead.accountId||'');
+ return !aid||aid===accountId;
+}
+
 function sameMailingPeer(lead:any,msg:any){
  const ids=new Set(
   [lead?.senderId,lead?.userId,lead?.peerId,lead?.chatId]
@@ -1637,7 +1643,10 @@ async function releaseDmPollLease(db:D1LikeDatabase,owner:string,stamp:string){
  await db.prepare('UPDATE records SET created=? WHERE id=? AND owner=? AND created=?').bind(new Date(0).toISOString(),dmPollLeaseId(owner),owner,stamp).run();
 }
 
-/** Outreach targets: DM deliveries of mailings plus leads we already wrote to; any other person's DM is inbound. */
+/**
+ * Outreach targets: DM deliveries of mailings plus leads we already wrote to; any other person's DM is inbound.
+ * Matching is per (person, our account): the same person writing to another our account is a separate conversation.
+ */
 async function loadDmOutreach(db:D1LikeDatabase,owner:string){
  const mailingRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='mailing_task'").bind(owner).all();
  const hits:DmOutreach[]=[];
@@ -1664,11 +1673,11 @@ async function loadDmOutreach(db:D1LikeDatabase,owner:string){
  for(const r of accountRows.results){
   try{const u=normTgUser(JSON.parse(String(r.data)).username);if(u)ownUsernames.add(u)}catch{/* */}
  }
- const match=(msg:InboxMessage):DmOutreach|null=>{
-  const byDelivery=hits.find(h=>sameMailingPeer(h,msg));
+ const match=(msg:InboxMessage,accountId:string):DmOutreach|null=>{
+  const byDelivery=hits.find(h=>leadOnAccount(h,accountId)&&sameMailingPeer(h,msg));
   if(byDelivery)return byDelivery;
   const byLead=leads.find(L=>{
-   if(!sameMailingPeer(L.data,msg))return false;
+   if(!leadOnAccount(L.data,accountId)||!sameMailingPeer(L.data,msg))return false;
    const d=L.data||{};
    if(d.conversationOpen||d.mailingTaskId)return true;
    return leadReplies(d).some(x=>x.from==='us'||x.mode==='dm');
@@ -1702,7 +1711,9 @@ async function recordIncomingDm(db:D1LikeDatabase,owner:string,accountId:string,
   from:'client',
   accountId,
  };
- const leadRow=(outreach.leadId?leads.find(L=>L.id===outreach.leadId):undefined)||leads.find(L=>sameMailingPeer(L.data,msg));
+ const onThisAccount=(L:{id:string;data:LeadData})=>leadOnAccount(L.data,accountId);
+ const leadRow=(outreach.leadId?leads.find(L=>L.id===outreach.leadId&&onThisAccount(L)):undefined)
+  ||leads.find(L=>onThisAccount(L)&&sameMailingPeer(L.data,msg));
  if(leadRow){
   const ctx={accountId,taskId:outreach.taskId,userId:String(msg.userId||''),username:String(msg.username||''),nowIso};
   const done=await mutateLead(db,owner,leadRow.id,cur=>{
@@ -1784,7 +1795,7 @@ async function pollDmReplies(db:D1LikeDatabase,owner:string,live:LiveAccount[]){
   let maxTs=0;
   for(const msg of msgs){
    maxTs=Math.max(maxTs,Number(msg.ts)||0);
-   const outreach=match(msg);
+   const outreach=match(msg,acc.id);
    if(!outreach)continue;
    try{
     const name=await recordIncomingDm(db,owner,acc.id,msg,outreach,leads);

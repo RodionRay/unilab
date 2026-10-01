@@ -154,6 +154,7 @@ export function hasIncomingDm(lead: LeadData, accountId: string, messageId: stri
 /**
  * Incoming DM merged into the freshly read lead; null when it is already recorded.
  * A closed (archived) lead keeps its status and temperature — the reply is recorded, not reopened.
+ * The lead keeps its own account (replies go from it); only a legacy lead without one adopts `ctx.accountId`.
  */
 export function mergeIncomingDm(
   lead: LeadData,
@@ -172,7 +173,7 @@ export function mergeIncomingDm(
     incomingLastText: incoming.text,
     needsManager: true,
     viewed: false,
-    accountId: ctx.accountId,
+    accountId: str(lead.accountId) || ctx.accountId,
     senderId: str(lead.senderId) || ctx.userId,
     senderUsername: str(lead.senderUsername) || ctx.username,
     mailingTaskId: str(lead.mailingTaskId) || ctx.taskId,
