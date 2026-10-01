@@ -2136,6 +2136,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   if(outcome.kind==='busy')return reply({error:LAST_SEEN_BUSY_ERROR},429);
   return reply({ok:true,...outcome.state});
  }
+ // UI (app/app/page.tsx::bulkApplyLastSeen) sends one id per request: up to 50×46 s in one request would die on the
+ // proxy/tunnel timeout (~100 s, Cloudflare 524) and silently skip the rest. ids≤50 stays for API callers.
  if(b.action==='bulk_apply_account_last_seen'){
   const ids=[...new Set(z.array(z.string().uuid()).min(1).max(50).parse(b.ids))];
   const hide=z.boolean().parse(b.hide);

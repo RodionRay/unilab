@@ -90,12 +90,15 @@ import {
 import {useTableSort} from '@/hooks/useTableSort';
 import type {SortValueType} from '@/lib/table-sort';
 import {leadVisibleInTab} from '@/lib/lead-search';
+import {runSequential} from '@/lib/bulk-sequence';
 
 type Kind='account'|'proxy'|'group'|'lead'|'settings'|'audience_task'|'invite_task'|'mailing_task';
 type RecordItem={id:string;kind:Kind;data:any;hasSecret:boolean;created:string};
 
 const kinds:Record<string,Kind>={'Лиды':'lead','Переписки':'lead','Группы и каналы':'group','Сбор аудитории':'audience_task','Инвайтинг':'invite_task','Рассылка':'mailing_task','Аккаунты':'account','Прокси':'proxy','AI-ассистент':'settings'};
 const labels:Record<Kind,string>={account:'аккаунт',proxy:'прокси',group:'группу',lead:'лид',settings:'настройки AI',audience_task:'задачу сбора',invite_task:'задачу инвайта',mailing_task:'задачу рассылки'};
+/** Mirrors the server's LAST_SEEN_BULK_PAUSE_MS: FloodWait-safe gap between accounts. */
+const BULK_LAST_SEEN_PAUSE_MS=1500;
 const PROBLEM_ACCOUNT=new Set(['disconnected','unauthorized','frozen','spamblock','proxy_error','cooldown','inactive','setup','error']);
 const JOIN_BUSY=new Set(['queued','waiting','joining','scanning']);
 const defaults:any={
@@ -520,6 +523,7 @@ function WorkspaceHome(){
   const [bulkLastSeenOpen,setBulkLastSeenOpen]=useState(false);
   /** Which button of the bulk «был в сети» dialog is running (null = idle): labels the long request. */
   const [bulkLastSeenPending,setBulkLastSeenPending]=useState<boolean|null>(null);
+  const [bulkLastSeenProgress,setBulkLastSeenProgress]=useState('');
   const [farmLogoFile,setFarmLogoFile]=useState<File|null>(null);
   const [farmLogoPreview,setFarmLogoPreview]=useState('');
   const [chatMode,setChatMode]=useState<'dm'|'chat'>('dm');
@@ -1747,22 +1751,29 @@ function WorkspaceHome(){
     finally{setBusy(false)}
   }
 
-  /** Bulk «был в сети»: server goes account by account with ~1.5 s pauses, so this can take a while. */
+  /** Bulk «был в сети»: one account per request (a long single request dies on the proxy's ~100 s timeout). */
   async function bulkApplyLastSeen(hide:boolean){
-    const ids=accountSelected;
+    const ids=[...accountSelected];
     if(!ids.length){toast.message('Выберите аккаунты');return}
     setBusy(true);
     setBulkLastSeenPending(hide);
     try{
-      const r=await api({action:'bulk_apply_account_last_seen',ids,hide});
+      const sum=await runSequential(ids,async id=>{
+        const r=await api({action:'bulk_apply_account_last_seen',ids:[id],hide});
+        const one=(r.results as {ok:boolean;error:string}[])[0];
+        return {ok:one?.ok===true,error:one?.error||'Нет ответа'};
+      },{
+        pauseMs:BULK_LAST_SEEN_PAUSE_MS,
+        onProgress:(k,n)=>setBulkLastSeenProgress(`Применяем ${k} из ${n}…`),
+        describeError:e=>e instanceof SyntaxError?'Сервер не ответил вовремя':(e as Error).message,
+      });
       await refresh();
       setAccountSelected([]);
       setBulkLastSeenOpen(false);
-      toast.success(`«Был в сети»: ${r.updated} ок, ошибок ${r.failed}`);
-      const firstError=(r.results as {ok:boolean;error:string}[]).find(x=>!x.ok)?.error;
-      if(r.failed&&firstError)toast.error(firstError.slice(0,160));
+      toast.success(`«Был в сети»: ${sum.updated} ок, ошибок ${sum.failed}`);
+      if(sum.failed&&sum.firstError)toast.error(sum.firstError.slice(0,160));
     }catch(e){toast.error((e as Error).message)}
-    finally{setBusy(false);setBulkLastSeenPending(null)}
+    finally{setBusy(false);setBulkLastSeenPending(null);setBulkLastSeenProgress('')}
   }
 
   async function applyFarmLogo(ids:string[]){
@@ -5385,7 +5396,8 @@ function WorkspaceHome(){
           </DialogHeader>
           <div className="space-y-3">
             <p className="small-note">Взаимно: аккаунт тоже перестанет видеть точное «был в сети» у других — только «недавно».</p>
-            <p className="small-note">Между аккаунтами пауза ~1.5 с — на {accountSelected.length} аккаунтов это займёт время.</p>
+            <p className="small-note">Аккаунты идут по одному, между ними пауза ~1.5 с — на {accountSelected.length} аккаунтов это займёт время.</p>
+            <p role="status" aria-live="polite" className="small-note">{bulkLastSeenProgress}</p>
             <div className="flex flex-wrap gap-2">
               <Button disabled={busy||!accountSelected.length} onClick={()=>bulkApplyLastSeen(true)}>
                 {bulkLastSeenPending===true?<Loader2 size={15} className="animate-spin"/>:<EyeOff size={15}/>}

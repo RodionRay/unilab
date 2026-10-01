@@ -39,12 +39,16 @@ status: implemented (branch `task/account-hide-last-seen-2026-10-01`)
 
 ## Массово
 - Таблица аккаунтов → панель выбранных (`.lead-bulk-bar`) → кнопка «Был в сети» → диалог «Был в сети в Telegram»
-  (число выбранных, предупреждение о взаимности, «Скрыть у N» / «Показать у N» / «Закрыть»; пока идёт запрос — диалог
-  не закрывается, на нажатой кнопке «Применяем…»). `app/app/page.tsx::bulkApplyLastSeen`: тосты
-  «„Был в сети“: N ок, ошибок M» и первая причина ошибки (≤160 символов).
+  (число выбранных, предупреждение о взаимности, «Скрыть у N» / «Показать у N» / «Закрыть»; пока идёт применение —
+  диалог не закрывается, на нажатой кнопке «Применяем…», прогресс «Применяем k из N…» в `aria-live`).
+- `app/app/page.tsx::bulkApplyLastSeen` шлёт по ОДНОМУ id за запрос (`lib/bulk-sequence.ts::runSequential`) с паузой
+  `BULK_LAST_SEEN_PAUSE_MS` = 1500 мс между аккаунтами (не после последнего): один запрос на 50 аккаунтов (до 50×46 с)
+  обрывается таймаутом прокси/туннеля (~100 с, Cloudflare 524), и остальные аккаунты молча пропускались бы. Сбой
+  запроса (в том числе не-JSON 524 → «Сервер не ответил вовремя») = ошибка этого аккаунта, цикл продолжается;
+  лимита 50 в интерфейсе нет. Итог: тосты «„Был в сети“: N ок, ошибок M» и первая причина ошибки (≤160 символов).
 - `POST /api/workspace {action:'bulk_apply_account_last_seen', ids:uuid[1..50], hide:boolean}`, право `accounts`.
   id без повторов, по одному аккаунту подряд через общий `app/api/workspace/route.ts::applyAccountLastSeen` (та же
-  аренда и запись итога, что у одиночного action). Пауза `LAST_SEEN_BULK_PAUSE_MS` = 1500 мс только после реального
+  аренда и запись итога, что у одиночного action). При нескольких id в запросе пауза `LAST_SEEN_BULK_PAUSE_MS` = 1500 мс только после реального
   вызова воркера и не после последнего (FloodWait при нескольких аккаунтах на одном прокси).
 - Ответ `{ok:true, updated, failed, results:[{id, ok, error}]}`; `ok` = Telegram подтвердил. Нет id → «Не найден»,
   под арендой → ««Был в сети» уже применяется — подождите минуту», без сессии → «Нет сессии». 400 на пустой список,
@@ -56,5 +60,5 @@ status: implemented (branch `task/account-hide-last-seen-2026-10-01`)
   пустеет, точные «был в …» уходят в приблизительные корзины. Вступления, скан, инвайт, рассылка, ЛС статус не читают.
 
 ## Тесты
-`tests/account-last-seen-route.test.ts`, `tests/account-last-seen-bulk.test.ts` (массово), `tests/account-server-fields-race.test.ts` (гонки save/check_account), `tests/account-privacy.test.ts`,
+`tests/account-last-seen-route.test.ts`, `tests/account-last-seen-bulk.test.ts` (массово), `tests/bulk-sequence.test.ts` (клиентский цикл), `tests/account-server-fields-race.test.ts` (гонки save/check_account), `tests/account-privacy.test.ts`,
 `telegram-worker/tests/test_last_seen_privacy.py` (telethon-заглушка клиента).
