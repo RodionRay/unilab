@@ -139,11 +139,45 @@ function redactOwnerSecrets(data:Record<string,unknown>):Record<string,unknown>{
 function viewRecord<T extends WorkspaceRecordView>(actor:WorkspaceActor,rec:T):T|null{
  if(!isReadRecordKind(rec.kind))return null;
  if(rec.kind==='settings')return {...rec,data:redactOwnerSecrets(rec.data)};
+ if(rec.kind==='project'&&hasAnyAccess(actor,KIND_ACCESS.project))return {...rec,data:withoutLeadText(actor,rec.data)};
  if(hasAnyAccess(actor,KIND_ACCESS[rec.kind]))return rec;
  if(rec.kind==='account'&&hasAnyAccess(actor,ACCOUNT_PICKER_SECTIONS)){
   return {...rec,data:pick(rec.data,ACCOUNT_PICKER_FIELDS)};
  }
  return null;
+}
+
+/** Lead and DM texts (funnel samples, project examples) are visible only to the lead sections. */
+export function canSeeLeadText(actor:WorkspaceActor):boolean{
+ return hasAnyAccess(actor,LEADS);
+}
+
+const LEAD_TEXT_PROJECT_FIELDS=['goodExamples','badExamples'] as const;
+
+function withoutLeadText(actor:WorkspaceActor,project:Record<string,unknown>):Record<string,unknown>{
+ if(canSeeLeadText(actor))return project;
+ const next={...project};
+ for(const f of LEAD_TEXT_PROJECT_FIELDS)if(f in next)next[f]=[];
+ return next;
+}
+
+function isObject(v:unknown):v is Record<string,unknown>{
+ return !!v&&typeof v==='object'&&!Array.isArray(v);
+}
+
+/**
+ * Action response projection for project / funnel actions: an actor without lead access (ai or
+ * settings only) gets no lead/DM texts — funnel `samples` emptied, project examples emptied.
+ */
+export function redactLeadTextFor(actor:WorkspaceActor,body:Record<string,unknown>):Record<string,unknown>{
+ if(canSeeLeadText(actor))return body;
+ const next={...body};
+ for(const key of ['funnel','dm']){
+  const view=next[key];
+  if(isObject(view))next[key]={...view,samples:{}};
+ }
+ if(isObject(next.project))next.project=withoutLeadText(actor,next.project);
+ return next;
 }
 
 /** GET projection: drop kinds outside the member's sections, strip owner-only secrets. */

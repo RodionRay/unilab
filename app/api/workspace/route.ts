@@ -17,7 +17,7 @@ import {DEFAULT_DM_SOFT_CLOSE} from '@/lib/mailing';
 import {checkProxyTarget} from '@/lib/security/net-guard';
 import {proxyCheckTimeoutMs,workerSlots} from '@/lib/worker-timeouts';
 import {WorkerBusyError} from '@/lib/worker-busy';
-import {READ_RECORD_KINDS,RECORD_KINDS,authorizeWorkspaceAction,keepOwnerSecretsOnSave,visibleRecordsFor,type WorkspaceActor} from '@/lib/security/workspace-authz';
+import {READ_RECORD_KINDS,RECORD_KINDS,authorizeWorkspaceAction,canSeeLeadText,redactLeadTextFor,keepOwnerSecretsOnSave,visibleRecordsFor,type WorkspaceActor} from '@/lib/security/workspace-authz';
 import {ALL_CRM_ACCESS} from '@/lib/staff-types';
 import {INBOX_CURSOR_MARGIN_SEC,applySendOutcome,findSendBlock,leadReplies,markLeadOpened,mergeIncomingDm,nextInboxCursor,withPendingSend,type LeadData,type ReplyEntry,type SendOutcome} from '@/lib/lead-conversation';
 import type {D1LikeDatabase} from '@/lib/db';
@@ -189,6 +189,8 @@ const schemas={
 };
 function reply(data:unknown,status=200){return Response.json(data,{status,headers:{'Cache-Control':'no-store'}})}
 function replyResult(r:ActionResult){return reply(r.body,r.status)}
+/** Project / funnel answers without lead and DM texts for staff without lead access. */
+function replyRedacted(actor:WorkspaceActor,r:ActionResult){return reply(redactLeadTextFor(actor,r.body),r.status)}
 /** Messages safe to show the user verbatim; any other error text stays in server logs. */
 class UserFacingError extends Error{}
 
@@ -1971,13 +1973,16 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
  }
  if(b.action==='rebuild_product'){
   const settings=await loadSettingsRow(db,owner);
-  return replyResult(await rebuildProduct({db,owner,nowMs:Date.now()},b,await resolveApiKey(owner,settings)));
+  return replyRedacted(actor,await rebuildProduct({db,owner,nowMs:Date.now()},b,await resolveApiKey(owner,settings)));
  }
- if(b.action==='project_create')return replyResult(await createProject({db,owner,nowMs:Date.now()},b));
- if(b.action==='project_update')return replyResult(await updateProject({db,owner,nowMs:Date.now()},b));
+ if(b.action==='project_create')return replyRedacted(actor,await createProject({db,owner,nowMs:Date.now()},b));
+ if(b.action==='project_update'&&!canSeeLeadText(actor)&&b.patch&&typeof b.patch==='object'&&('goodExamples' in b.patch||'badExamples' in b.patch)){
+  return reply({error:'Примеры лидов меняет только раздел «Лиды»'},403);
+ }
+ if(b.action==='project_update')return replyRedacted(actor,await updateProject({db,owner,nowMs:Date.now()},b));
  if(b.action==='project_delete')return replyResult(await deleteProject({db,owner,nowMs:Date.now()},b));
  if(b.action==='set_group_project')return replyResult(await setGroupProject({db,owner,nowMs:Date.now()},b));
- if(b.action==='funnel')return replyResult(await projectFunnel({db,owner,nowMs:Date.now()},b));
+ if(b.action==='funnel')return replyRedacted(actor,await projectFunnel({db,owner,nowMs:Date.now()},b));
  if(b.action==='lead_feedback')return replyResult(await leadFeedback({db,owner,nowMs:Date.now()},b));
  if(b.action==='send_lead_message'){
   const id=z.string().uuid().parse(b.id);
