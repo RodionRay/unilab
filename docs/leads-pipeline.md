@@ -70,8 +70,11 @@ judgeError, title, metrics, taskLog}` (cron `app/api/cron/auto-rescan/route.ts` 
 
 ## DM pass (`poll_dm_replies`)
 
-`route.ts::pollDmReplies`: per account `/inbox-dms`; a DM of an open conversation is merged
-(`lib/lead-conversation.ts::mergeIncomingDm`); every other DM is collected and judged once per pass by
+`route.ts::pollDmReplies`: per account `/inbox-dms`; a DM whose sender already is a lead (same Telegram
+peer: senderId / peerId / username, `route.ts::sameTelegramPeer`) is merged into that lead — its started
+conversation first, else the newest lead of that person — and opens the conversation
+(`lib/lead-conversation.ts::mergeIncomingDm`, `route.ts::loadConversationLeads`); it never reaches the judge.
+Every other DM is collected and judged once per pass by
 `route.ts::judgeUnmatchedDms` → `lead-scan.ts::judgeInboxDms` → `pipeline.ts::runDmJudge`:
 - own accounts dropped app-side (`lead-scan.ts::loadOwnAccounts`: account `username`, `tgUserId` stored by
   `route.ts::runAccountCheck`), senders that already are leads → `duplicate`;

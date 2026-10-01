@@ -730,6 +730,31 @@ describe('lead core v2 · workspace route',()=>{
       await poll();
 
       expect(calls.dm).toHaveLength(0);
+      const lead=record('d0000000-0000-4000-8000-0000000000aa');
+      expect(lead).toMatchObject({conversationOpen:true,incomingLastText:'Ещё раз пишу про остатки, ответьте'});
+      expect(lead.replies).toEqual([expect.objectContaining({from:'client',messageId:'5',text:'Ещё раз пишу про остатки, ответьте'})]);
+      expect(rows('lead').filter(l=>l.data.senderId==='801')).toHaveLength(1);
+    });
+
+    it('a DM from an existing lead goes into its open conversation, not into an older lead of the same sender',async()=>{
+      addRecord('d0000000-0000-4000-8000-0000000000ab','lead',{name:'Group',message:'из группы',senderId:'802',status:'new'});
+      addRecord('d0000000-0000-4000-8000-0000000000ac','lead',{name:'Talk',message:'переписка',senderId:'802',status:'working',conversationOpen:true});
+      inboxMessages=[dm('802','Добрый день, напомню о себе','6')];
+
+      await poll();
+
+      expect(record('d0000000-0000-4000-8000-0000000000ac').replies).toHaveLength(1);
+      expect(record('d0000000-0000-4000-8000-0000000000ab').replies??[]).toHaveLength(0);
+    });
+
+    it('a username match opens the conversation of a lead without senderId',async()=>{
+      addRecord('d0000000-0000-4000-8000-0000000000ad','lead',{name:'Nick',message:'старое',senderUsername:'@Nick_803',status:'new'});
+      inboxMessages=[dm('803','Пишу вам напрямую','7','nick_803')];
+
+      await poll();
+
+      expect(calls.dm).toHaveLength(0);
+      expect(record('d0000000-0000-4000-8000-0000000000ad')).toMatchObject({conversationOpen:true,senderId:'803'});
     });
 
     it('a DM rejected by the judge is remembered and not judged again',async()=>{

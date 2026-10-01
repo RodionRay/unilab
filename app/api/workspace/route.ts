@@ -1149,18 +1149,23 @@ async function releaseDmPollLease(db:D1LikeDatabase,owner:string,stamp:string){
  await db.prepare('UPDATE records SET created=? WHERE id=? AND owner=? AND created=?').bind(new Date(0).toISOString(),dmPollLeaseId(owner),owner,stamp).run();
 }
 
-/** Ответ клиента берём только в переписку, которую мы уже начали с этим лидом. */
+function conversationStarted(d:LeadData):boolean{
+ return !!d.conversationOpen||leadReplies(d).some(x=>x.from==='us'||x.mode==='dm');
+}
+
+/**
+ * ЛС от собеседника, который уже лид: сначала его начатая переписка, иначе самый свежий лид этого человека
+ * (mergeIncomingDm открывает переписку). Такие ЛС не идут к судье — человек уже лид.
+ */
 async function loadConversationLeads(db:D1LikeDatabase,owner:string){
- const leadRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='lead'").bind(owner).all();
+ const leadRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='lead' ORDER BY created DESC,rowid DESC").bind(owner).all();
  const leads=leadRows.results.map(r=>{
   try{return {id:String(r.id),data:JSON.parse(String(r.data)) as LeadData}}catch{return null}
  }).filter(Boolean) as ConversationLead[];
- const match=(msg:InboxMessage):ConversationLead|null=>leads.find(L=>{
-  if(!sameTelegramPeer(L.data,msg))return false;
-  const d=L.data||{};
-  if(d.conversationOpen)return true;
-  return leadReplies(d).some(x=>x.from==='us'||x.mode==='dm');
- })??null;
+ const match=(msg:InboxMessage):ConversationLead|null=>{
+  const same=leads.filter(L=>sameTelegramPeer(L.data,msg));
+  return same.find(L=>conversationStarted(L.data||{}))??same[0]??null;
+ };
  return {match};
 }
 
