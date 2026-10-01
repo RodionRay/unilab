@@ -11,10 +11,13 @@ import {
   funnelRows,
   periodLabel,
   pluralRu,
+  sampleCaption,
   samplesFor,
+  skipReasons,
   type FunnelPart,
   type FunnelResponse,
   type FunnelRow,
+  type FunnelView,
 } from './model';
 
 type Days = 1 | 7;
@@ -97,13 +100,13 @@ export function FunnelPanel({ projectId, groupCount, aiKeyReady, reloadKey, onGo
           </div>
           <Button variant="outline" size="sm" onClick={() => setAttempt((a) => a + 1)}>Повторить</Button>
         </div>
-      ) : data && data.counts.fetched > 0 ? (
-        <FunnelLedger data={data} days={days} aiKeyReady={aiKeyReady} rescanning={rescanning} onRescan={rescan} />
+      ) : data && data.funnel.counts.fetched > 0 ? (
+        <FunnelLedger view={data.funnel} dm={data.dm} days={days} aiKeyReady={aiKeyReady} rescanning={rescanning} onRescan={rescan} />
       ) : (
         <div className="aiw-empty">
-          <p className="aiw-empty-title">{data?.runs.length ? `Сообщений ${periodLabel(days)} нет` : 'Ещё не было обхода'}</p>
+          <p className="aiw-empty-title">{data?.funnel.runs.length ? `Сообщений ${periodLabel(days)} нет` : 'Ещё не было обхода'}</p>
           <p className="aiw-help">
-            {data?.runs.length
+            {data?.funnel.runs.length
               ? 'Чаты проекта читались, но новых сообщений не пришло. Выберите «7 дней» или запустите обход.'
               : 'Обход читает новые сообщения в чатах проекта и показывает здесь, что с ними стало.'}
           </p>
@@ -131,43 +134,42 @@ function FunnelSkeleton() {
   );
 }
 
-type LedgerProps = { data: FunnelResponse; days: Days; aiKeyReady: boolean; rescanning: boolean; onRescan: () => Promise<void> };
+type LedgerProps = { view: FunnelView; dm: FunnelView; days: Days; aiKeyReady: boolean; rescanning: boolean; onRescan: () => Promise<void> };
 
-function FunnelLedger({ data, days, aiKeyReady, rescanning, onRescan }: LedgerProps) {
-  const rows = funnelRows(data.counts);
+function FunnelLedger({ view, dm, days, aiKeyReady, rescanning, onRescan }: LedgerProps) {
+  const rows = funnelRows(view.counts);
   const total = rows[0]?.count ?? 0;
-  const leads = data.counts.leads;
+  const leads = view.counts.leads;
   return (
     <>
-      <p className="aiw-headline" aria-label={funnelHeadline(data.counts, days)}>
+      <p className="aiw-headline" aria-label={funnelHeadline(view.counts, days)}>
         Из <strong>{formatCount(total)}</strong> {pluralRu(total, 'сообщения', 'сообщений', 'сообщений')} {periodLabel(days)}{' '}
         {leads > 0
           ? <>AI нашёл <strong className="is-lead">{formatCount(leads)} {pluralRu(leads, 'лид', 'лида', 'лидов')}</strong></>
           : <>лидов <strong>не нашлось</strong></>}
       </p>
       <p className="aiw-meta">
-        {data.runs.length} {pluralRu(data.runs.length, 'обход', 'обхода', 'обходов')} {periodLabel(days)} · полоса показывает долю от собранного
+        {view.runs.length} {pluralRu(view.runs.length, 'обход', 'обхода', 'обходов')} {periodLabel(days)} · полоса показывает долю от собранного
       </p>
-      <FunnelBanners data={data} aiKeyReady={aiKeyReady} rescanning={rescanning} onRescan={onRescan} />
+      <FunnelBanners view={view} aiKeyReady={aiKeyReady} rescanning={rescanning} onRescan={onRescan} />
       <ol className="aiw-ledger">
         {rows.map((row) => (
-          <FunnelRowItem key={row.key} row={row} total={total} samples={data.samples} />
+          <FunnelRowItem key={row.key} row={row} total={total} samples={view.samples} />
         ))}
       </ol>
-      {data.dm && <DmRow dm={data.dm} />}
+      {dm.counts.fetched > 0 && <DmRow dm={dm} />}
     </>
   );
 }
 
-type BannerProps = { data: FunnelResponse; aiKeyReady: boolean; rescanning: boolean; onRescan: () => Promise<void> };
+type BannerProps = { view: FunnelView; aiKeyReady: boolean; rescanning: boolean; onRescan: () => Promise<void> };
 
-function FunnelBanners({ data, aiKeyReady, rescanning, onRescan }: BannerProps) {
-  const errors = data.errors ?? [];
-  const skipped = data.counts.judgeSkipped;
-  const failed = data.counts.judgeError;
-  const keyMissing = !aiKeyReady || errors.some((e) => e.kind === 'ai_key_missing');
-  const capHit = errors.some((e) => e.kind === 'daily_cap');
-  const other = errors.filter((e) => !['ai_key_missing', 'judge_error', 'daily_cap'].includes(e.kind));
+function FunnelBanners({ view, aiKeyReady, rescanning, onRescan }: BannerProps) {
+  const reasons = skipReasons(view);
+  const skipped = view.counts.judgeSkipped;
+  const failed = view.counts.judgeError;
+  const keyMissing = !aiKeyReady || reasons.has('no_ai_key');
+  const capHit = reasons.has('daily_cap');
   const msgs = (k: number) => `${formatCount(k)} ${pluralRu(k, 'сообщение', 'сообщения', 'сообщений')}`;
   return (
     <div className="aiw-banners">
@@ -185,7 +187,7 @@ function FunnelBanners({ data, aiKeyReady, rescanning, onRescan }: BannerProps) 
           <AlertTriangle size={18} aria-hidden />
           <div className="min-w-0">
             <p className="aiw-alert-title">Дневной лимит AI исчерпан{skipped ? `: ${msgs(skipped)} ждут оценки` : ''}</p>
-            <p className="aiw-help">Лимит обновится после полуночи по Москве, тогда эти сообщения оценятся при обходе.</p>
+            <p className="aiw-help">Лимит обновится в 03:00 по Москве, тогда эти сообщения оценятся при обходе.</p>
           </div>
         </div>
       )}
@@ -201,12 +203,6 @@ function FunnelBanners({ data, aiKeyReady, rescanning, onRescan }: BannerProps) 
           </Button>
         </div>
       )}
-      {other.map((e, i) => (
-        <div key={`${e.kind}-${i}`} className="aiw-alert is-warning" role="status">
-          <AlertTriangle size={18} aria-hidden />
-          <p className="aiw-help min-w-0">{e.message}</p>
-        </div>
-      ))}
     </div>
   );
 }
@@ -248,9 +244,7 @@ function FunnelRowItem({ row, total, samples }: RowProps) {
           {items.length ? items.map((s, i) => (
             <figure key={i} className="aiw-sample">
               <blockquote>{s.text}</blockquote>
-              {(s.term || s.reason) && (
-                <figcaption>{s.term ? `Стоп-слово «${s.term}»` : s.reason}</figcaption>
-              )}
+              {sampleCaption(s) && <figcaption>{sampleCaption(s)}</figcaption>}
             </figure>
           )) : <p className="aiw-help">Примеры хранятся только по последним обходам — здесь их пока нет.</p>}
         </div>
@@ -284,7 +278,7 @@ function DmRow({ dm }: { dm: FunnelPart }) {
           {leadSamples.map((s, i) => (
             <figure key={i} className="aiw-sample">
               <blockquote>{s.text}</blockquote>
-              {s.reason && <figcaption>{s.reason}</figcaption>}
+              {sampleCaption(s) && <figcaption>{sampleCaption(s)}</figcaption>}
             </figure>
           ))}
         </div>

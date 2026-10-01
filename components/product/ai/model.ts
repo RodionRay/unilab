@@ -53,6 +53,7 @@ export type LeadLike = {
   draftKind?: unknown;
   conversationOpen?: unknown;
   excludeFromTraining?: unknown;
+  feedback?: unknown;
 };
 
 export type FunnelCounts = {
@@ -74,13 +75,35 @@ export type FunnelCounts = {
 };
 
 export type FunnelSample = { text: string; term?: string; reason?: string };
-export type FunnelErrorKind = 'ai_key_missing' | 'judge_error' | 'daily_cap' | (string & {});
-export type FunnelPart = { counts: FunnelCounts; samples: Partial<Record<string, FunnelSample[]>> };
-export type FunnelResponse = FunnelPart & {
+/** `lib/leads/funnel.ts::FunnelView`: one project (or the owner's DM row) summed over `days`. */
+export type FunnelView = {
+  projectId: string;
+  days: number;
+  counts: FunnelCounts;
+  samples: Partial<Record<string, FunnelSample[]>>;
   runs: string[];
-  dm?: FunnelPart;
-  errors?: { kind: FunnelErrorKind; message: string }[];
 };
+export type FunnelPart = Pick<FunnelView, 'counts' | 'samples'>;
+/** Action `funnel` → `{ok, funnel, dm}`; `dm.projectId` is `'dm'`. */
+export type FunnelResponse = { ok: true; funnel: FunnelView; dm: FunnelView };
+
+/** `lib/leads/types.ts::JudgeSkipReason` in the seller's words. */
+export const SKIP_REASON_LABEL: Record<string, string> = {
+  no_ai_key: 'Нет ключа AI',
+  daily_cap: 'Дневной лимит оценок исчерпан',
+  blocked: 'AI не ответил раньше в этом обходе',
+  batch_limit: 'Не поместилось в обход: оценим в следующем',
+  sender_limit: 'Слишком много новых собеседников за раз',
+  no_project: 'Нет активного проекта',
+};
+
+export const sampleCaption = (s: FunnelSample): string =>
+  s.term ? `Стоп-слово «${s.term}»` : s.reason ? (SKIP_REASON_LABEL[s.reason] ?? s.reason) : '';
+
+/** Skip reasons seen in the samples of «Без оценки»: drives the key / daily-cap banners. */
+export function skipReasons(view: FunnelPart): ReadonlySet<string> {
+  return new Set((view.samples.judgeSkipped ?? []).map((x) => x.reason ?? '').filter(Boolean));
+}
 
 const str = (v: unknown, fallback = ''): string => (typeof v === 'string' ? v : fallback);
 const strList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
