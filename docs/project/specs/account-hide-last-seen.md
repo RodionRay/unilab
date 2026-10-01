@@ -37,11 +37,24 @@ status: implemented (branch `task/account-hide-last-seen-2026-10-01`)
   [DisallowAll | AllowAll])`. Идемпотентно (правило задаётся целиком). FloodWait → текст с секундами;
   заморозка → `status:'frozen'` (route помечает аккаунт frozen). Сбой воркера → общее сообщение, деталь в серверный лог.
 
+## Массово
+- Таблица аккаунтов → панель выбранных (`.lead-bulk-bar`) → кнопка «Был в сети» → диалог «Был в сети в Telegram»
+  (число выбранных, предупреждение о взаимности, «Скрыть у N» / «Показать у N» / «Закрыть»; пока идёт запрос — диалог
+  не закрывается, на нажатой кнопке «Применяем…»). `app/app/page.tsx::bulkApplyLastSeen`: тосты
+  «„Был в сети“: N ок, ошибок M» и первая причина ошибки (≤160 символов).
+- `POST /api/workspace {action:'bulk_apply_account_last_seen', ids:uuid[1..50], hide:boolean}`, право `accounts`.
+  id без повторов, по одному аккаунту подряд через общий `app/api/workspace/route.ts::applyAccountLastSeen` (та же
+  аренда и запись итога, что у одиночного action). Пауза `LAST_SEEN_BULK_PAUSE_MS` = 1500 мс только после реального
+  вызова воркера и не после последнего (FloodWait при нескольких аккаунтах на одном прокси).
+- Ответ `{ok:true, updated, failed, results:[{id, ok, error}]}`; `ok` = Telegram подтвердил. Нет id → «Не найден»,
+  под арендой → ««Был в сети» уже применяется — подождите минуту», без сессии → «Нет сессии». 400 на пустой список,
+  >50 id, не-uuid, не-boolean `hide`.
+
 ## Взаимность Telegram и влияние на функции
 - Скрыв своё время, аккаунт без Premium видит у других только «недавно / на неделе / в месяц», не «онлайн» и не точное время.
 - Затронут только сбор аудитории этим аккаунтом (`check_account.py::_user_status_bucket`): фильтр «Онлайн» почти
   пустеет, точные «был в …» уходят в приблизительные корзины. Вступления, скан, инвайт, рассылка, ЛС статус не читают.
 
 ## Тесты
-`tests/account-last-seen-route.test.ts`, `tests/account-server-fields-race.test.ts` (гонки save/check_account), `tests/account-privacy.test.ts`,
+`tests/account-last-seen-route.test.ts`, `tests/account-last-seen-bulk.test.ts` (массово), `tests/account-server-fields-race.test.ts` (гонки save/check_account), `tests/account-privacy.test.ts`,
 `telegram-worker/tests/test_last_seen_privacy.py` (telethon-заглушка клиента).

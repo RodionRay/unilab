@@ -1639,6 +1639,43 @@ type LiveAccount={id:string;data:Record<string,unknown>};
 type InboxMessage=Record<string,unknown>;
 type DmOutreach={taskId:string;leadId:string;userId:string;username:string;preview:string;groupId:string;accountId:string};
 
+const LAST_SEEN_BUSY_ERROR='«Был в сети» уже применяется — подождите минуту';
+/** Between Telegram privacy calls of a bulk run: several accounts behind one proxy must not trip FloodWait. */
+const LAST_SEEN_BULK_PAUSE_MS=1500;
+type LastSeenState={hidden:boolean;applied:boolean;at:string;error:string};
+type LastSeenOutcome={kind:'not_found'}|{kind:'busy'}|{kind:'done';workerCalled:boolean;state:LastSeenState};
+
+/** Applies «был в сети» for one account under a CAS lease; shared by the single and bulk actions. */
+async function applyAccountLastSeen(db:D1LikeDatabase,owner:string,id:string,hide:boolean):Promise<LastSeenOutcome>{
+ const row=await db.prepare('SELECT secret FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'account').first<{secret:string|null}>();
+ if(!row)return {kind:'not_found'};
+ // Аренда (CAS): не два входа одной сессией на повторных «Сохранить»; 60 с > таймаута воркера 45 с
+ const now=new Date();
+ const leased=await db.prepare("UPDATE records SET data=json_set(data,'$.hideLastSeen',json(?),'$.lastSeenPrivacyLease',?) WHERE owner=? AND id=? AND kind=? AND COALESCE(json_extract(data,'$.lastSeenPrivacyLease'),'')<?")
+  .bind(JSON.stringify(hide),new Date(now.getTime()+60_000).toISOString(),owner,id,'account',now.toISOString()).run();
+ if(leased.meta.changes!==1)return {kind:'busy'};
+ // Точечные json_set: тики (счётчики, статус) могли обновить запись, пока ждём воркер
+ const setField=(path:string,value:unknown)=>db.prepare('UPDATE records SET data=json_set(data,?,json(?)) WHERE owner=? AND id=? AND kind=?').bind(path,JSON.stringify(value),owner,id,'account').run();
+ let applied=false;
+ let error='';
+ const workerCalled=Boolean(row.secret);
+ if(!row.secret)error='Нет сессии';
+ else{
+  try{
+   const {payload}=await loadAccountSessionPayload(owner,id);
+   const wr=await workerPost('/set-last-seen-privacy',{...payload,hideLastSeen:hide},45_000);
+   applied=wr.ok===true&&wr.hidden===hide;
+   error=applied?'':String(wr.error||'Telegram не подтвердил настройку').slice(0,300);
+   if(wr.status==='frozen')await setField('$.status','frozen');
+  }catch(e){
+   error=e instanceof WorkerBusyError?'Воркер занят — повторите позже':internalError('apply_account_last_seen',e,'Не удалось изменить «был в сети» в Telegram');
+  }
+ }
+ const state={hidden:hide,applied,at:new Date().toISOString(),error};
+ await db.prepare("UPDATE records SET data=json_remove(json_set(data,'$.lastSeenPrivacy',json(?)),'$.lastSeenPrivacyLease') WHERE owner=? AND id=? AND kind=?").bind(JSON.stringify(state),owner,id,'account').run();
+ return {kind:'done',workerCalled,state};
+}
+
 const dmPollLeaseId=(owner:string)=>`dm-poll-lease:${owner}`;
 
 /** Lease row lives with the AI guard rows (kind ai_guard is hidden from GET); returns the stamp to release with. */
@@ -2094,32 +2131,24 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
  if(b.action==='apply_account_last_seen'){
   const id=z.string().uuid().parse(b.id);
   const hide=z.boolean().parse(b.hide);
-  const row=await db.prepare('SELECT secret FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'account').first<{secret:string|null}>();
-  if(!row)return reply({error:'Аккаунт не найден'},404);
-  // Аренда (CAS): не два входа одной сессией на повторных «Сохранить»; 60 с > таймаута воркера 45 с
-  const now=new Date();
-  const leased=await db.prepare("UPDATE records SET data=json_set(data,'$.hideLastSeen',json(?),'$.lastSeenPrivacyLease',?) WHERE owner=? AND id=? AND kind=? AND COALESCE(json_extract(data,'$.lastSeenPrivacyLease'),'')<?")
-   .bind(JSON.stringify(hide),new Date(now.getTime()+60_000).toISOString(),owner,id,'account',now.toISOString()).run();
-  if(leased.meta.changes!==1)return reply({error:'«Был в сети» уже применяется — подождите минуту'},429);
-  // Точечные json_set: тики (счётчики, статус) могли обновить запись, пока ждём воркер
-  const setField=(path:string,value:unknown)=>db.prepare('UPDATE records SET data=json_set(data,?,json(?)) WHERE owner=? AND id=? AND kind=?').bind(path,JSON.stringify(value),owner,id,'account').run();
-  let applied=false;
-  let error='';
-  if(!row.secret)error='Нет сессии';
-  else{
-   try{
-    const {payload}=await loadAccountSessionPayload(owner,id);
-    const wr=await workerPost('/set-last-seen-privacy',{...payload,hideLastSeen:hide},45_000);
-    applied=wr.ok===true&&wr.hidden===hide;
-    error=applied?'':String(wr.error||'Telegram не подтвердил настройку').slice(0,300);
-    if(wr.status==='frozen')await setField('$.status','frozen');
-   }catch(e){
-    error=e instanceof WorkerBusyError?'Воркер занят — повторите позже':internalError('apply_account_last_seen',e,'Не удалось изменить «был в сети» в Telegram');
-   }
+  const outcome=await applyAccountLastSeen(db,owner,id,hide);
+  if(outcome.kind==='not_found')return reply({error:'Аккаунт не найден'},404);
+  if(outcome.kind==='busy')return reply({error:LAST_SEEN_BUSY_ERROR},429);
+  return reply({ok:true,...outcome.state});
+ }
+ if(b.action==='bulk_apply_account_last_seen'){
+  const ids=[...new Set(z.array(z.string().uuid()).min(1).max(50).parse(b.ids))];
+  const hide=z.boolean().parse(b.hide);
+  const results:{id:string;ok:boolean;error:string}[]=[];
+  for(const [i,id] of ids.entries()){
+   const outcome=await applyAccountLastSeen(db,owner,id,hide);
+   if(outcome.kind==='not_found'){results.push({id,ok:false,error:'Не найден'});continue}
+   if(outcome.kind==='busy'){results.push({id,ok:false,error:LAST_SEEN_BUSY_ERROR});continue}
+   results.push({id,ok:outcome.state.applied,error:outcome.state.error});
+   if(outcome.workerCalled&&i<ids.length-1)await new Promise(r=>setTimeout(r,LAST_SEEN_BULK_PAUSE_MS));
   }
-  const state={hidden:hide,applied,at:new Date().toISOString(),error};
-  await db.prepare("UPDATE records SET data=json_remove(json_set(data,'$.lastSeenPrivacy',json(?)),'$.lastSeenPrivacyLease') WHERE owner=? AND id=? AND kind=?").bind(JSON.stringify(state),owner,id,'account').run();
-  return reply({ok:true,...state});
+  const updated=results.filter(r=>r.ok).length;
+  return reply({ok:true,updated,failed:results.length-updated,results});
  }
  if(b.action==='join_group'){
   const id=z.string().uuid().parse(b.id);

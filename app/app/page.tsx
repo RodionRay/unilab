@@ -1,7 +1,7 @@
 "use client";
 import {useState,useEffect,useCallback,useRef,useMemo,Suspense} from 'react';
 import {useSearchParams} from 'next/navigation';
-import {Users,Radio,Shield,Sparkles,Plus,ArrowRight,Search,ChevronRight,ExternalLink,Pencil,Trash2,Check,Upload,Plug,Loader2,LogOut,RefreshCw,X,CloudUpload,FileArchive,ImagePlus,UserRound,Shuffle,UserPlus,Database,ScrollText,History,Send,MessageSquare,Timer,Network,Gauge,AlertTriangle,BarChart3,Folder,CircleX} from 'lucide-react';
+import {Users,Radio,Shield,Sparkles,Plus,ArrowRight,Search,ChevronRight,ExternalLink,Pencil,Trash2,Check,Upload,Plug,Loader2,LogOut,RefreshCw,X,CloudUpload,FileArchive,ImagePlus,UserRound,Shuffle,UserPlus,Database,ScrollText,History,Send,MessageSquare,Timer,Network,Gauge,AlertTriangle,BarChart3,Folder,CircleX,EyeOff} from 'lucide-react';
 import {Button} from '@/components/ui/button';
 import {OverviewDashboard} from '@/components/product/overview-dashboard';
 import {LeadCorePanel} from '@/components/product/lead-core-panel';
@@ -517,6 +517,9 @@ function WorkspaceHome(){
   const [farmFirstName,setFarmFirstName]=useState('');
   const [farmLastName,setFarmLastName]=useState('');
   const [farmLogoOpen,setFarmLogoOpen]=useState(false);
+  const [bulkLastSeenOpen,setBulkLastSeenOpen]=useState(false);
+  /** Which button of the bulk «был в сети» dialog is running (null = idle): labels the long request. */
+  const [bulkLastSeenPending,setBulkLastSeenPending]=useState<boolean|null>(null);
   const [farmLogoFile,setFarmLogoFile]=useState<File|null>(null);
   const [farmLogoPreview,setFarmLogoPreview]=useState('');
   const [chatMode,setChatMode]=useState<'dm'|'chat'>('dm');
@@ -1742,6 +1745,24 @@ function WorkspaceHome(){
       toast.success(`Профили: ${r.updated}/${ids.length}${pushToTelegram?' → Telegram':''}`);
     }catch(e){toast.error((e as Error).message)}
     finally{setBusy(false)}
+  }
+
+  /** Bulk «был в сети»: server goes account by account with ~1.5 s pauses, so this can take a while. */
+  async function bulkApplyLastSeen(hide:boolean){
+    const ids=accountSelected;
+    if(!ids.length){toast.message('Выберите аккаунты');return}
+    setBusy(true);
+    setBulkLastSeenPending(hide);
+    try{
+      const r=await api({action:'bulk_apply_account_last_seen',ids,hide});
+      await refresh();
+      setAccountSelected([]);
+      setBulkLastSeenOpen(false);
+      toast.success(`«Был в сети»: ${r.updated} ок, ошибок ${r.failed}`);
+      const firstError=(r.results as {ok:boolean;error:string}[]).find(x=>!x.ok)?.error;
+      if(r.failed&&firstError)toast.error(firstError.slice(0,160));
+    }catch(e){toast.error((e as Error).message)}
+    finally{setBusy(false);setBulkLastSeenPending(null)}
   }
 
   async function applyFarmLogo(ids:string[]){
@@ -3667,6 +3688,7 @@ function WorkspaceHome(){
                       </Button>
                       <Button size="sm" disabled={busy} onClick={async()=>{setFarmProfileOpen(true);if(!farmAbout)await generateFarmProfile()}}><UserRound size={14}/>Профили</Button>
                       <Button size="sm" variant="outline" disabled={busy} onClick={()=>setFarmLogoOpen(true)}><ImagePlus size={14}/>Логотип</Button>
+                      <Button size="sm" variant="outline" disabled={busy} onClick={()=>setBulkLastSeenOpen(true)}><EyeOff size={14}/>Был в сети</Button>
                       <Button size="sm" variant="outline" disabled={busy} onClick={()=>setBulkDeleteOpen(true)} className="text-[var(--spike-danger,#fb977d)]">
                         <Trash2 size={14}/>Удалить
                       </Button>
@@ -5348,6 +5370,32 @@ function WorkspaceHome(){
                 <ImagePlus size={15}/>Загрузить на аккаунты
               </Button>
               <Button variant="ghost" onClick={()=>setFarmLogoOpen(false)}>Закрыть</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={bulkLastSeenOpen} onOpenChange={o=>{if(!busy)setBulkLastSeenOpen(o)}}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Был в сети в Telegram</DialogTitle>
+            <DialogDescription>
+              Выбрано аккаунтов: {accountSelected.length}. Скрыть или показать у них время «был в сети».
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="small-note">Взаимно: аккаунт тоже перестанет видеть точное «был в сети» у других — только «недавно».</p>
+            <p className="small-note">Между аккаунтами пауза ~1.5 с — на {accountSelected.length} аккаунтов это займёт время.</p>
+            <div className="flex flex-wrap gap-2">
+              <Button disabled={busy||!accountSelected.length} onClick={()=>bulkApplyLastSeen(true)}>
+                {bulkLastSeenPending===true?<Loader2 size={15} className="animate-spin"/>:<EyeOff size={15}/>}
+                {bulkLastSeenPending===true?'Применяем…':`Скрыть у ${accountSelected.length}`}
+              </Button>
+              <Button variant="outline" disabled={busy||!accountSelected.length} onClick={()=>bulkApplyLastSeen(false)}>
+                {bulkLastSeenPending===false&&<Loader2 size={15} className="animate-spin"/>}
+                {bulkLastSeenPending===false?'Применяем…':`Показать у ${accountSelected.length}`}
+              </Button>
+              <Button variant="ghost" disabled={busy} onClick={()=>setBulkLastSeenOpen(false)}>Закрыть</Button>
             </div>
           </div>
         </DialogContent>
