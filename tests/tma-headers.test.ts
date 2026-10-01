@@ -7,7 +7,7 @@ import { matchHeaders } from "../node_modules/vinext/dist/config/config-matchers
 type Header = { key: string; value: string };
 
 async function headersFor(pathname: string): Promise<Header[]> {
-  const rules = (await nextConfig.headers?.()) ?? [];
+  const rules = ((await nextConfig.headers?.()) ?? []).map((r) => ({ source: r.source, headers: r.headers }));
   const ctx = { headers: new Headers(), cookies: {}, query: new URLSearchParams(), host: "localhost" };
   return matchHeaders(pathname, rules, ctx) as Header[];
 }
