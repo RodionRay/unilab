@@ -29,6 +29,7 @@ import {Empty,EmptyHeader,EmptyTitle,EmptyDescription} from '@/components/ui/emp
 import {Toaster} from 'sonner';
 import {toast} from '@/lib/workspace-notifications';
 import {markLeadOpened} from '@/lib/lead-conversation';
+import {assignOutcomeNotice,groupAccountLocked} from '@/lib/group-account-lock';
 import {SidebarProvider,Sidebar,SidebarHeader,SidebarContent,SidebarFooter,SidebarInset,SidebarTrigger} from '@/components/ui/sidebar';
 import {parseProxyLine,parseProxyLines,type ProxyProtocol} from '@/lib/proxy-line';
 import {accountPhoneKey,canonicalizeTgUrl,duplicateReason,findDuplicate,proxyIdentityKey,telegramEntityKey} from '@/lib/record-identity';
@@ -2255,11 +2256,16 @@ function WorkspaceHome(){
           const g=list('group').find(x=>x.id===accountPicker.groupId);
           if(g)await api({action:'save',kind:'group',id:g.id,data:cleanGroupSaveData({...g.data,accountId:''})});
         }else{
-          await api({action:'assign_group_accounts',mode:'single',groupIds:[accountPicker.groupId],accountIds:[id]});
+          const r=await api({action:'assign_group_accounts',mode:'single',groupIds:[accountPicker.groupId],accountIds:[id]});
+          const notice=assignOutcomeNotice(r);
+          await refresh();
+          setAccountPicker(null);
+          if(notice.ok)toast.success(notice.text);else toast.error(notice.text);
+          return;
         }
         await refresh();
         setAccountPicker(null);
-        toast.success('Аккаунт назначен');
+        toast.success('Аккаунт снят');
       }catch(e){toast.error((e as Error).message)}
       finally{setBusy(false)}
     }
@@ -2941,6 +2947,11 @@ function WorkspaceHome(){
   const groupsNeedJoin=groupsAll.filter(groupNeedsJoin);
   const accountsAll=list('account');
   const accountsActive=accountsAll.filter(a=>isAccountWorkable(a.data));
+  // Вступленная группа закреплена за своим аккаунтом: сменить его окно не даёт (сервер такие группы пропускает).
+  const pickerGroup=accountPicker?.mode==='row'&&accountPicker.groupId?list('group').find(g=>g.id===accountPicker.groupId):undefined;
+  const pickerLockedAccountName=pickerGroup&&groupAccountLocked(pickerGroup.data)
+    ?String(accountsAll.find(a=>a.id===String(pickerGroup.data.accountId||''))?.data.name||'назначенный аккаунт')
+    :'';
   const accountsUsableOpts=accountsActive.map(r=>({id:r.id,name:r.data.name,data:r.data}));
   const proxiesAll=list('proxy');
   const proxiesActive=proxiesAll.filter(p=>p.data.status==='active');
@@ -5035,7 +5046,9 @@ function WorkspaceHome(){
               {accountPicker?.mode==='mix'?'Аккаунты для смешанного режима':accountPicker?.mode==='row'?'Аккаунт для группы':'Выберите аккаунт'}
             </DialogTitle>
             <DialogDescription>
-              {accountPicker?.mode==='mix'
+              {pickerLockedAccountName
+                ?`В группе уже состоит ${pickerLockedAccountName} — сменить аккаунт нельзя: сканирует и вступает в обсуждение только он.`
+                :accountPicker?.mode==='mix'
                 ?'Отметьте аккаунты — они будут перемешаны по выбранным группам.'
                 :'Клик по аккаунту выбирает, кто будет вступать в группы.'}
             </DialogDescription>
@@ -5065,6 +5078,7 @@ function WorkspaceHome(){
                     type="button"
                     key={a.id}
                     className={`account-picker-row ${on?'on':''}`}
+                    disabled={!!pickerLockedAccountName}
                     onClick={()=>{
                       if(multi){
                         setAccountPickerDraft(prev=>on?prev.filter(x=>x!==a.id):[...prev,a.id]);
@@ -5101,13 +5115,13 @@ function WorkspaceHome(){
                 )}
               </div>
             ):(
-              <Button type="button" variant="ghost" size="sm" onClick={()=>{setAccountPickerDraft([]);}}>
+              <Button type="button" variant="ghost" size="sm" disabled={!!pickerLockedAccountName} onClick={()=>{setAccountPickerDraft([]);}}>
                 Сбросить
               </Button>
             )}
             <div className="flex gap-2 ml-auto">
               <Button type="button" variant="outline" onClick={()=>setAccountPicker(null)}>Отмена</Button>
-              <Button type="button" disabled={busy||(accountPicker?.mode==='mix'?accountPickerDraft.length<1:!accountPickerDraft[0]&&accountPicker?.mode!=='row')} onClick={confirmAccountPicker}>
+              <Button type="button" disabled={busy||!!pickerLockedAccountName||(accountPicker?.mode==='mix'?accountPickerDraft.length<1:!accountPickerDraft[0]&&accountPicker?.mode!=='row')} onClick={confirmAccountPicker}>
                 Готово{accountPicker?.mode==='mix'&&accountPickerDraft.length?` (${accountPickerDraft.length})`:''}
               </Button>
             </div>

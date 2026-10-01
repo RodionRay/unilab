@@ -57,6 +57,7 @@ import {authorizeWorkspaceAction,keepOwnerSecretsOnSave,visibleRecordsFor,type W
 import {ALL_CRM_ACCESS} from '@/lib/staff-types';
 import {INBOX_CURSOR_MARGIN_SEC,applySendOutcome,findSendBlock,leadReplies,markLeadOpened,mergeIncomingDm,nextInboxCursor,withPendingSend,type LeadData,type ReplyEntry,type SendOutcome} from '@/lib/lead-conversation';
 import type {D1LikeDatabase} from '@/lib/db';
+import {groupAccountLocked} from '@/lib/group-account-lock';
 import {env} from 'cloudflare:workers';
 import {z} from 'zod';
 export const dynamic='force-dynamic';
@@ -1079,12 +1080,7 @@ function isDeadAccountStatus(status:string,cooldownUntil?:string|null){
 }
 
 function groupAlreadyMember(d:any){
- return (
-  d?.membership==='joined'||
-  d?.membership==='pending'||
-  d?.status==='pending'||
-  !!d?.joinedAt
- );
+ return groupAccountLocked(d);
 }
 
 /** Реальное членство — только membership/joinedAt. Лиды/scanLog ≠ доказательство вступления. */
