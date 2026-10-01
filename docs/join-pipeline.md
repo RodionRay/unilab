@@ -48,3 +48,31 @@ is never usable: `isAccountUsable`, `canPollDmInbox`, `join-flow.ts::evaluateAcc
   ones), `accountId` on leads, `sourceAccountId` on audience tasks; the ids leave `accountIds` of mailing / invite /
   audience tasks, and a running/scheduled task left with none is paused with «Все аккаунты задачи удалены Telegram …».
   An audit line with names and counts goes to the global rescan log. Irreversible; access rule `accounts`.
+
+## 3. One join-block predicate — `lib/telegram-accounts.ts::accountTelegramBlock`
+
+Rule: never join with an account that caught a Telegram block. Signals: status spamblock / frozen / deleted /
+unauthorized; a live `resolveBlindUntil`; any soft deleted sign (`isDeletedSuspect`: `deletedSuspectAt`,
+`controlBlindSince`, a `resolveBlindUntil` even when expired, an error starting with `BLIND_ERROR_PREFIX`) until a
+clean recheck (`clearedSuspectPatch` also clears `resolveBlindUntil`); a live FloodWait (`joinFloodUntil` or
+`floodUntil`). `isAccountJoinBlocked` gates every join path:
+
+- `join-flow.ts::evaluateAccountJoinReadiness` (`telegramBlockGate`, reasons `resolve_blind` / `flood` / `deleted` /
+  `spamblock` / `frozen` / `unusable`) and so `isJoinFarmCandidate` (join farm, heal `listJoinTargetIds`, reassign
+  targets); join_group answers `429 {flood:true}` when no other farm account is ready.
+- join_group peer refresh of a joined group on its own account: `409 accountUnavailable` with the block as reason.
+- `planGroupHeal(accountJoinBlock, previousAccountJoinBlock)`: a pending group leaves a blocked account even while it
+  waits (`joinNextAt`); a joined group leaves on any non-temporary block (not FloodWait / spamblock);
+  `restore_previous` skips a blocked previous account.
+- scan_group: a suspect account is treated as hard-dead; a blocked one scans with `allowJoin:false` (worker
+  `scan_group(allow_join=False)` never joins a channel discussion). A blind scan answer (`accountBlind`, passed
+  through by the worker) marks the account and leaves the group without an error (`409 skipped`).
+- tick_audience and tick_invite slot lists skip blocked accounts; their blind join answers mark the account
+  (`accountBlindPatch` + `deletedSuspectPatch`).
+- A join answered `frozen` reassigns the group at once — a joined one too
+  (`route.ts::rotateGroupOffDeadAccount(dropMembership)`) — without asking the owner.
+
+When the worker cannot run the control itself (FloodWait / network on @telegram,
+`check_account.py::_control_resolve_blind` → `None`, answer `controlUnknown:true`) neither the group nor the account
+is blamed: join_group treats it as worker-transient (15 min retry, no attempt, status `setup`), scan_group answers
+`409` with the group untouched.

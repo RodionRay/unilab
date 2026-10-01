@@ -767,6 +767,7 @@ async def join_group(client, url: str, peer_hint: dict | None = None) -> dict[st
                     "join": resolve_err.get("join") or "missing",
                     "usernameMissing": bool(resolve_err.get("usernameMissing")),
                     "accountBlind": bool(resolve_err.get("accountBlind")),
+                    "controlUnknown": bool(resolve_err.get("controlUnknown")),
                     "error": str(resolve_err.get("error") or "Не удалось найти группу")[:400],
                     "member": False,
                 }
@@ -1044,10 +1045,12 @@ async def scan_group(
     limit: int = 40,
     days: int = 0,
     cursor: str = "",
+    allow_join: bool = True,
 ) -> dict[str, Any]:
     """Скан лидов в переписках: группы + обсуждения/комментарии к каналам.
 
-    Посты канала и авторы-каналы НЕ считаются лидами.
+    Посты канала и авторы-каналы НЕ считаются лидами. allow_join=False — слот с сигналом блокировки
+    Telegram: в обсуждение канала не вступаем, отвечаем need_join.
     Лента читается вперёд от `cursor` (последний просмотренный id) или от глубины `days`;
     в ответе `cursor` — последний обработанный id, приложение хранит его на группе.
     """
@@ -1192,6 +1195,8 @@ async def scan_group(
                     "messages": [],
                     "member": False,
                     "usernameMissing": bool(resolve_err.get("usernameMissing")),
+                    "accountBlind": bool(resolve_err.get("accountBlind")),
+                    "controlUnknown": bool(resolve_err.get("controlUnknown")),
                     "title": "",
                 }
             if entity is None:
@@ -1240,6 +1245,8 @@ async def scan_group(
                 if not await member_of(linked):
                     # Пробуем вступить в обсуждение тем же аккаунтом
                     try:
+                        if not allow_join:
+                            raise PermissionError("join disabled for a Telegram-blocked account")
                         from telethon.tl.functions.channels import JoinChannelRequest
 
                         await client(JoinChannelRequest(linked))
@@ -1476,10 +1483,11 @@ async def _resolve_username_via_search(client, want: str):
 RESOLVE_CONTROL_USERNAME = "telegram"
 
 
-async def _account_resolve_blind(client, control: str = RESOLVE_CONTROL_USERNAME) -> bool:
+async def _control_resolve_blind(client, control: str = RESOLVE_CONTROL_USERNAME) -> bool | None:
     """Аккаунт не резолвит даже @telegram → ограничен сам слот, группа ни при чём.
 
-    Только явный UsernameNotOccupied/Invalid считаем слепотой; сеть/прочее — «не знаем» (False).
+    True — явный UsernameNotOccupied/Invalid (слеп); False — контрольный виден;
+    None — FloodWait/сеть/прочее: про слот ничего не знаем.
     """
     from telethon.tl.functions.contacts import ResolveUsernameRequest
     from telethon.errors import UsernameNotOccupiedError, UsernameInvalidError
@@ -1490,7 +1498,7 @@ async def _account_resolve_blind(client, control: str = RESOLVE_CONTROL_USERNAME
     except (UsernameNotOccupiedError, UsernameInvalidError):
         return True
     except Exception:
-        return False
+        return None
 
 
 PRIVATE_LINK_ERROR = (
@@ -1580,7 +1588,24 @@ async def _resolve_entity(client, url: str, peer_hint: dict | None = None):
             or "cannot find any entity" in detail.lower()
             or "no user has" in detail.lower()
         ):
-            if await _account_resolve_blind(client):
+            control_blind = await _control_resolve_blind(client)
+            if control_blind is None:
+                # The control itself failed (FloodWait, network): neither the slot nor the group is to blame.
+                return None, {
+                    "ok": False,
+                    "status": "setup",
+                    "join": "missing",
+                    "usernameMissing": False,
+                    "accountBlind": False,
+                    "controlUnknown": True,
+                    "error": (
+                        f"Слот не смог проверить себя контрольным @{RESOLVE_CONTROL_USERNAME} — "
+                        f"@{uname} не штрафуем ({type(e).__name__}: {detail})"
+                    )[:400],
+                    "users": [],
+                    "hasMore": False,
+                }
+            if control_blind:
                 return None, {
                     "ok": False,
                     "status": "error",
@@ -3090,9 +3115,9 @@ async def _control_blind_suspect(client, payload: dict[str, Any]) -> bool:
     """
     if not payload.get("checkDeleted", True):
         return False
-    if not await _account_resolve_blind(client):
+    if await _control_resolve_blind(client) is not True:
         return False
-    return await _account_resolve_blind(client, DELETED_CONFIRM_USERNAME)
+    return await _control_resolve_blind(client, DELETED_CONFIRM_USERNAME) is True
 
 
 async def check_account(client, payload: dict[str, Any]) -> dict[str, Any]:
@@ -3200,7 +3225,10 @@ async def run_action(payload: dict[str, Any]) -> dict[str, Any]:
                 limit = int(payload.get("limit") or 40)
                 days = int(payload.get("days") or 0)
                 cursor = str(payload.get("minId") or "")
-                return await scan_group(client, url, keywords, minus, limit, days=days, cursor=cursor)
+                allow_join = payload.get("allowJoin", True) is not False
+                return await scan_group(
+                    client, url, keywords, minus, limit, days=days, cursor=cursor, allow_join=allow_join
+                )
             if action == "collect":
                 return await collect_audience(client, payload)
             if action == "invite":

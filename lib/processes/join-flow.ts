@@ -2,11 +2,13 @@
 
 import { isCatalogPlaceholderUrl } from "@/lib/group-catalog";
 import {
+  accountTelegramBlock,
   dayLimitCooldownKind,
   hasInviteQuota,
   isAccountUsable,
   isDayLimitedFor,
   joinWaitSec,
+  type TelegramBlock,
 } from "@/lib/telegram-accounts";
 
 export function sanitizeJoinStateError(v: unknown): string {
@@ -22,6 +24,7 @@ export type JoinBlockReason =
   | "spamblock"
   | "frozen"
   | "deleted"
+  | "flood"
   | "quota"
   | "pace"
   | "resolve_blind"
@@ -41,7 +44,11 @@ export type JoinAccountState = {
   joinsDay?: string;
   lastJoinAt?: string;
   joinFloodUntil?: string;
+  floodUntil?: unknown;
   resolveBlindUntil?: string | null;
+  deletedSuspectAt?: string | null;
+  controlBlindSince?: string | null;
+  error?: string | null;
   proxyId?: string | null;
 };
 
@@ -61,16 +68,9 @@ export function evaluateAccountJoinReadiness(
   if (!acc) {
     return { ok: false, reason: "unusable", message: "Аккаунт не найден" };
   }
+  const block = telegramBlockGate(acc, now);
+  if (block) return block;
   const st = String(acc.status || "");
-  if (st === "spamblock") {
-    return { ok: false, reason: "spamblock", message: "Аккаунт в спамблоке" };
-  }
-  if (st === "frozen") {
-    return { ok: false, reason: "frozen", message: "Аккаунт заморожен" };
-  }
-  if (st === "deleted") {
-    return { ok: false, reason: "deleted", message: "Аккаунт удалён Telegram" };
-  }
   // Дневной лимит другого вида (ЛС, инвайты) вступлению не мешает; отлёжка без вида — мешает
   if (isDayLimitedFor(acc, "invite") || (st === "cooldown" && dayLimitCooldownKind(acc) === null)) {
     const until = Date.parse(String(acc.cooldownUntil || ""));
@@ -79,15 +79,6 @@ export function evaluateAccountJoinReadiness(
   }
   if (!isAccountUsable(acc)) {
     return { ok: false, reason: "unusable", message: "Аккаунт недоступен" };
-  }
-  if (isAccountResolveBlind(acc, now)) {
-    const until = Date.parse(String(acc.resolveBlindUntil));
-    return {
-      ok: false,
-      reason: "resolve_blind",
-      waitSec: Math.max(300, Math.ceil((until - now) / 1000)),
-      message: "Аккаунт не резолвит @username (ограничен Telegram)",
-    };
   }
   if (String(acc.proxyId || "") && (opts.proxy == null || opts.proxy.status === "inactive")) {
     return { ok: false, reason: "proxy", message: "Прокси аккаунта не работает" };
@@ -105,6 +96,37 @@ export function evaluateAccountJoinReadiness(
     };
   }
   return { ok: true };
+}
+
+const BLOCK_MESSAGES: Record<TelegramBlock, string> = {
+  spamblock: "Аккаунт в спамблоке",
+  frozen: "Аккаунт заморожен",
+  deleted: "Аккаунт удалён Telegram",
+  unauthorized: "Аккаунт недоступен",
+  resolve_blind: "Аккаунт не резолвит @username (ограничен Telegram)",
+  suspect: "Аккаунт не резолвит @telegram — не используется до перепроверки",
+  flood: "Telegram попросил паузу (FloodWait) — вступления с аккаунта остановлены",
+};
+
+function untilWaitSec(v: unknown, now: number, min: number): number {
+  return Math.max(min, Math.ceil((Date.parse(String(v || "")) - now) / 1000) || min);
+}
+
+/** Any Telegram block signal (lib/telegram-accounts::accountTelegramBlock) — no join, whatever else holds. */
+function telegramBlockGate(acc: JoinAccountState, now: number): JoinGateResult | null {
+  const block = accountTelegramBlock(acc, now);
+  if (!block) return null;
+  const message = BLOCK_MESSAGES[block];
+  if (block === "resolve_blind") {
+    return { ok: false, reason: "resolve_blind", waitSec: untilWaitSec(acc.resolveBlindUntil, now, 300), message };
+  }
+  if (block === "flood") {
+    const until = Math.max(Date.parse(String(acc.joinFloodUntil || "")) || 0, Date.parse(String(acc.floodUntil || "")) || 0);
+    return { ok: false, reason: "flood", waitSec: untilWaitSec(new Date(until).toISOString(), now, 60), message };
+  }
+  if (block === "suspect") return { ok: false, reason: "deleted", message };
+  if (block === "unauthorized") return { ok: false, reason: "unusable", message };
+  return { ok: false, reason: block, message };
 }
 
 /** В ферму вступлений: готов сейчас или ждёт только паузу темпа. */
@@ -316,9 +338,13 @@ export type GroupHealAction =
   /** Владелец не ставил группу в очередь (каталог, импорт) — автообход не вступает. */
   | "not_wanted";
 
+/** Blocks that lift by themselves: a joined group keeps its account through them. */
+const TEMPORARY_BLOCKS: ReadonlySet<TelegramBlock> = new Set<TelegramBlock>(["flood", "spamblock"]);
+
 /**
  * Решение автопочинки по одной группе. Инварианты: членство вступившей группы
- * сбрасывается только если её аккаунт умер насовсем; новое вступление автообход
+ * сбрасывается только если её аккаунт умер насовсем или заблокирован Telegram не временно;
+ * ожидающая группа на заблокированном аккаунте не ждёт — сразу на живой; новое вступление автообход
  * делает только в группу, которую владелец сам поставил в очередь (joinWanted) —
  * иначе каждый тик жжёт дневные лимиты на нецелевые чаты из каталога.
  */
@@ -336,6 +362,9 @@ export function planGroupHeal(opts: {
   accountStatus: string | null;
   /** status аккаунта joinedAccountId; null — нет/не найден. */
   previousAccountStatus?: string | null;
+  /** lib/telegram-accounts::accountTelegramBlock of the group's account; null — clean. */
+  accountJoinBlock?: TelegramBlock | null;
+  previousAccountJoinBlock?: TelegramBlock | null;
   now?: number;
 }): GroupHealAction {
   const g = opts.group;
@@ -345,21 +374,25 @@ export function planGroupHeal(opts: {
     g.membership === "pending" ||
     g.status === "pending" ||
     !!g.joinedAt;
+  const block = opts.accountJoinBlock ?? null;
   const dead = !g.accountId || isPermanentlyDeadAccount(opts.accountStatus);
-  if (member) return dead ? "reassign" : "keep";
+  if (member) return dead || (block !== null && !TEMPORARY_BLOCKS.has(block)) ? "reassign" : "keep";
 
   const prev = String(g.joinedAccountId || "");
   if (
     prev &&
     prev !== g.accountId &&
     opts.previousAccountStatus != null &&
-    !isPermanentlyDeadAccount(opts.previousAccountStatus)
+    !isPermanentlyDeadAccount(opts.previousAccountStatus) &&
+    !opts.previousAccountJoinBlock
   ) {
     return "restore_previous";
   }
   if (!g.joinWanted) return "not_wanted";
   if (g.joinGaveUp) return "gave_up";
+  // A pending join never waits on a blocked account: it moves to a live one at once.
+  if (dead || block !== null) return "reassign";
   const next = g.joinNextAt ? Date.parse(g.joinNextAt) : 0;
   if (Number.isFinite(next) && next > now) return "wait";
-  return dead ? "reassign" : "enqueue";
+  return "enqueue";
 }

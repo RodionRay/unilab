@@ -24,7 +24,7 @@ import {
 } from '@/lib/processes/scan-flow';
 import {appendLearnExamples,extractTermsFromHotMessages,mergeKeywords,mergeKeywordsPreferNew,parseKeywordCsv} from '@/lib/ai-keywords';
 import {sanitizeMinusTerms,scanStopTerms} from '@/lib/lead-stopwords';
-import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,DELETED_CONFIRM_AFTER_MS,clearedSuspectPatch,keepServerOwnedAccountFields,needsAccountRecheck,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpChatCounters,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasMemberInviteQuota,hasMessageQuota,isAccountFlooded,isAccountUsable,isDayLimitCooldown,isDayLimitedFor,dayLimitCooldownKind,isOnCooldown,joinWaitSec,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
+import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,DELETED_CONFIRM_AFTER_MS,accountTelegramBlock,isAccountJoinBlocked,isDeletedSuspect,type TelegramBlock,clearedSuspectPatch,keepServerOwnedAccountFields,needsAccountRecheck,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpChatCounters,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasMemberInviteQuota,hasMessageQuota,isAccountFlooded,isAccountUsable,isDayLimitCooldown,isDayLimitedFor,dayLimitCooldownKind,isOnCooldown,joinWaitSec,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
 import {INVITE_SOFT_FAIL_LIMIT,interpretInviteWorkerResult,inviteAccountStillLive,inviteBatchLimit,inviteUserPatch} from '@/lib/processes/invite-tick';
 import {bracketLabel,formatRuWhen,inviteUserFailText,inviteUserOkText,normalizeStatusFilters,normalizeTgRef,pushTaskLog,pushTaskLogs,randomPauseSec} from '@/lib/audience-invite';
 import {canonicalizeTgUrl,duplicateReason,isDuplicateKind,telegramEntityKey} from '@/lib/record-identity';
@@ -1246,8 +1246,13 @@ async function healDeadGroupAccounts(owner:string){
  const liveIds=await listJoinTargetIds(owner);
  const accRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='account'").bind(owner).all();
  const accStatus=new Map<string,string>();
+ const accBlock=new Map<string,TelegramBlock|null>();
  for(const r of accRows.results){
-  try{accStatus.set(String(r.id),String(JSON.parse(String(r.data)).status||''))}catch{accStatus.set(String(r.id),'error')}
+  try{
+   const a=JSON.parse(String(r.data));
+   accStatus.set(String(r.id),String(a.status||''));
+   accBlock.set(String(r.id),accountTelegramBlock(a));
+  }catch{accStatus.set(String(r.id),'error')}
  }
  const groups=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='group'").bind(owner).all();
  const items:{id:string;name:string}[]=[];
@@ -1275,6 +1280,9 @@ async function healDeadGroupAccounts(owner:string){
     group:d,
     accountStatus:aid&&accStatus.has(aid)?accStatus.get(aid)!:null,
     previousAccountStatus:prev&&accStatus.has(prev)?accStatus.get(prev)!:null,
+    // A group never waits on an account with a Telegram block signal.
+    accountJoinBlock:accBlock.get(aid)??null,
+    previousAccountJoinBlock:accBlock.get(prev)??null,
    });
    const joinBusy=['queued','waiting','joining','scanning'].includes(String(d.joinState||''));
 
@@ -1314,7 +1322,7 @@ async function healDeadGroupAccounts(owner:string){
      lastScanned:'',
      joinState:'queued',
      joinStateAt:new Date().toISOString(),
-     joinStateError:'Аккаунт отключён Telegram — группа переназначена',
+     joinStateError:accBlock.get(aid)?'Аккаунт заблокирован Telegram — группа переназначена':'Аккаунт отключён Telegram — группа переназначена',
      ...JOIN_SUCCESS_PATCH,
     });
     reassigned++;
@@ -1399,7 +1407,7 @@ function workerLooksDeadAccount(result:any){
 }
 
 /** Пометить hard-dead аккаунт и пересадить группу на живой. Cooldown / смесь не трогаем через этот путь. */
-async function rotateGroupOffDeadAccount(owner:string,gid:string,gdata:any,deadAccountId:string,accountPatch:Record<string,unknown>){
+async function rotateGroupOffDeadAccount(owner:string,gid:string,gdata:any,deadAccountId:string,accountPatch:Record<string,unknown>,opts:{dropMembership?:boolean}={}){
  const db=database();
  if(deadAccountId){
   const arow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,deadAccountId,'account').first();
@@ -1414,9 +1422,10 @@ async function rotateGroupOffDeadAccount(owner:string,gid:string,gdata:any,deadA
  if(!live.length)return {ok:false as const,gdata};
  const nextAcc=live[0];
  if(!nextAcc||nextAcc===gdata.accountId)return {ok:false as const,gdata};
- if(groupLooksJoined(gdata))return {ok:false as const,gdata};
+ if(groupLooksJoined(gdata)&&!opts.dropMembership)return {ok:false as const,gdata};
  const next={
   ...gdata,
+  ...(groupLooksJoined(gdata)?{joinedAt:'',joinedAccountId:''}:{}),
   accountId:nextAcc,
   membership:'none' as const,
   status:'setup',
@@ -2178,6 +2187,11 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   let adata=JSON.parse(arow.data);
   let rotatedAccount=false;
   let gate=await accountJoinGate(owner,adata);
+  // Членство принадлежит этому слоту: с любым сигналом блокировки Telegram он не вступает (heal пересадит группу).
+  const ownBlock=alreadyIn?accountTelegramBlock(adata):null;
+  if(ownBlock){
+   return reply({error:'Аккаунт группы заблокирован Telegram — вступления с него остановлены, автопочинка переназначит группу',accountUnavailable:true,reason:ownBlock,group:gdata},409);
+  }
   // Членство принадлежит аккаунту группы: обновление peer другим слотом не сделать, ферму не крутим
   if(!alreadyIn&&!gate.ok){
    const farm=await listJoinFarmCandidates(owner);
@@ -2190,7 +2204,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     rotatedAccount=true;
     gate=await accountJoinGate(owner,adata);
     try{await appendGlobalRescanLog(owner,'info',`${gdata.name||'Группа'}: ферма ${fromId.slice(0,8)} → ${pick.id.slice(0,8)}`)}catch{/* */}
-   }else if(!pick&&gate.reason!=='cooldown'&&gate.reason!=='spamblock'&&gate.reason!=='frozen'&&gate.reason!=='resolve_blind'){
+   }else if(!pick&&!['cooldown','spamblock','frozen','deleted','flood','resolve_blind'].includes(gate.reason)){
     const inviteLimit=Number(adata.limits?.invite??DEFAULT_ACCOUNT_LIMITS.invite);
     return reply({
      error:gate.reason==='quota'
@@ -2209,6 +2223,9 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      waitSec:until?Math.max(60,Math.ceil((Date.parse(until)-Date.now())/1000)||300):300,
      cooldown:true,
     },429);
+   }
+   if(gate.reason==='flood'){
+    return reply({error:gate.message,waitSec:gate.waitSec,flood:true,cooldown:true,group:gdata},429);
    }
    if(gate.reason==='resolve_blind'){
     return reply({
@@ -2248,7 +2265,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const accountBlind=isAccountBlindResult(result);
    // Сессия/прокси/коннект упали — вина аккаунта, не группы (frozen обрабатывается ниже)
    const accountFault=!frozen&&!result.ok&&JOIN_ACCOUNT_FAULT_STATUSES.includes(String(result.status||''));
-   const workerTransient=!frozen&&!result.ok&&JOIN_WORKER_TRANSIENT_STATUSES.includes(String(result.status||''));
+   // controlUnknown: the worker could not run its @telegram control (FloodWait/network) — neither side is to blame.
+   const workerTransient=!frozen&&!result.ok&&(JOIN_WORKER_TRANSIENT_STATUSES.includes(String(result.status||''))||result.controlUnknown===true);
    const joinedOk=!!result.ok||result.join==='already'||result.join==='requested';
    // «already» не шлёт JoinChannel — дневной лимит и паузу не тратит
    const spentJoin=joinedOk&&result.join!=='already';
@@ -2270,6 +2288,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     ...(joinedOk?{...JOIN_SUCCESS_PATCH,joinBlindAccounts:[]}:flood||accountBlind||accountFault?{}:workerTransient?{joinNextAt:new Date(Date.now()+JOIN_WORKER_ERROR_RETRY_MS).toISOString()}:joinFailurePatch(gdata)),
     // Слеп аккаунт, не группа: без «ошибки» и с паузой — иначе автопочинка каждые 5 мин гоняет её по ферме.
     ...(accountBlind&&!joinedOk?accountBlindDeferPatch(gdata,String(gdata.accountId)):{}),
+    // The worker could not run its own control: the group is not to blame, no error status.
+    ...(result.controlUnknown===true&&!joinedOk?{status:'setup'}:{}),
     name:result.title&&(!gdata.name||gdata.name.startsWith('http')||gdata.name==='Группа')?result.title:gdata.name,
    };
    // accessHash только от фактического join/already этой сессии
@@ -2311,10 +2331,10 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    if(frozen){
     const cooled=withFrozenStatus(adata,result.error||'Аккаунт заморожен Telegram');
     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(cooled),owner,gdata.accountId,'account').run();
-    const rotated=await rotateGroupOffDeadAccount(owner,id,gdata,gdata.accountId,{status:'frozen',error:(result.error||'Аккаунт заморожен Telegram').slice(0,500)});
-    if(rotated.ok){
-     return reply({ok:false,accountFrozen:true,reassigned:true,needJoin:true,rejoinItem:rotated.rejoinItem,group:rotated.gdata,result:{...result,status:'error'},error:'Аккаунт заморожен — группа переназначена на живой аккаунт',joinGapSec:JOIN_GAP_DEFAULT_SEC});
-    }
+    // Frozen is permanent: even a joined group leaves it (its membership is useless), the owner is not asked to.
+    const rotated=await rotateGroupOffDeadAccount(owner,id,next,gdata.accountId,{status:'frozen',error:(result.error||'Аккаунт заморожен Telegram').slice(0,500)},{dropMembership:true});
+    const msg=rotated.ok?'Аккаунт заморожен Telegram — группа переназначена на живой аккаунт':'Аккаунт заморожен Telegram — живых аккаунтов нет, группа ждёт автопочинку';
+    return reply({ok:false,accountFrozen:true,reassigned:rotated.ok,needJoin:rotated.ok,...(rotated.ok?{rejoinItem:rotated.rejoinItem}:{}),group:rotated.gdata,result:{ok:false,status:'error',join:'frozen',error:msg},error:msg,joinGapSec:JOIN_GAP_DEFAULT_SEC});
    }
    if(accountBlind&&!joinedOk){
     const minutes=Math.ceil((Date.parse(String(next.joinNextAt))-Date.now())/60_000);
@@ -2347,6 +2367,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   if(!gdata.accountId)return reply({error:'Назначьте аккаунт группе'},400);
   if(isCatalogPlaceholderUrl(gdata.url||''))return reply({error:'Нужна реальная ссылка t.me/… или инвайт (это шаблон каталога)',needUrl:true},400);
   // Hard-dead аккаунт → переназначение. Cooldown / отлёжка — смесь не трогаем.
+  let scanJoinBlocked=false;
   {
    const arow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,gdata.accountId,'account').first();
    const adata=arow?JSON.parse(arow.data):null;
@@ -2370,7 +2391,9 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     const healedAcc={...adata,status:'active',cooldownUntil:'',error:''};
     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(healedAcc),owner,gdata.accountId,'account').run();
    }
-   if(isHardDeadAccountStatus(st)){
+   scanJoinBlocked=isAccountJoinBlocked(adata);
+   // Suspected Telegram-deleted account (blind on @telegram): out of every use, like a hard-dead one.
+   if(isHardDeadAccountStatus(st)||isDeletedSuspect(adata)){
     if(groupLooksJoined(gdata)){
      return reply({error:'Аккаунт недоступен — группа уже была вступившей, скан с этого слота пропущен',accountDead:true,preserved:true,group:gdata},409);
     }
@@ -2436,7 +2459,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   try{
   try{
    const {payload}=await loadAccountSessionPayload(owner,gdata.accountId);
-   const result=await workerPost('/scan-group',{...payload,url:gdata.url,keywords,minusKeywords,limit:scanLimit,days:scanDepthDays,minId:String(gdata.scanCursor||'')});
+   // allowJoin:false — the worker must not JoinChannel a discussion with a Telegram-blocked account.
+   const result=await workerPost('/scan-group',{...payload,url:gdata.url,keywords,minusKeywords,limit:scanLimit,days:scanDepthDays,minId:String(gdata.scanCursor||''),allowJoin:!scanJoinBlocked});
     if(!result.ok){
     if(workerLooksDeadAccount(result)){
      const frozen=workerLooksFrozen(result);
@@ -2456,6 +2480,14 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
        error:frozen?'Аккаунт заморожен — группа переназначена':'Аккаунт недоступен — группа переназначена',
       },409);
      }
+    }
+    // «Не видит @» от слепого слота или при сбое контрольной проверки — вина аккаунта, не группы: без ошибки группе.
+    if(isAccountBlindResult(result)||result.controlUnknown===true){
+     if(isAccountBlindResult(result)){
+      const arow=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,gdata.accountId,'account').first<{data:string}>();
+      if(arow)await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...JSON.parse(arow.data),...accountBlindPatch(),...deletedSuspectPatch(),error:String(result.error||'').slice(0,500)}),owner,gdata.accountId,'account').run();
+     }
+     return reply({ok:false,skipped:true,accountBlind:isAccountBlindResult(result),error:String(result.error||'Аккаунт не смог проверить группу').slice(0,500),group:gdata},409);
     }
     // Слот не резолвит публичный @ — пробуем другой живой аккаунт (ферма часто врёт)
     const usernameMissing=!!result.usernameMissing||result.join==='missing'||/не видит @|no user has|nobody is using|username_not_occupied/i.test(String(result.error||''));
@@ -3353,7 +3385,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    if(!a)return false;
    // status=cooldown без вида лимита (даже с истёкшим таймером) — для сбора не берём; дневной лимит ЛС/вступлений чтению не мешает
    if(String(a.status||'')==='cooldown'&&dayLimitCooldownKind(a)===null)return false;
-   return isAccountUsable(a);
+   // Сбор может вступать в источник: аккаунт с сигналом блокировки Telegram не берём.
+   return isAccountUsable(a)&&!isAccountJoinBlocked(a);
   });
   // Аккаунт, уже вступивший в этот источник (из «Группы») — первым
   let preferId='';
@@ -3585,6 +3618,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    if(joinBlind||isDeadSessionError(joinErr)){
     if(isDeadSessionError(joinErr)){
      try{await putAccountUnauthorized(owner,accountId,account,{lastError:joinErr})}catch{/* */}
+    }else if(isAccountBlindResult(joinRes)){
+     await saveAccount(accountId,{...account,...accountBlindPatch(),...deletedSuspectPatch(),error:joinErr.slice(0,500)});
     }
     // Ротация: пробуем следующий слот на следующем тике
     const next={
@@ -3810,13 +3845,14 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   }
   const liveIds=accountIds.filter(aid=>{
    const a=accMap.get(aid);
-   return isAccountUsable(a)&&hasMemberInviteQuota(a)&&!isAccountResolveBlind(a);
+   // Инвайт начинается с вступления в целевую группу: аккаунт с сигналом блокировки Telegram не берём.
+   return isAccountUsable(a)&&hasMemberInviteQuota(a)&&!isAccountJoinBlocked(a);
   });
   if(!liveIds.length){
    // Все рабочие слоты слепы на ResolveUsername — не логиним их по кругу, ждём конца отлёжки
    const blindEnds=accountIds
     .map(aid=>accMap.get(aid))
-    .filter(a=>isAccountUsable(a)&&isAccountResolveBlind(a))
+    .filter(a=>isAccountResolveBlind(a))
     .map(a=>Date.parse(String(a.resolveBlindUntil)))
     .sort((a,b)=>a-b);
    if(blindEnds.length){
@@ -3927,7 +3963,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     const pause=randomPauseSec(data.pauseFromSec,data.pauseToSec);
     if(isAccountBlindResult(joinRes)){
      // Слот слеп — убираем из ротации на отлёжку, иначе задача логинит его каждый круг
-     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...(accMap.get(accountId)||{}),...accountBlindPatch(),error:String(joinRes.error||'').slice(0,500)}),owner,accountId,'account').run();
+     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...(accMap.get(accountId)||{}),...accountBlindPatch(),...deletedSuspectPatch(),error:String(joinRes.error||'').slice(0,500)}),owner,accountId,'account').run();
     }
     logEntries.push({level:'error',text:`Аккаунт ${bracketLabel(accountLabel)} не смог вступить в группу: ${String(joinRes.error||'').slice(0,120)}`});
     // Цель не видит ни один живой слот подряд — это цель, а не ферма: стоп вместо вечной ротации (REQ-V2)
@@ -3970,10 +4006,10 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const accBefore=accRow?JSON.parse(accRow.data):(accMap.get(accountId)||{});
    const outcome=interpretInviteWorkerResult(result,accBefore);
    if(outcome.accountPatch){
-    const accountPatch=outcome.kind==='account_blind'?{...outcome.accountPatch,...accountBlindPatch()}:outcome.accountPatch;
+    const accountPatch=outcome.kind==='account_blind'?{...outcome.accountPatch,...accountBlindPatch(),...deletedSuspectPatch()}:outcome.accountPatch;
     await updateInviteAccount(accountId,accountPatch);
    }else if(outcome.kind==='account_blind'){
-    await updateInviteAccount(accountId,{...accBefore,...accountBlindPatch(),error:outcome.message});
+    await updateInviteAccount(accountId,{...accBefore,...accountBlindPatch(),...deletedSuspectPatch(),error:outcome.message});
    }
    if(outcome.kind==='spamblock'){
     logEntries.push({level:'error',text:`Аккаунт ${bracketLabel(accountLabel)} получил блокировку на неопределённое время (PEER_FLOOD)`});

@@ -130,6 +130,8 @@ export function isAccountUsable(data: {
   cooldownReason?: unknown;
   deletedSuspectAt?: string | null;
   controlBlindSince?: string | null;
+  resolveBlindUntil?: string | null;
+  error?: string | null;
 } | null | undefined): boolean {
   if (!data) return false;
   if (isDeletedSuspect(data)) return false;
@@ -210,20 +212,75 @@ export function canPollDmInbox(data: {
 /** A second soft «@telegram and @durov unresolvable» check this long after the first confirms 'deleted'. */
 export const DELETED_CONFIRM_AFTER_MS = 6 * 60 * 60_000;
 
+/** Начало ошибки «слепого» ответа воркера (check_account.py::_resolve_entity, accountBlind). */
+export const BLIND_ERROR_PREFIX = "Аккаунт не резолвит даже @telegram";
+
 export type DeletedSuspectState = {
   status?: string | null;
+  error?: string | null;
+  resolveBlindUntil?: string | null;
   deletedSuspectAt?: string | null;
   controlBlindSince?: string | null;
 };
 
 /**
- * Soft signs of an account deleted by Telegram: blind on @telegram at a join (deletedSuspectAt) or on @telegram
- * and @durov at a check (controlBlindSince). Such an account is out of every use until a clean recheck; a deleted
- * account still logs in, but for others it is «Удалённый аккаунт» and resolves no @username.
+ * Soft signs of an account deleted by Telegram: blind on @telegram at a join (deletedSuspectAt, resolveBlindUntil —
+ * live or expired, the blind error) or on @telegram and @durov at a check (controlBlindSince). Such an account is out
+ * of every use until a clean recheck: an expired resolveBlindUntil alone must not bring it back. A deleted account
+ * still logs in, but for others it is «Удалённый аккаунт» and resolves no @username.
  */
 export function isDeletedSuspect(data: DeletedSuspectState | null | undefined): boolean {
   if (!data) return false;
-  return !!data.deletedSuspectAt || !!data.controlBlindSince;
+  return (
+    !!data.deletedSuspectAt ||
+    !!data.controlBlindSince ||
+    !!data.resolveBlindUntil ||
+    String(data.error || "").startsWith(BLIND_ERROR_PREFIX)
+  );
+}
+
+/** Statuses Telegram itself put on the account: never joins. */
+const TELEGRAM_BLOCK_STATUSES = new Set(["spamblock", "frozen", "deleted", "unauthorized"]);
+
+export type TelegramBlockState = DeletedSuspectState & {
+  /** FloodWait on a join (pace) and on any other call (mailing): Telegram asked for a pause. */
+  joinFloodUntil?: string | null;
+  floodUntil?: unknown;
+};
+
+export type TelegramBlock =
+  | "spamblock"
+  | "frozen"
+  | "deleted"
+  | "unauthorized"
+  | "resolve_blind"
+  | "suspect"
+  | "flood";
+
+function liveUntil(v: unknown, now: number): boolean {
+  const t = Date.parse(String(v || ""));
+  return Number.isFinite(t) && t > now;
+}
+
+/**
+ * Why the account must not join anything («never join with accounts that caught a Telegram block»), or null.
+ * Every join path (join_group, farm, heal, scan discussion join, audience and invite ticks) asks this one predicate.
+ */
+export function accountTelegramBlock(
+  data: TelegramBlockState | null | undefined,
+  now = Date.now(),
+): TelegramBlock | null {
+  if (!data) return null;
+  const st = String(data.status || "");
+  if (TELEGRAM_BLOCK_STATUSES.has(st)) return st as TelegramBlock;
+  if (liveUntil(data.resolveBlindUntil, now)) return "resolve_blind";
+  if (isDeletedSuspect(data)) return "suspect";
+  if (liveUntil(data.joinFloodUntil, now) || liveUntil(data.floodUntil, now)) return "flood";
+  return null;
+}
+
+export function isAccountJoinBlocked(data: TelegramBlockState | null | undefined, now = Date.now()): boolean {
+  return accountTelegramBlock(data, now) !== null;
 }
 
 /** «Перепроверить проблемные»: не активный аккаунт или активный с признаком удаления Telegram. */
@@ -233,8 +290,8 @@ export function needsAccountRecheck(data: DeletedSuspectState | null | undefined
 }
 
 /** A clean check proved the account alive: drop every soft «deleted» sign. */
-export function clearedSuspectPatch(): { deletedSuspectAt: string; controlBlindSince: string } {
-  return { deletedSuspectAt: "", controlBlindSince: "" };
+export function clearedSuspectPatch(): { deletedSuspectAt: string; controlBlindSince: string; resolveBlindUntil: string } {
+  return { deletedSuspectAt: "", controlBlindSince: "", resolveBlindUntil: "" };
 }
 
 /** Telegram block verdicts only the server writes (check, join, scan); an account form save never sets or clears them. */
@@ -257,6 +314,8 @@ export function keepServerOwnedAccountFields(
   if (prevStatus === "deleted" || (out.status === "deleted" && prevStatus !== "deleted")) {
     out.status = prevStatus || "setup";
   }
+  // The blind error is itself a block sign (isDeletedSuspect): a form cannot wipe it either.
+  if (String(prev.error || "").startsWith(BLIND_ERROR_PREFIX)) out.error = prev.error;
   return out;
 }
 
