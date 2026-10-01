@@ -151,6 +151,11 @@ function viewRecord<T extends WorkspaceRecordView>(actor:WorkspaceActor,rec:T):T
  return null;
 }
 
+/** May the actor see records of this kind at all (owner, or a member with that section). */
+export function canViewKind(actor:WorkspaceActor,kind:RecordKind):boolean{
+ return actor.isOwner||hasAnyAccess(actor,KIND_ACCESS[kind]);
+}
+
 /** GET projection: drop kinds outside the member's sections, strip owner-only secrets. */
 export function visibleRecordsFor<T extends WorkspaceRecordView>(actor:WorkspaceActor,records:readonly T[]):T[]{
  if(actor.isOwner)return [...records];

@@ -321,7 +321,8 @@ export function tmeMissingPatch(username: string, now = Date.now()): Record<stri
   return {
     ...deadLinkPatch(tmeMissingMessage(username)),
     tmeMissing: true,
-    tmeCheckedAt: new Date(now).toISOString(),
+    tmeProbe: "dead",
+    tmeProbeAt: new Date(now).toISOString(),
   };
 }
 
