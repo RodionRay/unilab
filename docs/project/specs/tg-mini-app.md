@@ -1,9 +1,10 @@
 ---
-status: draft (plan-only 2026-10-01; awaiting owner answers Q1–Q5, then build)
+status: building (owner answered Q1–Q5 = defaults 2026-10-01)
 size: full
 model: claude-opus-5-5 (effort: session)
 budget: 600M tokens
-base: dev @671338d — depends on unmerged origin/task/chats-first-contact-tg-bot-2026-10-01 + origin/fix/bot-group-replies-2026-10-01 (W0)
+base: dev @671338d + merged locally origin/fix/bot-group-replies-2026-10-01 (contains task/chats-first-contact-tg-bot-2026-10-01) @69c1413
+# gate baseline @69c1413: vitest 705/705 · tsc 45 errors · lint 256 problems (237 errors) — red base, must not grow
 integration: task/tg-mini-app-2026-10-01
 gates: security-reviewer (auth, new route, multi-tenant) · code-reviewer · verifier · /ui-task design panel · e2e
 ---
@@ -135,51 +136,41 @@ Source: read-only scout of origin/dev @671338d + Telegram docs (core.telegram.or
 ## Assumptions ledger
 | # | Assumption | Source / confidence | If wrong |
 |---|---|---|---|
-| A1 | Users = all workspace members with their web permissions, not owner-only | owner intent «управление проектом», staff model exists; medium | Q1 |
+| A1 | Users = all workspace members with their web permissions | DECIDED D1 | — |
 | A2 | Bot = the workspace's own notify bot (no platform bot) | code: per-workspace `notifyBotToken`; high | Q? none — platform bot would be a new deployable |
-| A3 | Bot-polling branches land in dev before W1 | they hold `parseBotUpdate` + poller we need for `/start`; high | W0 rebases onto them |
+| A3 | Bot-polling branches merged into the integration branch locally | DECIDED (coordinator) | PR supersedes them |
 | A4 | Launch via Bot API only (menu button + inline web_app), no BotFather Main Mini App | per-bot manual step doesn't scale; high | add startapp links later |
-| A5 | No public prod; testing = stand + HTTPS tunnel + a dedicated test bot | STATE/handoffs, no deploy config; high | Q4 |
-| A6 | MVP excludes settings, staff, proxies, groups CRUD, deletes, AI assistant chat | risk + 390 px effort; medium | Q2 |
+| A5 | No public prod; testing = stand + HTTPS tunnel + a dedicated test bot | DECIDED D4 | — |
+| A6 | MVP excludes settings, staff, proxies, groups CRUD, deletes, AI assistant chat | DECIDED D2 | — |
 | A7 | `TMA_INITDATA_MAX_AGE` 1 h, bearer 1 h, reopen to renew | Telegram common practice; medium | config value |
 | A8 | Feed endpoints new (`/api/tma/*`), actions reuse `R::POST` handlers | avoid duplicating 5000-line logic; high | — |
 | A9 | Bot token stays plaintext in settings (move to sealed `secret` = separate task) | out of scope; flagged risk | security-reviewer may block |
-| A10 | Visual language: Telegram-native (theme params), not Spike desktop tokens | mini-app UX norm; medium | Q5 |
+| A10 | Visual language: Telegram theme params + UniLab accent | DECIDED D5 | — |
 
-## Owner questions (≤5, each with default)
-- Q1 Who may open it — all linked staff with their web permissions, or owner only? **Default: all staff, web
-  permissions ∩ mobile allowlist.**
-- Q2 MVP screens = Inbox+reply, Accounts health, Tasks start/pause, Overview? Anything must-have beyond (e.g. scan a
-  new group by link)? **Default: those four; scan-by-link in v1.1.**
-- Q3 Private-chat notices with «Открыть» per member (opt-in), keeping the group? **Default: yes, opt-in.**
-- Q4 Public HTTPS home: stable hostname via named Cloudflare Tunnel on your domain, or quick tunnel (URL changes on
-  restart, menu button re-set by script)? **Default: quick tunnel for the stand now; named tunnel when a domain exists.**
-- Q5 Look: native Telegram theme (follows user's light/dark) vs UniLab brand colours? **Default: Telegram theme +
-  UniLab accent.**
+## Owner decisions (2026-10-01, all = recommended defaults)
+- D1 (Q1) All linked staff; permissions = web role/access ∩ `TMA_ACTIONS`. → A1 decided.
+- D2 (Q2) MVP = Inbox+reply, Accounts health, Tasks start/pause, Overview; scan-by-link → v1.1. → A6 decided.
+- D3 (Q3) Opt-in private DM notices with «Открыть» per member; group notices unchanged.
+- D4 (Q4) Stand: quick tunnel + dedicated test bot; `scripts/tma-dev.mjs` re-sets the menu button. → A5 decided.
+- D5 (Q5) Telegram theme params + UniLab accent. → A10 decided.
 
-## Milestones / waves (split by file ownership)
-- **W0 prerequisite** — owner opens + merges PRs for `task/chats-first-contact-tg-bot-2026-10-01` and
-  `fix/bot-group-replies-2026-10-01` into dev; rebase `task/tg-mini-app-2026-10-01`. (Blocks W1-C.)
-- **W1 (parallel, 3 subtasks → PRs into `task/tg-mini-app-2026-10-01`)**
-  - W1-A auth core — owns `lib/tma/init-data.ts` (HMAC, parse, freshness), `lib/tma/session.ts` (bearer mint/verify),
-    `lib/tma/links.ts` (tables `tma_links`, `tma_link_codes`, `CREATE TABLE IF NOT EXISTS` + `drizzle/0002_tma.sql`),
-    `app/api/tma/session/route.ts`, tests `tests/tma-*.test.ts` (REQ-A1–A4, A8, L1 code mint, L3, L5 unit).
-  - W1-B shell — owns `app/tma/[wsKey]/*`, `components/tma/*`, `lib/tma/client.ts` (SDK typings, bearer fetch),
-    `lib/security/headers.ts` + `next.config.ts` path exception, `scripts/tma-dev.mjs` (tunnel URL → set menu button)
-    (REQ-S1–S5 against a mocked API contract `lib/tma/contract.ts` written first by the orchestrator).
-  - W1-C bot — owns `lib/telegram-bot.ts` additions (`/start link_` handling, `setChatMenuButton`, web_app notice
-    button), poller hook in `app/api/cron/tasks-tick/route.ts`, settings UI block «Telegram-приложение» in
-    `components/product/*` settings panel (REQ-L1 UI, L2, L4, N1, N2).
-- **W2 (after W1-A)**
-  - W2-D actor + API — owns `R::readActor` bearer branch, `AZ::TMA_ACTIONS`, `app/api/tma/feed/route.ts`
-    (REQ-A5–A7, A9, M-reads). Minimal diff in `R`.
-  - W2-E screens via `/ui-task` (`ui-builder` rounds + design panel) — owns `app/tma/[wsKey]/(screens)/*`,
-    `components/tma/screens/*` (REQ-M1–M6).
-- **W3 integration** — Playwright e2e, stand port, tunnel + real-phone smoke, code-reviewer + security-reviewer +
-  verifier, docs, ONE PR → dev.
-
-Contract first: the orchestrator writes `lib/tma/contract.ts` (zod types for session + feed + action payloads) before
-W1 so W1-B and W2-E build against it.
+## Milestones / waves (split by file ownership) — as executed
+- **W0 done** — bot branches merged locally into `task/tg-mini-app-2026-10-01` (69c1413). The PR must merge after
+  (or supersede) `task/chats-first-contact-tg-bot-2026-10-01` + `fix/bot-group-replies-2026-10-01`.
+- **Orchestrator** — `lib/tma/contract.ts` (API contract), Playwright devDependency + config, spec/docs.
+- **W1 (parallel, local subtask branches → integration branch)**
+  - `tma-auth` [backend] — owns `lib/tma/{init-data,session,links,feed,actor}.ts`, `app/api/tma/**`,
+    `R::readActor` bearer branch, `AZ` tma allowlist, `drizzle/0002_tma.sql`, `tests/tma-*.test.ts`
+    (REQ-A1–A9, L1, L3–L5 server side, M1–M5 reads).
+  - `tma-ui` [frontend, ui-builder] — owns `app/tma/**`, `components/tma/**`, `lib/tma/client.ts`,
+    `lib/security/headers.ts` + `next.config.ts` exception, `e2e/**`, `playwright.config.ts`
+    (REQ-S1–S5, M1–M6 client) against the contract with mocked API.
+- **W2 (after tma-auth)**
+  - `tma-bot` [backend+settings UI] — owns `lib/telegram-bot.ts` additions, `R::pollBotUpdates`/`handleBotCommand`/
+    notify functions, web settings block «Telegram-приложение», `scripts/tma-dev.mjs`, `tests/tma-bot*.test.ts`
+    (REQ-L1 UI, L2, L4, N1, N2).
+- **W3 integration** — e2e against the real API on a local build, stand port + tunnel smoke, code-reviewer +
+  security-reviewer + verifier, docs, ONE PR → dev (body in untracked `.git-pr-body.md`; owner pushes).
 
 ## Verification plan
 - Unit (vitest): HMAC vectors (valid, tampered field, reordered, wrong token, URL-encoding of `user`), freshness edges
@@ -208,7 +199,7 @@ W1 so W1-B and W2-E build against it.
 - `R::POST` Origin check stays; tma requests come from our own origin.
 
 ## Risks
-- R1 Dependency on unmerged bot branches (W0) and the polling-only bot (a webhook would conflict).
+- R1 PR carries the unmerged bot branches (W0) — merge order matters; polling-only bot (a webhook would conflict).
 - R2 Monolith `R` (5000 lines): bearer branch in `readActor` touches every action — needs the allowlist test matrix.
 - R3 No public HTTPS: quick-tunnel hostname churn; the menu button URL must be re-set on each restart.
 - R4 Group-based notices can't carry web_app buttons → value depends on members DMing the bot (Q3).

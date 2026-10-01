@@ -21,7 +21,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "seed:tgstat-catalog": "tsx scripts/seed-tgstat-catalog-groups.ts",
-    "heal:joinstate": "node scripts/heal-joinstate-error.mjs"
+    "heal:joinstate": "node scripts/heal-joinstate-error.mjs",
+    "e2e": "playwright test"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
@@ -57,6 +58,7 @@
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.37.1",
     "@cloudflare/workers-types": "4.20260515.1",
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "4.2.1",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.19.19",
