@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
-import { ExternalLink, Loader2, RefreshCw, Smartphone, Unlink } from 'lucide-react';
+import { AlertTriangle, ExternalLink, Loader2, RefreshCw, Smartphone, Unlink } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import {
@@ -58,6 +58,8 @@ async function postLink(action: LinkAction, extra: { enabled?: boolean } = {}): 
 
 const LINK_CLASS = 'rounded-full min-h-10 max-sm:min-h-11! px-[18px] font-semibold';
 const BTN_CLASS = 'max-sm:min-h-11!';
+/** `.settings-check span { flex: 1 }` (globals.css) would stretch the switch thumb; keep it a fixed circle. */
+const SWITCH_CLASS = 'mt-1 data-[state=unchecked]:bg-white/20! [&>[data-slot=switch-thumb]]:flex-none! [&>[data-slot=switch-thumb]]:p-0! [&>[data-slot=switch-thumb]]:bg-white!';
 
 /** A failed toggle or a lost link is retried as a status refresh, never as a blind repeat. */
 function retryAction(failure: LinkFailure): LinkAction {
@@ -258,28 +260,38 @@ function LinkedBody({ status, busy, run, onUnlink }: LinkedProps) {
   const dmText = describeDmError(status.dmError);
   return (
     <>
-      <p className="settings-check cursor-default" data-testid="tma-linked">
-        <span>
-          Подключено: <strong className="[overflow-wrap:anywhere]">{status.tgUsername ? `@${status.tgUsername}` : 'Telegram без username'}</strong>
-          <span className="settings-hint block mt-1">Мини-приложение открывается кнопкой в чате с ботом. Права те же, что у вас в кабинете.</span>
-        </span>
-      </p>
+      <div data-testid="tma-linked">
+        <p className="text-sm font-semibold text-[var(--spike-text)] [overflow-wrap:anywhere]">
+          <span className="text-[var(--spike-muted)] font-medium">Подключено: </span>
+          {status.tgUsername ? `@${status.tgUsername}` : 'Telegram без username'}
+        </p>
+        <p className="settings-hint mt-1">Приложение открывается кнопкой в чате с ботом. Права те же, что у вас в кабинете.</p>
+      </div>
       <label className="settings-check" htmlFor="tma-dm-switch">
         <span>
           Личные уведомления о горячих лидах и ответах
           <span className="settings-hint block mt-1">Бот пишет вам в личный чат с кнопкой «Открыть» на нужного лида</span>
+          {dmText && (
+            <span id="tma-dm-error" role="alert" className="mt-2 flex items-start gap-1.5 text-xs font-medium leading-snug text-[var(--spike-error)]">
+              <AlertTriangle size={13} className="mt-px shrink-0" aria-hidden/>{dmText}
+            </span>
+          )}
         </span>
         {busy === 'set_dm_notices' && <Loader2 size={14} className="animate-spin mt-1 shrink-0" aria-hidden/>}
         <Switch
           id="tma-dm-switch"
-          className="mt-1"
+          className={SWITCH_CLASS}
           checked={status.dmNotices}
           disabled={busy !== null}
           aria-describedby={dmText ? 'tma-dm-error' : undefined}
           onCheckedChange={(v) => void run('set_dm_notices', { enabled: v })}
         />
       </label>
-      {dmText && <p id="tma-dm-error" className="form-error" role="alert">{dmText}</p>}
+      {!status.appUrl && (
+        <p className="settings-hint" data-testid="tma-no-app-url">
+          Кнопка «Открыть приложение» появится, когда у UniLab будет публичный https-адрес (APP_URL): Telegram открывает только https.
+        </p>
+      )}
       <div className="settings-actions-btns">
         {status.appUrl && (
           <Button asChild className={LINK_CLASS}>
@@ -292,11 +304,6 @@ function LinkedBody({ status, busy, run, onUnlink }: LinkedProps) {
           {busy === 'unlink' ? <Loader2 size={15} className="animate-spin" aria-hidden/> : <Unlink size={15} aria-hidden/>}Отключить
         </Button>
       </div>
-      {!status.appUrl && (
-        <p className="settings-hint" data-testid="tma-no-app-url">
-          Кнопка приложения появится, когда у UniLab будет публичный https-адрес (APP_URL): Telegram открывает только https.
-        </p>
-      )}
     </>
   );
 }

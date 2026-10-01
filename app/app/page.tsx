@@ -4194,7 +4194,7 @@ function WorkspaceHome(){
                 </div>
               </section>
 
-              <TmaLinkPanel key={String(workspaceMeta?.isOwner)+Boolean(settings?.data?.notifyBotToken)} botConfigured={workspaceMeta?.isOwner?Boolean(String(settings?.data?.notifyBotToken||'').trim()):null}/>
+              {workspaceMeta&&<TmaLinkPanel key={`${workspaceMeta.isOwner}-${!!String(settings?.data?.notifyBotToken||'').trim()}`} botConfigured={workspaceMeta.isOwner?!!String(settings?.data?.notifyBotToken||'').trim():null}/>}
 
               <div className="settings-actions">
                 <p className="settings-actions-note">

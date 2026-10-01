@@ -12,7 +12,6 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  */
 const SECRET = process.env.TMA_E2E_SESSION_SECRET ?? "";
 const SHOTS = process.env.TMA_SETTINGS_SHOTS ?? "";
-const NOW = new Date("2026-10-01T09:00:00Z").getTime();
 const USER = { id: "u-e2e-owner", email: "anna@example.test", name: "Анна Орлова" };
 const APP_URL = "https://crm.unilab.example/tma/Wk3yQ9mZ2bX7pL4sT8vN";
 const START_LINK = "https://t.me/unilab_leads_bot?start=link_Q2x9vT4mZp8RkY3wN6sLb0Hc";
@@ -121,7 +120,7 @@ test.describe("Telegram-приложение in settings", () => {
   });
 
   test("connect → start link (new tab) + countdown → polls every 4 s → linked", async ({ page }) => {
-    await page.clock.install({ time: NOW });
+    await page.clock.install({ time: Date.now() });
     let polls = 0;
     const { calls } = await openSettings(page, {
       handler: (action) => {
@@ -147,7 +146,7 @@ test.describe("Telegram-приложение in settings", () => {
   });
 
   test("code expires → polling stops, «Получить новую ссылку»", async ({ page }) => {
-    await page.clock.install({ time: NOW });
+    await page.clock.install({ time: Date.now() });
     const { calls } = await openSettings(page);
     await panel(page).getByRole("button", { name: "Подключить Telegram" }).click();
     await expect(panel(page).getByTestId("tma-countdown")).toBeVisible();
@@ -163,7 +162,7 @@ test.describe("Telegram-приложение in settings", () => {
   });
 
   test("hidden tab skips polls; visible again polls at once", async ({ page }) => {
-    await page.clock.install({ time: NOW });
+    await page.clock.install({ time: Date.now() });
     const { calls } = await openSettings(page);
     await panel(page).getByRole("button", { name: "Подключить Telegram" }).click();
     await expect(panel(page).getByTestId("tma-countdown")).toBeVisible();
@@ -257,7 +256,8 @@ test.describe("Telegram-приложение in settings", () => {
 
   test("touch targets ≥44 px and no horizontal scroll at 390", async ({ page }) => {
     await openSettings(page, { link: LINKED });
-    for (const el of await panel(page).locator("button, a").all()) {
+    // The switch thumb is small by design; its whole label row is the hit area (checked below).
+    for (const el of await panel(page).locator("button:not([role=switch]), a").all()) {
       const box = await el.boundingBox();
       expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
     }
@@ -272,7 +272,7 @@ test.describe("desktop 1440 screenshots", () => {
   test.skip(!SHOTS, "screenshots only");
 
   test("every state at 1440", async ({ page }) => {
-    await page.clock.install({ time: NOW });
+    await page.clock.install({ time: Date.now() });
     await openSettings(page);
     await shot(page, "1-not-linked");
     await panel(page).getByRole("button", { name: "Подключить Telegram" }).click();
