@@ -1,6 +1,8 @@
 # STATE (partial — task note only; regenerate via /project-sync)
 
 ## Now
+- task/fix-rescan-starvation-2026-10-01 (worktree ~/worktrees/wt-unilab-fix-rescan-starvation): auto-rescan starved on
+  soft-failed groups (scanned=0 every tick). Fix: scanTriedAt + lib/rescan-queue.ts. Handoff: docs/project/tasks/handoff-2026-10-01-ee7d09cd.md
 - task/remove-lead-ignore-stopwords-2026-10-01 (worktree ~/worktrees/wt-unilab-remove-lead-ignore-stopwords), commit 260664e pushed.
   Removes lead ignore / stop-word learning. Gate: vitest 670/670, tsc 0 new, build ok; UI NOT verified visually.
   Handoff: docs/project/tasks/handoff-2026-10-01-9cb70af9.md

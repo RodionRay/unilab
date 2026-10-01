@@ -57,6 +57,7 @@ import {authorizeWorkspaceAction,keepOwnerSecretsOnSave,visibleRecordsFor,type W
 import {ALL_CRM_ACCESS} from '@/lib/staff-types';
 import {INBOX_CURSOR_MARGIN_SEC,applySendOutcome,findSendBlock,leadReplies,markLeadOpened,mergeIncomingDm,nextInboxCursor,withPendingSend,type LeadData,type ReplyEntry,type SendOutcome} from '@/lib/lead-conversation';
 import type {D1LikeDatabase} from '@/lib/db';
+import {lastRescanTouch,rescanNotDue} from '@/lib/rescan-queue';
 import {env} from 'cloudflare:workers';
 import {z} from 'zod';
 export const dynamic='force-dynamic';
@@ -2437,8 +2438,10 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
 
      if(discussionOnly||recentlyJoined){
       // Мягкий отказ только при свежем join или linked discussion — не по лидам/scanLog
+      // scanTriedAt: без него группа с пустым lastScanned навсегда первая в очереди автообхода (lib/rescan-queue).
       const soft={
        ...gdata,
+       scanTriedAt:new Date().toISOString(),
        joinState:'',
        joinStateAt:'',
        joinStateError:'',
@@ -2966,9 +2969,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     if(!force&&(String(d.status||'')==='error'||d.usernameMissing))continue;
     const joined=d.membership==='joined'||!!d.joinedAt;
     if(!joined)continue;
-    const last=d.lastScanned?Date.parse(d.lastScanned):0;
-    if(!force&&Number.isFinite(last)&&last>0&&now-last<needMs)continue;
-    due.push({id:String(r.id),last:Number.isFinite(last)?last:0});
+    if(rescanNotDue(d,needMs,now,force))continue;
+    due.push({id:String(r.id),last:lastRescanTouch(d)});
    }catch{/* */}
   }
   due.sort((a,b)=>a.last-b.last);
