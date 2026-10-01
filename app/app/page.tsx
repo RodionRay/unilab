@@ -143,6 +143,18 @@ AI будет использовать этот текст для отбора �
 };
 const viewCopy:Record<string,string>={'Обзор':'Лиды, чаты и статус подключений — всё важное на одном экране.','Уведомления':'Журнал событий кабинета: сканы, вступления, ошибки и сохранения.','Лиды':'Новые запросы: просмотренные скрываются из общей сетки.','Переписки':'Ответы клиентов: откройте диалог — он уйдёт в «Просмотренные». Новый ответ клиента снова в «Новые».','Группы и каналы':'Поиск тем под AI → вступление → реальные лиды из чатов.','Аккаунты':'Статусы, дневные лимиты, отлёжка, прокси и группы — всё по каждому аккаунту.','Прокси':'host:port:user:password — список или по одному.','AI-ассистент':'Куда уходят сообщения из чатов проекта, черновики на одобрение и описание проекта для AI.','Сотрудники':'Роли, доступы к разделам CRM и приглашения коллег по ссылке.','Настройки':'Глубина скана, профиль кабинета и уведомления о лидах в Telegram-бота.'};
 
+/** Дневные лимиты AI владельца (docs/leads-pipeline.md): оценки сообщений и черновики. */
+const DEFAULT_JUDGE_DAILY_CAP=3000;
+const DEFAULT_DRAFT_DAILY_CAP=200;
+const MAX_DAILY_CAP=100000;
+function clampCap(v:unknown,fallback:number):number{
+  const n=Math.round(Number(v));
+  return Number.isFinite(n)&&n>0?Math.min(MAX_DAILY_CAP,n):fallback;
+}
+
+/** Ответ POST /api/staff: ошибка или счётчики операции. */
+type StaffActionResponse={error?:string;url?:string;removed?:number;members?:number;invites?:number};
+
 async function api(body?:unknown){
   const r=await fetch('/api/workspace',body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{cache:'no-store'});
   const data:any=await r.json();
@@ -418,6 +430,8 @@ function WorkspaceHome(){
     scanDepthDays:7,
     autoRescanEnabled:true,
     autoRescanMinutes:30,
+    judgeDailyCap:DEFAULT_JUDGE_DAILY_CAP,
+    draftDailyCap:DEFAULT_DRAFT_DAILY_CAP,
     profileName:'',
     profileAbout:'',
     profileContact:'',
@@ -466,7 +480,7 @@ function WorkspaceHome(){
         if(r.status===403){setStaffMembers([]);setStaffInvites([]);return}
         return;
       }
-      const data=await r.json();
+      const data=(await r.json()) as {members?:WorkspaceMember[];invites?:typeof staffInvites};
       setStaffMembers(data.members||[]);
       setStaffInvites(data.invites||[]);
     }catch{/* */}
@@ -638,6 +652,8 @@ function WorkspaceHome(){
       scanDepthDays:Math.max(1,Math.min(90,Number(d.scanDepthDays)||7)),
       autoRescanEnabled:d.autoRescanEnabled!==false,
       autoRescanMinutes:Math.max(5,Math.min(180,Number(d.autoRescanMinutes)||30)),
+      judgeDailyCap:clampCap(d.judgeDailyCap,DEFAULT_JUDGE_DAILY_CAP),
+      draftDailyCap:clampCap(d.draftDailyCap,DEFAULT_DRAFT_DAILY_CAP),
       profileName:String(d.profileName||''),
       profileAbout:String(d.profileAbout||''),
       profileContact:String(d.profileContact||''),
@@ -645,7 +661,7 @@ function WorkspaceHome(){
       notifyBotToken:String(d.notifyBotToken||''),
       notifyChatId:String(d.notifyChatId||''),
     });
-  },[settings?.id,settings?.data?.scanDepthDays,settings?.data?.autoRescanEnabled,settings?.data?.autoRescanMinutes,settings?.data?.profileName,settings?.data?.profileAbout,settings?.data?.profileContact,settings?.data?.notifyEnabled,settings?.data?.notifyBotToken,settings?.data?.notifyChatId]);
+  },[settings?.id,settings?.data?.scanDepthDays,settings?.data?.autoRescanEnabled,settings?.data?.autoRescanMinutes,settings?.data?.judgeDailyCap,settings?.data?.draftDailyCap,settings?.data?.profileName,settings?.data?.profileAbout,settings?.data?.profileContact,settings?.data?.notifyEnabled,settings?.data?.notifyBotToken,settings?.data?.notifyChatId]);
 
   // Автообход лидов крутит tg-worker → /api/cron/auto-rescan (24/7, без открытого кабинета).
   // Здесь только кнопка «Собрать лиды» и отображение статуса.
@@ -730,7 +746,7 @@ function WorkspaceHome(){
         return;
       }
       // Аккаунт: сначала кабинет (быстро). @username в Telegram — фоном, иначе UI зависает на воркере/автообходе.
-      const saved=await api({action:'save',kind:modal.kind,id:modal.item?.id,data:payload,secret,clearSecret,provisionUsername:false});
+      const saved=await api({action:'save',kind:modal.kind,id:modal.item?.id,data:payload,secret,clearSecret,provisionUsername:false,...(modal.kind==='group'&&!modal.item?.id&&activeProjectId?{projectId:activeProjectId}:{})});
       const newAccountId=!modal.item&&modal.kind==='account'?String(saved.id||''):'';
       const desiredNick=String(payload.username||saved.username||'').replace(/^@/,'');
       setModal(null);setSecret('');
@@ -905,6 +921,8 @@ function WorkspaceHome(){
         scanDepthDays:Math.max(1,Math.min(90,Number(genSettings.scanDepthDays)||7)),
         autoRescanEnabled:!!genSettings.autoRescanEnabled,
         autoRescanMinutes:Math.max(5,Math.min(180,Number(genSettings.autoRescanMinutes)||30)),
+        judgeDailyCap:clampCap(genSettings.judgeDailyCap,DEFAULT_JUDGE_DAILY_CAP),
+        draftDailyCap:clampCap(genSettings.draftDailyCap,DEFAULT_DRAFT_DAILY_CAP),
         profileName:String(genSettings.profileName||'').slice(0,120),
         profileAbout:String(genSettings.profileAbout||'').slice(0,500),
         profileContact:String(genSettings.profileContact||'').slice(0,200),
@@ -944,13 +962,7 @@ function WorkspaceHome(){
         setRecords(prev=>prev.map(row=>row.id===item.id?{...row,data:{...row.data,...r.lead}}:row));
         setDetail(d=>d&&d.id===item.id?{...d,data:{...d.data,...r.lead}}:d);
       }
-      if(verdict==='bad'&&r.hidden===true){
-        setRecords(prev=>prev.filter(row=>row.id!==item.id));
-        setDetail(d=>d&&d.id===item.id?null:d);
-        toast.success('Лид скрыт. Учтём как пример «не лид»');
-      }else{
-        toast.success(verdict==='good'?'Учтём как пример хорошего лида':'Учтём как пример «не лид»');
-      }
+      toast.success(verdict==='good'?'Добавили в примеры хороших лидов проекта':'Добавили в примеры «не лид» проекта');
     }catch(e){toast.error((e as Error).message)}
     finally{setBusy(false)}
   }
@@ -1621,18 +1633,12 @@ function WorkspaceHome(){
     try{
       const res=await api({action:'scan_group',id:item.id});
       await refresh();
-      if(res.funnel)setLastLeadFunnel(res.funnel);
-      else if(res.workerRaw!=null||res.prefilter!=null){
-        setLastLeadFunnel({worker:res.workerRaw,core:res.prefilter,matched:res.matched,added:res.added});
-      }
       if(res.skipped){
         toast.message(res.message||`Скан по настройкам: раз в ${settings?.data.autoRescanMinutes||30} мин`);
         return;
       }
       toast.success(
-        res.funnel
-          ?`Скан: worker ${res.funnel.worker} → ядро ${res.funnel.core} → +${res.added}${res.aiUsed?' (AI)':''}`
-          :`Скан: ${res.scanned} → +${res.added} лидов${res.aiUsed?' (AI)':''}${res.metrics?` · ★${res.metrics.rating} · горячие ${res.metrics.leadsHot||0}`:''}`,
+        `Скан: прочитано ${res.fetched??res.scanned??0}, AI оценил ${res.judged??0} → +${res.added??0} лидов${res.judgeError?` · ошибок AI ${res.judgeError}`:''}`,
       );
     }catch(e){
       const msg=(e as Error).message;
@@ -1663,7 +1669,7 @@ function WorkspaceHome(){
     setBusy(true);
     try{
       const accountId=catalogAccountId||list('account').filter(a=>isAccountWorkable(a.data))[0]?.id||'';
-      const r=await api({action:'import_catalog',accountId:accountId||undefined});
+      const r=await api({action:'import_catalog',accountId:accountId||undefined,projectId:activeProjectId||undefined});
       await refresh();
       const added=Number(r.added)||0;
       const skipped=Number(r.skipped)||0;
@@ -1710,6 +1716,7 @@ function WorkspaceHome(){
           const saved=await api({
             action:'save',
             kind:'group',
+            projectId:activeProjectId||undefined,
             data:{
               name:g.name,
               url:canonicalizeTgUrl(g.url),
@@ -1778,7 +1785,7 @@ function WorkspaceHome(){
           continue;
         }
         try{
-          const saved=await api({action:'save',kind:'group',data:cleanGroupSaveData({
+          const saved=await api({action:'save',kind:'group',projectId:activeProjectId||undefined,data:cleanGroupSaveData({
             name:g.name,
             url:canonicalizeTgUrl(g.url),
             accountId,
@@ -2037,6 +2044,8 @@ function WorkspaceHome(){
           {r.data.needsManager&&<span className="badge warning">Клиент ответил</span>}
           {!r.data.needsManager&&r.data.conversationOpen&&<span className="badge success">Переписка</span>}
           {r.data.excludeFromTraining&&<span className="badge neutral">Не для обучения</span>}
+          {r.data.feedback==='good'&&<span className="badge success">Отмечен: хороший</span>}
+          {r.data.feedback==='bad'&&<span className="badge neutral">Отмечен: не лид</span>}
         </div>
         <p className="mt-2 text-[14px] leading-6 line-clamp-2 muted">
           {r.data.incomingLastText||r.data.message}
@@ -2049,10 +2058,10 @@ function WorkspaceHome(){
       </button>
       <div className="flex flex-col gap-1 shrink-0">
         <Button variant="ghost" onClick={()=>openLead(r)}>Открыть<ChevronRight size={16}/></Button>
-        <Button variant="ghost" size="sm" disabled={busy} title="Добавить в примеры хороших лидов проекта" onClick={()=>void leadFeedback(r,'good')}>
+        <Button variant="ghost" size="sm" disabled={busy} aria-pressed={r.data.feedback==='good'} title="Добавить в примеры хороших лидов проекта" onClick={()=>void leadFeedback(r,'good')}>
           <ThumbsUp size={15}/>Хороший лид
         </Button>
-        <Button variant="ghost" size="sm" disabled={busy} title="Добавить в примеры «не лид» проекта" onClick={()=>void leadFeedback(r,'bad')}>
+        <Button variant="ghost" size="sm" disabled={busy} aria-pressed={r.data.feedback==='bad'} title="Добавить в примеры «не лид» проекта" onClick={()=>void leadFeedback(r,'bad')}>
           <ThumbsDown size={15}/>Не лид
         </Button>
       </div>
@@ -2301,7 +2310,7 @@ function WorkspaceHome(){
                     disabled={busy}
                     onClick={()=>void importFullCatalogToDb()}
                   >Залить каталог ({catalogStats().uniqueUrls})</Button>
-                  <Button onClick={openCatalog}><Search size={16}/>Поиск по темам</Button>
+                  <Button onClick={()=>openCatalog()}><Search size={16}/>Поиск по темам</Button>
                 </>
               ):view==='Настройки'||view==='Уведомления'||view==='Сотрудники'||view==='AI-ассистент'?null:(
                 <Button onClick={()=>open(currentKind||'group',currentKind==='settings'?settings:undefined)}>
@@ -2368,7 +2377,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'create_invite',...input})});
-                    const data=await r.json();
+                    const data=(await r.json()) as StaffActionResponse;
                     if(!r.ok)throw new Error(data.error||'Не удалось создать приглашение');
                     await refreshStaff();
                     toast.success('Ссылка-приглашение создана');
@@ -2380,7 +2389,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'revoke_invite',id})});
-                    const data=await r.json();
+                    const data=(await r.json()) as StaffActionResponse;
                     if(!r.ok)throw new Error(data.error||'Не удалось отозвать');
                     await refreshStaff();
                     toast.success('Приглашение отозвано');
@@ -2391,7 +2400,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'revoke_invites',ids})});
-                    const data=await r.json();
+                    const data=(await r.json()) as StaffActionResponse;
                     if(!r.ok)throw new Error(data.error||'Не удалось отозвать');
                     await refreshStaff();
                     toast.success(`Отозвано: ${data.removed||ids.length}`);
@@ -2402,7 +2411,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'update_member',...input})});
-                    const data=await r.json();
+                    const data=(await r.json()) as StaffActionResponse;
                     if(!r.ok)throw new Error(data.error||'Не удалось сохранить');
                     await refreshStaff();
                     toast.success('Доступы обновлены');
@@ -2413,7 +2422,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'remove_member',id})});
-                    const data=await r.json();
+                    const data=(await r.json()) as StaffActionResponse;
                     if(!r.ok)throw new Error(data.error||'Не удалось удалить');
                     await refreshStaff();
                     toast.success('Сотрудник удалён');
@@ -2424,7 +2433,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'remove_members',ids})});
-                    const data=await r.json();
+                    const data=(await r.json()) as StaffActionResponse;
                     if(!r.ok)throw new Error(data.error||'Не удалось удалить');
                     await refreshStaff();
                     toast.success(`Удалено: ${data.removed||ids.length}`);
@@ -2435,7 +2444,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'clear_all'})});
-                    const data=await r.json();
+                    const data=(await r.json()) as StaffActionResponse;
                     if(!r.ok)throw new Error(data.error||'Не удалось очистить');
                     await refreshStaff();
                     toast.success(`Удалено сотрудников: ${data.members||0}, приглашений: ${data.invites||0}`);
@@ -2605,7 +2614,7 @@ function WorkspaceHome(){
                 <div className="groups-page">
                   <div className="groups-top">
                     <div className="groups-top-actions">
-                      <Button onClick={openCatalog} disabled={busy}><Search size={15}/>Найти темы</Button>
+                      <Button onClick={()=>openCatalog()} disabled={busy}><Search size={15}/>Найти темы</Button>
                       <Button variant="outline" onClick={openManualGroup}><Plus size={15}/>Ссылка</Button>
                       <Button variant="outline" onClick={openMassGroups} disabled={busy}><Upload size={15}/>Массово</Button>
                       <Button
@@ -3023,6 +3032,30 @@ function WorkspaceHome(){
                         onChange={e=>setGenSettings(s=>({...s,autoRescanMinutes:Math.max(5,Math.min(180,Number(e.target.value)||30))}))}
                       />
                       <span className="settings-hint">Круглосуточно через tg-worker (кабинет не нужен). Интервал — минимум между сканами одной группы. Кнопка «Собрать лиды» — сразу.</span>
+                    </label>
+                  </div>
+                  <div className="settings-row">
+                    <label className="field">Лимит оценок AI в день
+                      <Input
+                        type="number"
+                        inputMode="numeric"
+                        min={1}
+                        max={MAX_DAILY_CAP}
+                        value={genSettings.judgeDailyCap}
+                        onChange={e=>setGenSettings(s=>({...s,judgeDailyCap:clampCap(e.target.value,DEFAULT_JUDGE_DAILY_CAP)}))}
+                      />
+                      <span className="settings-hint">Сколько сообщений AI прочитает за сутки по всем проектам. Остальные подождут следующего дня в шаге «Без оценки».</span>
+                    </label>
+                    <label className="field">Лимит черновиков в день
+                      <Input
+                        type="number"
+                        inputMode="numeric"
+                        min={1}
+                        max={MAX_DAILY_CAP}
+                        value={genSettings.draftDailyCap}
+                        onChange={e=>setGenSettings(s=>({...s,draftDailyCap:clampCap(e.target.value,DEFAULT_DRAFT_DAILY_CAP)}))}
+                      />
+                      <span className="settings-hint">Сколько черновиков ответа AI напишет за сутки: и сам для горячих лидов, и по кнопке.</span>
                     </label>
                   </div>
                   <label className="settings-check">
