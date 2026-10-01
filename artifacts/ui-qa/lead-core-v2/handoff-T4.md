@@ -1,3 +1,9 @@
+# Handoff T4 (UI) lead-core-v2: resume 3 (2026-10-01)
+Done: 8c37100 dead rules dropped; 656eca8 `.aiw-*` styles (all classNames styled); dffca42 round 2 fixes.
+Rounds: r1, r2 in `artifacts/ui-qa/lead-core-v2/rounds/` (notes.md each). Best = r2. Servers stopped.
+Next: r3 per `rounds/r2/notes.md` (alert grid on mobile, «Лиды» row above the fold, queue link alignment/sticky);
+identify ui-qa A4 (<24px) / A10 (390 inputs <16px) offenders; final after/ captures incl. `staff-redacted` + states.mjs.
+
 # Handoff T4 (UI) lead-core-v2: resume 2 (2026-10-01), stopped at context threshold before CSS
 Branch `task/lead-core-v2-2026-10-01-ui-2026-10-01`, worktree `/Users/rodiontipcov/worktrees/wt-unilab-lead-core-v2-2026-10-01-ui`.
 
