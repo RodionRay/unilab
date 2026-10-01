@@ -28,6 +28,7 @@ import {Skeleton} from '@/components/ui/skeleton';
 import {Empty,EmptyHeader,EmptyTitle,EmptyDescription} from '@/components/ui/empty';
 import {Toaster} from 'sonner';
 import {toast} from '@/lib/workspace-notifications';
+import {classifyJoinReply,type JoinReplyVerdict} from '@/lib/join-reply';
 import {markLeadOpened} from '@/lib/lead-conversation';
 import {SidebarProvider,Sidebar,SidebarHeader,SidebarContent,SidebarFooter,SidebarInset,SidebarTrigger} from '@/components/ui/sidebar';
 import {parseProxyLine,parseProxyLines,type ProxyProtocol} from '@/lib/proxy-line';
@@ -1107,6 +1108,19 @@ function WorkspaceHome(){
     if(!opts?.resume)toast.message(`Вступаем: ${fresh.length} · пауза ~${Math.round(JOIN_GAP_DEFAULT_SEC/60)} мин между чатами одного аккаунта`);
     else toast.message(`Продолжаем вступление: ${fresh.length} в очереди`);
     let onboarded=0,leads=0,failed=0;
+    /** The account, not the group, failed (blind / frozen): the server parked or moved the group — a note, not an error. */
+    const parkGroup=(g:{id:string;name:string},data:{group?:Record<string,unknown>}|null|undefined,verdict:Extract<JoinReplyVerdict,{kind:'parked'}>)=>{
+      setJoinQueueSync(prev=>prev.map(q=>q.id===g.id?{...q,status:'done',error:verdict.note}:q));
+      patchGroupLocal(g.id,{...(data?.group||{}),joinState:'',joinStateAt:'',joinStateError:''});
+      void persistJoinState(g.id,'');
+      toast.message(`${g.name}: ${verdict.note}`);
+      const again=verdict.rejoinItem;
+      if(again&&!joinWorkRef.current.some(p=>p.id===again.id)){
+        joinWorkRef.current.push(again);
+        setJoinQueueSync(prev=>[...prev.filter(q=>q.id!==again.id),{id:again.id,name:again.name,status:'queued'}]);
+        void persistJoinState(again.id,'queued');
+      }
+    };
     try{
       while(joinWorkRef.current.length){
         const g=joinWorkRef.current.shift()!;
@@ -1131,10 +1145,9 @@ function WorkspaceHome(){
           setJoinQueueSync(prev=>prev.map(q=>q.id===g.id?{...q,status:'joining',name:g.name,error:undefined}:q));
           const join=await joinGroupPaced(g.id,g.name);
           const joinKind=String(join.result?.join||'');
-          const joinedOk=!!join.ok||joinKind==='already'||joinKind==='requested';
-          if(!joinedOk){
-            throw new Error(join.result?.error||join.error||'Не удалось вступить в группу');
-          }
+          const verdict=classifyJoinReply(join);
+          if(verdict.kind==='parked'){parkGroup(g,join,verdict);continue}
+          if(verdict.kind==='failed')throw new Error(verdict.error);
           if(join.group){
             patchGroupLocal(g.id,{...join.group,joinState:'',joinStateAt:'',joinStateError:''});
           }else if(joinKind==='requested'){
@@ -1206,15 +1219,8 @@ function WorkspaceHome(){
           }
         }catch(err){
           const data=(err as Error & {data?:any}).data;
-          if(data?.deferred){
-            // Слеп аккаунт, а не группа: группа ждёт повтор на сервере (joinNextAt) — не ошибка.
-            const note=String(data.error||'Отложено').slice(0,120);
-            setJoinQueueSync(prev=>prev.map(q=>q.id===g.id?{...q,status:'done',error:note}:q));
-            patchGroupLocal(g.id,{...(data.group||{}),joinState:'',joinStateAt:'',joinStateError:''});
-            void persistJoinState(g.id,'');
-            toast.message(`${g.name}: ${note}`);
-            continue;
-          }
+          const parked=data?classifyJoinReply(data):null;
+          if(parked?.kind==='parked'){parkGroup(g,data,parked);continue}
           failed++;
           const msg=(err as Error).message;
           setJoinQueueSync(prev=>prev.map(q=>q.id===g.id?{...q,status:'error',error:msg}:q));
