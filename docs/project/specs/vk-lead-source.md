@@ -31,7 +31,7 @@ core + AI pipeline as Telegram, in the same Leads view and Telegram notification
 - Storage: `db/schema.ts::records` (owner, kind, data JSON, secret sealed); `lib/server-store.ts::seal/unseal`.
 - Settings: `R` settings zod (`keywords`, `autoRescanMinutes`, `scanDepthDays`, AI brief, notify bot).
 - Scoring: `lib/lead-core.ts::scoreLead`, `workerKeywordsFromSettings`; `lib/processes/scan-flow.ts::decideScanLead`,
-  `applyAiVerdicts`; `R::qualifyLeadsWithAi` (DeepSeek via `lib/ai-client.ts::aiChatText`); `R::rememberAiRejects`.
+  `applyAiVerdicts`; `lib/processes/lead-ai.ts::qualifyLeadsWithAi` (DeepSeek via `lib/ai-client.ts::aiChatText`); `R::rememberAiRejects`; seam `lib/processes/lead-ingest.ts::pickLeads` (T1).
 - Dedup: `lib/lead-filter.ts::leadMessageFingerprint(message, groupId, tgMsgId)`, tombstones, `excludeFromTraining`.
 - Lead insert + group metrics: `R` action `scan_group` (insert `INSERT INTO records … 'lead'`); lock `R::acquireGroupScanLock`.
 - Notify: `R::flushLeadNotifications` (Telegram Bot API, `notifyPending`).
