@@ -20,18 +20,26 @@ export type AuthzDecision={ok:true}|{ok:false;error:string};
 
 type ActionRule={anyOf:readonly CrmAccessKey[];mutates:boolean};
 
-/** Record kinds the API reads and writes. Rows of removed kinds (audience_task, audience_user,
+/** Record kinds generic `save`/`delete` may write. Rows of removed kinds (audience_task, audience_user,
  * invite_task, mailing_task) stay in D1 but are neither served nor accepted. */
 export const RECORD_KINDS=['account','proxy','group','lead','settings'] as const;
 export type RecordKind=(typeof RECORD_KINDS)[number];
 
+/**
+ * Kinds GET serves. `project` is read-only here: it changes only through the project_* actions,
+ * which validate fields and ownership (lead core v2 REQ-23). `scan_day` / `ai_guard` are never served.
+ */
+export const READ_RECORD_KINDS=[...RECORD_KINDS,'project'] as const;
+export type ReadRecordKind=(typeof READ_RECORD_KINDS)[number];
+
 /** Section that owns each record kind (save/delete/GET visibility). */
-export const KIND_ACCESS:Readonly<Record<RecordKind,readonly CrmAccessKey[]>>={
+export const KIND_ACCESS:Readonly<Record<ReadRecordKind,readonly CrmAccessKey[]>>={
  account:['accounts'],
  proxy:['proxies'],
  group:['groups'],
  lead:['leads','chats'],
  settings:['settings','ai'],
+ project:['ai','leads'],
 };
 
 const LEADS:readonly CrmAccessKey[]=['leads','chats'];
@@ -44,8 +52,9 @@ export const ACTION_RULES:Readonly<Record<string,ActionRule>>={
  mark_lead_viewed:rule(LEADS),
  set_lead_training_exclude:rule(LEADS),
  bulk_set_lead_training_exclude:rule(LEADS),
- reject_lead_stopwords:rule(LEADS),
  send_lead_message:rule(LEADS),
+ lead_feedback:rule(LEADS),
+ dismiss_draft:rule(LEADS),
  poll_dm_replies:rule(['chats','leads']),
 
  check_proxy:rule(['proxies']),
@@ -67,9 +76,11 @@ export const ACTION_RULES:Readonly<Record<string,ActionRule>>={
  heal_group_join_state:rule(['groups']),
 
  rebuild_product:rule(AI),
- train_from_hot:rule(AI),
- train_from_ignored:rule(AI),
- preview_lead_core:rule(AI,false),
+ project_create:rule(AI),
+ project_update:rule(AI),
+ project_delete:rule(AI),
+ set_group_project:rule(AI),
+ funnel:rule(AI,false),
  test_notify:rule(['settings']),
 };
 
@@ -79,6 +90,10 @@ const DENY_SECTION='Нет доступа к этому разделу. Обра
 
 function isRecordKind(kind:unknown):kind is RecordKind{
  return typeof kind==='string'&&(RECORD_KINDS as readonly string[]).includes(kind);
+}
+
+function isReadRecordKind(kind:unknown):kind is ReadRecordKind{
+ return typeof kind==='string'&&(READ_RECORD_KINDS as readonly string[]).includes(kind);
 }
 
 function hasAnyAccess(actor:WorkspaceActor,keys:readonly CrmAccessKey[]):boolean{
@@ -122,7 +137,7 @@ function redactOwnerSecrets(data:Record<string,unknown>):Record<string,unknown>{
 }
 
 function viewRecord<T extends WorkspaceRecordView>(actor:WorkspaceActor,rec:T):T|null{
- if(!isRecordKind(rec.kind))return null;
+ if(!isReadRecordKind(rec.kind))return null;
  if(rec.kind==='settings')return {...rec,data:redactOwnerSecrets(rec.data)};
  if(hasAnyAccess(actor,KIND_ACCESS[rec.kind]))return rec;
  if(rec.kind==='account'&&hasAnyAccess(actor,ACCOUNT_PICKER_SECTIONS)){

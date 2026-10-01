@@ -20,7 +20,6 @@ const SETTINGS={
   leadCriteria:'Ищет сервис для синхронизации остатков и заказов нескольких кабинетов маркетплейсов',
   hotSignals:'ищу сервис, кто пользуется, синхронизация остатков',
   product:'Платформа для селлеров WB/Ozon: остатки, заказы, цены, отзывы, несколько кабинетов',
-  aiQualify:true,
   notifyEnabled:false,
   notifyBotToken:'123456:bot-token-secret',
   notifyChatId:'42',
@@ -28,22 +27,24 @@ const SETTINGS={
 
 type WorkerMsg={tgMsgId:string;message:string};
 type AiAnswer=(ids:string[],call:number)=>Response|Promise<Response>;
+type Verdict={id:string;isLead?:boolean;score?:number};
 
 const calls={worker:[] as Record<string,unknown>[],ai:[] as string[][],tg:[] as string[]};
 let workerMessages:WorkerMsg[]=[];
 let workerCursor='';
 let workerGate:Promise<void>|null=null;
-let aiAnswer:AiAnswer=()=>aiJson([]);
+let aiAnswer:AiAnswer=(ids)=>aiJson(ids.map(id=>({id})));
 let tgAnswer:()=>Response=()=>Response.json({ok:true});
 
-function aiJson(items:{id:string;temperature?:string}[]){
-  const content=JSON.stringify(items.map(i=>({id:i.id,reason:'ok',temperature:i.temperature||'hot'})));
+/** Judge answer (lead core v2 REQ-8): one verdict per listed id; unlisted ids count as rejected. */
+function aiJson(items:Verdict[]){
+  const content=JSON.stringify({verdicts:items.map(i=>({id:i.id,isLead:i.isLead??true,score:i.score??90,reason:'ok'}))});
   return Response.json({choices:[{message:{content}}]});
 }
 
 function msg(tgMsgId:string,message:string):WorkerMsg{return {tgMsgId,message}}
 
-/** Distinct buyer+fit messages the lead core accepts. */
+/** Distinct messages that pass the cheap filters. */
 function targets(n:number,from=100):WorkerMsg[]{
   return Array.from({length:n},(_,i)=>msg(String(from+i),`Ищу сервис для синхронизации остатков WB и МойСклад, магазин номер ${from+i}`));
 }
@@ -66,7 +67,8 @@ function installFetch(){
     }
     if(u.includes('/chat/completions')){
       const user=String(body.messages?.[1]?.content||'');
-      const ids=[...user.matchAll(/id=(\S+)/g)].map(m=>m[1]!);
+      const block=user.slice(user.indexOf('<data>'),user.indexOf('</data>'));
+      const ids=[...block.matchAll(/"id":"([^"]+)"/g)].map(m=>m[1]!);
       calls.ai.push(ids);
       return aiAnswer(ids,calls.ai.length);
     }
@@ -88,7 +90,7 @@ function groupData():Record<string,unknown>{
 }
 
 /** Lead fields the assertions read. */
-type LeadData={tgMsgId?:string;coreScore?:number;notifiedAt?:string;status?:string;draft?:string;replies?:unknown[];needsManager?:boolean;incomingLastText?:string;[k:string]:unknown};
+type LeadData={tgMsgId?:string;score?:number;notifiedAt?:string;status?:string;draft?:string;replies?:unknown[];needsManager?:boolean;incomingLastText?:string;[k:string]:unknown};
 
 function leads():{id:string;data:LeadData}[]{
   const rows=testDb().sqlite.prepare("SELECT id,data FROM records WHERE kind='lead' AND json_extract(data,'$.groupId')=?").all(GROUP_ID) as {id:string;data:string}[];
@@ -115,7 +117,7 @@ describe('workspace API: scan_group lead pipeline',()=>{
     setSettings();
     calls.worker.length=0;calls.ai.length=0;calls.tg.length=0;
     workerMessages=[];workerCursor='';workerGate=null;
-    aiAnswer=()=>aiJson([]);
+    aiAnswer=(ids)=>aiJson(ids.map(id=>({id})));
     tgAnswer=()=>Response.json({ok:true});
     installFetch();
   });
@@ -124,8 +126,8 @@ describe('workspace API: scan_group lead pipeline',()=>{
     vi.unstubAllEnvs();
   });
 
-  describe('REQ-L1 AI verdict per batch',()=>{
-    it('a successful batch answering [] rejects all of its candidates',async()=>{
+  describe('lead core v2 REQ-9/10 judge verdict per batch',()=>{
+    it('a valid answer without verdicts rejects all of its messages',async()=>{
       workerMessages=targets(3);
       aiAnswer=()=>aiJson([]);
 
@@ -136,25 +138,17 @@ describe('workspace API: scan_group lead pipeline',()=>{
       expect(leads()).toHaveLength(0);
     });
 
-    it('a failed batch falls back to the core, a successful one is trusted',async()=>{
+    it('a failed batch is never decided without the judge: its messages wait for the next scan',async()=>{
       workerMessages=targets(25);
-      aiAnswer=(ids,call)=>call===1?new Response('rate limited',{status:429}):aiJson([{id:ids[0]!}]);
+      workerCursor='124';
+      aiAnswer=(ids,call)=>call<=2?new Response('rate limited',{status:429}):aiJson(ids.map(id=>({id})));
 
       await scan();
-
-      expect(calls.ai).toHaveLength(2);
-      const failedBatch=calls.ai[0]!;
-      const okBatch=calls.ai[1]!;
-      expect(leadIds()).toEqual([...failedBatch,okBatch[0]!].sort());
-    });
-
-    it('when AI picks some, candidates of a failed batch are not lost',async()=>{
-      workerMessages=targets(25);
-      aiAnswer=(ids,call)=>call===1?aiJson([{id:ids[0]!}]):new Response('boom',{status:500});
+      expect(leads()).toHaveLength(0);
+      expect(groupData().scanCursor).toBe('99');
 
       await scan();
-
-      expect(leadIds()).toEqual([calls.ai[0]![0]!,...calls.ai[1]!].sort());
+      expect(leadIds()).toHaveLength(25);
     });
   });
 
@@ -169,31 +163,31 @@ describe('workspace API: scan_group lead pipeline',()=>{
       expect(leads()).toHaveLength(0);
     });
 
-    it('forgets rejections when the lead settings change',async()=>{
+    it('forgets rejections when the project card changes',async()=>{
       workerMessages=targets(2);
       aiAnswer=()=>aiJson([]);
       await scan();
-      setSettings({leadCriteria:`${SETTINGS.leadCriteria} и цен`});
+      const projects=testDb().sqlite.prepare("SELECT id FROM records WHERE kind='project'").all() as {id:string}[];
+      await POST(postRequest({action:'project_update',id:projects[0]!.id,patch:{leadCriteria:'Ищет сервис для цен'}}));
       await scan();
 
       expect(calls.ai).toHaveLength(2);
     });
 
-    it('does not remember candidates of a failed batch',async()=>{
+    it('does not remember messages of a failed batch',async()=>{
       workerMessages=targets(2);
       aiAnswer=()=>new Response('down',{status:503});
       await scan();
-      testDb().sqlite.prepare("DELETE FROM records WHERE kind='lead'").run();
       await scan();
 
-      expect(calls.ai).toHaveLength(2);
+      expect(calls.ai).toHaveLength(4);
     });
   });
 
   describe('REQ-L2 one scan per group at a time',()=>{
     it('two concurrent scans of one group call the worker once and create each lead once',async()=>{
       workerMessages=targets(2);
-      setSettings({aiQualify:false,notifyEnabled:true});
+      setSettings({notifyEnabled:true});
       let open!:()=>void;
       workerGate=new Promise<void>(res=>{open=res});
 
@@ -211,7 +205,6 @@ describe('workspace API: scan_group lead pipeline',()=>{
 
     it('releases the lock after a scan so the next one runs',async()=>{
       workerMessages=targets(1);
-      setSettings({aiQualify:false});
       await scan();
       await scan();
 
@@ -220,7 +213,6 @@ describe('workspace API: scan_group lead pipeline',()=>{
     });
 
     it('releases the lock when the worker call fails',async()=>{
-      setSettings({aiQualify:false});
       vi.stubGlobal('fetch',vi.fn(async()=>{throw new Error('worker down')}));
       await scan();
       installFetch();
@@ -235,7 +227,6 @@ describe('workspace API: scan_group lead pipeline',()=>{
   describe('REQ-L6 deleted lead is not re-created',()=>{
     it('a lead deleted by the user does not come back on rescan',async()=>{
       workerMessages=targets(2);
-      setSettings({aiQualify:false});
       await scan();
       const victim=leads().find(l=>l.data.tgMsgId==='100')!;
 
@@ -249,7 +240,6 @@ describe('workspace API: scan_group lead pipeline',()=>{
 
   describe('REQ-L8 dedupe by groupId:tgMsgId',()=>{
     it('an edited message does not produce a second lead',async()=>{
-      setSettings({aiQualify:false});
       workerMessages=[msg('100','Ищу сервис для синхронизации остатков WB и МойСклад')];
       await scan();
       workerMessages=[msg('100','Ищу сервис для синхронизации остатков WB и МойСклад (upd: срочно)')];
@@ -261,7 +251,6 @@ describe('workspace API: scan_group lead pipeline',()=>{
 
   describe('REQ-L7 per-group cursor',()=>{
     it('passes the stored cursor to the worker and stores the new one',async()=>{
-      setSettings({aiQualify:false});
       workerMessages=targets(1);
       workerCursor='150';
       await scan();
@@ -275,7 +264,6 @@ describe('workspace API: scan_group lead pipeline',()=>{
     });
 
     it('a client save of the group keeps the server-owned scan state',async()=>{
-      setSettings({aiQualify:false});
       workerCursor='150';
       await scan();
 
@@ -289,7 +277,7 @@ describe('workspace API: scan_group lead pipeline',()=>{
 
   describe('REQ-L9 failed notification is retried',()=>{
     it('keeps the lead pending, logs the failure and sends it on the next scan',async()=>{
-      setSettings({aiQualify:false,notifyEnabled:true});
+      setSettings({notifyEnabled:true});
       workerMessages=targets(1);
       tgAnswer=()=>Response.json({ok:false,description:'Bad Gateway'},{status:502});
       await scan();
@@ -312,13 +300,12 @@ describe('workspace API: scan_group lead pipeline',()=>{
   });
 
   describe('REQ-L10 lead save merges server-owned fields',()=>{
-    it('a stale client save keeps replies, needsManager and coreScore',async()=>{
-      setSettings({aiQualify:false});
+    it('a stale client save keeps replies, needsManager and the judge score',async()=>{
       workerMessages=targets(1);
       await scan();
       const lead=leads()[0]!;
-      const coreScore=lead.data.coreScore;
-      expect(coreScore).toBeGreaterThan(0);
+      const score=lead.data.score;
+      expect(score).toBe(90);
       const serverSide={...lead.data,needsManager:true,incomingLastText:'Да, интересно',replies:[{text:'Здравствуйте',mode:'dm',at:'2026-09-30T10:00:00.000Z',ok:true,from:'us'},{text:'Да, интересно',mode:'dm',at:'2026-09-30T10:05:00.000Z',ok:true,from:'client'}]};
       testDb().sqlite.prepare('UPDATE records SET data=? WHERE id=?').run(JSON.stringify(serverSide),lead.id);
 
@@ -332,7 +319,7 @@ describe('workspace API: scan_group lead pipeline',()=>{
       expect(saved.replies).toHaveLength(2);
       expect(saved.needsManager).toBe(true);
       expect(saved.incomingLastText).toBe('Да, интересно');
-      expect(saved.coreScore).toBe(coreScore);
+      expect(saved.score).toBe(score);
     });
   });
 });

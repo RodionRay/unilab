@@ -30,9 +30,11 @@ const SETTINGS={
 
 type Verdict={isLead?:boolean;score:number;reason?:string;projectId?:string|null};
 type Judge=(ids:string[],call:number)=>Verdict|Response;
-type Row={id:string;data:Record<string,any>};
+/** Stored JSON as the assertions read it (loose on purpose: records are untyped JSON). */
+type Json=Record<string,any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+type Row={id:string;data:Json};
 
-const calls={worker:[] as {path:string;body:Record<string,any>}[],judge:[] as string[][],dm:[] as string[][],draft:[] as string[],other:[] as {system:string;user:string}[]};
+const calls={worker:[] as {path:string;body:Json}[],judge:[] as string[][],dm:[] as string[][],draft:[] as string[],other:[] as {system:string;user:string}[]};
 let judge:Judge=()=>({isLead:true,score:90});
 let dmJudge:(ids:string[])=>Verdict|Response=()=>({score:90,projectId:DEFAULT_PROJECT});
 let otherAnswer:()=>string=()=>'{}';
@@ -102,7 +104,7 @@ function installFetch(){
 
 const post=async(body:Record<string,unknown>)=>{
   const res=await POST(postRequest(body));
-  return {status:res.status,body:await res.json() as Record<string,any>};
+  return {status:res.status,body:await res.json() as Json};
 };
 const scan=(id=GROUP_ID)=>post({action:'scan_group',id,force:true});
 
@@ -110,7 +112,7 @@ function rows(kind:string,owner=OWNER):Row[]{
   return (testDb().sqlite.prepare('SELECT id,data FROM records WHERE kind=? AND owner=? ORDER BY created,rowid').all(kind,owner) as {id:string;data:string}[])
     .map(r=>({id:r.id,data:JSON.parse(r.data)}));
 }
-const record=(id:string)=>JSON.parse((testDb().sqlite.prepare('SELECT data FROM records WHERE id=?').get(id) as {data:string}).data) as Record<string,any>;
+const record=(id:string)=>JSON.parse((testDb().sqlite.prepare('SELECT data FROM records WHERE id=?').get(id) as {data:string}).data) as Json;
 const scanLeads=()=>rows('lead').filter(l=>l.data.groupId===GROUP_ID);
 const setSettings=(patch:Record<string,unknown>={})=>testDb().sqlite.prepare('UPDATE records SET data=? WHERE id=?').run(JSON.stringify({...SETTINGS,...patch}),SETTINGS_ID);
 const patchRecord=(id:string,patch:Record<string,unknown>)=>testDb().sqlite.prepare('UPDATE records SET data=? WHERE id=?').run(JSON.stringify({...record(id),...patch}),id);
