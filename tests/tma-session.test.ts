@@ -231,7 +231,7 @@ describe('REQ-A5 · bearer на POST /api/workspace перепроверяетс
   expect(proxy.status).toBe(403);
   expect(del.status).toBe(403);
   expect(settings.status).toBe(403);
-  expect((await del.json()).error).toContain('мини-приложении');
+  expect((await del.json() as {error:string}).error).toContain('мини-приложении');
   expect(testDb().sqlite.prepare('SELECT id FROM records WHERE id=?').get(LEAD_ID)).toBeTruthy();
  });
 

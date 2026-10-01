@@ -3,7 +3,8 @@ import { consumeRateLimits } from "@/lib/security/rate-limit";
 import { resolveWorkspaceContext } from "@/lib/staff";
 import type { WorkspaceContext } from "@/lib/staff-types";
 import { callBotApi } from "@/lib/telegram-bot";
-import type { LinkRequest, LinkStatus, TmaError } from "@/lib/tma/contract";
+import type { z } from "zod";
+import type { LinkStatus, TmaError, linkRequestSchema } from "@/lib/tma/contract";
 import { TMA_ERROR_TEXT } from "@/lib/tma/exchange";
 import {
   LINK_START_PREFIX,
@@ -16,6 +17,8 @@ import {
 import { getOrCreateWorkspaceKey, readWorkspaceBot, rememberBotIdentity } from "@/lib/tma/workspace";
 
 /** POST /api/tma/link core (web cookie session): link code, status, unlink, DM opt-in. */
+
+type LinkRequest = z.infer<typeof linkRequestSchema>;
 
 export type LinkApiResult = { status: number; body: LinkStatus | TmaError; retryAfterSec?: number };
 
@@ -98,5 +101,7 @@ export async function handleLinkRequest(
       if (!(await setDmNotices(db, ctx.ownerId, ctx.userId, req.enabled))) return fail(409, "not_linked");
       return { status: 200, body: await linkStatus(db, ctx.ownerId, ctx.userId, appUrl) };
     }
+    default:
+      return fail(400, "bad_request");
   }
 }

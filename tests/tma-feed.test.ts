@@ -21,7 +21,7 @@ async function tokenFor(userId:string){
  await linkTelegram(userId,tg);
  const res=await sessionPOST(sessionRequest({wsKey:await wsKeyOf(),initData:initDataFor(tg)}));
  expect(res.status).toBe(200);
- return (await res.json()).token as string;
+ return (await res.json() as {token:string}).token;
 }
 
 async function feed<T>(token:string|null,query:string){
