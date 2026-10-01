@@ -1,7 +1,9 @@
 /**
  * Group judge (REQ-8..11): ascending `tgMsgId` batches ≤20, ≤4 per scan, zod-validated JSON answers.
- * The first failed or skipped batch stops judging; everything after it is `judgeSkipped` (`blocked`)
- * and `firstUnjudgedId` tells the pipeline where to rewind the cursor. No non-LLM fallback.
+ * The first failed or skipped batch stops judging; everything after it is `judgeSkipped` (`blocked`).
+ * `rewind` marks what the next scan must see again: everything except a batch whose answer stayed
+ * invalid (bad JSON / schema) after the retry — retrying that batch would stall the group forever.
+ * No non-LLM fallback.
  */
 
 import { z } from "zod";
@@ -33,12 +35,12 @@ export const judgeAnswerSchema = z.object({
 });
 
 export type JudgedMessage = { message: ScanMessage; verdict: Verdict };
-export type UnjudgedMessage = { message: ScanMessage; step: UnjudgedStep; reason: string };
+export type UnjudgedMessage = { message: ScanMessage; step: UnjudgedStep; reason: string; rewind: boolean };
 export type JudgeCounts = { judged: number; judgeSkipped: number; judgeError: number };
 export type JudgeResult = {
   judged: JudgedMessage[];
   unjudged: UnjudgedMessage[];
-  /** Smallest id not judged in this scan (any kind), null when all were judged. */
+  /** Smallest id not judged in this scan (any kind, rewind or not), null when all were judged. */
   firstUnjudgedId: string | null;
   counts: JudgeCounts;
   /** Error of the failed batch ("" when none); never contains message text. */
@@ -46,7 +48,15 @@ export type JudgeResult = {
 };
 export type JudgeOptions = { gate?: JudgeGate; batchSize?: number; maxBatches?: number };
 
-type BatchStop = { step: UnjudgedStep; reason: string; error: string };
+type BatchStop = { step: UnjudgedStep; reason: string; error: string; rewind: boolean };
+
+/** `lib/ai-client.ts::parseAiJson` errors: the model answered, but not in the contract, on both attempts. */
+const INVALID_ANSWER_RE = /^AI: answer (is not valid JSON|fails the schema)/;
+
+function callFailure(e: unknown): BatchStop {
+  const error = errorText(e);
+  return { step: "judgeError", reason: error, error, rewind: !INVALID_ANSWER_RE.test(error) };
+}
 
 /** Numeric order for Telegram ids, lexicographic only for non-numeric leftovers. */
 export function compareMsgIds(a: string, b: string): number {
@@ -70,9 +80,9 @@ export function errorText(e: unknown): string {
 export async function checkGate(gate: JudgeGate | undefined, count: number): Promise<BatchStop | null> {
   if (!gate) return null;
   try {
-    return (await gate(count)) ? null : { step: "judgeSkipped", reason: "daily_cap", error: "" };
+    return (await gate(count)) ? null : { step: "judgeSkipped", reason: "daily_cap", error: "", rewind: true };
   } catch (e) {
-    return { step: "judgeError", reason: errorText(e), error: errorText(e) };
+    return { step: "judgeError", reason: errorText(e), error: errorText(e), rewind: true };
   }
 }
 
@@ -82,7 +92,7 @@ async function judgeBatch(
   llm: JsonLlm | null,
   gate: JudgeGate | undefined,
 ): Promise<Map<string, Verdict> | BatchStop> {
-  if (!llm) return { step: "judgeSkipped", reason: "no_ai_key", error: "" };
+  if (!llm) return { step: "judgeSkipped", reason: "no_ai_key", error: "", rewind: true };
   const capped = await checkGate(gate, batch.length);
   if (capped) return capped;
   try {
@@ -94,7 +104,7 @@ async function judgeBatch(
     }
     return verdicts;
   } catch (e) {
-    return { step: "judgeError", reason: errorText(e), error: errorText(e) };
+    return callFailure(e);
   }
 }
 
@@ -114,7 +124,7 @@ export async function judgeMessages(
   for (const [index, batch] of batches.entries()) {
     if (stopped || index >= maxBatches) {
       const reason = stopped ? "blocked" : "batch_limit";
-      for (const message of batch) unjudged.push({ message, step: "judgeSkipped", reason });
+      for (const message of batch) unjudged.push({ message, step: "judgeSkipped", reason, rewind: true });
       continue;
     }
     const outcome = await judgeBatch(project, batch, llm, opts.gate);
@@ -127,7 +137,7 @@ export async function judgeMessages(
     }
     stopped = true;
     error = outcome.error;
-    for (const message of batch) unjudged.push({ message, step: outcome.step, reason: outcome.reason });
+    for (const message of batch) unjudged.push({ message, step: outcome.step, reason: outcome.reason, rewind: outcome.rewind });
   }
   return {
     judged,

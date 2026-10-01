@@ -90,6 +90,20 @@ describe('judgeMessages failure stops judging (REQ-10)', () => {
     expect(r.error).toMatch(/JSON/i);
   });
 
+  it('a schema-invalid answer twice moves past its batch; the blocked rest rewinds', async () => {
+    const {llm} = scriptedLlm([answerAll(lead), 'bad', 'still bad', answerAll(lead)]);
+    const r = await judgeMessages(makeProject(), range(1, 50), llm);
+    expect(r.unjudged.filter((u) => u.step === 'judgeError').every((u) => !u.rewind)).toBe(true);
+    expect(r.unjudged.filter((u) => u.step === 'judgeSkipped').every((u) => u.rewind)).toBe(true);
+    expect(r.firstUnjudgedId).toBe('21');
+  });
+
+  it('a transient call error rewinds its batch', async () => {
+    const {llm} = scriptedLlm([new Error('DeepSeek 503: down')]);
+    const r = await judgeMessages(makeProject(), range(1, 3), llm);
+    expect(r.unjudged.every((u) => u.step === 'judgeError' && u.rewind)).toBe(true);
+  });
+
   it('a thrown call error is retried, then counted as judgeError', async () => {
     const {llm, calls} = scriptedLlm([new Error('DeepSeek 503: down')]);
     const r = await judgeMessages(makeProject(), range(1, 3), llm);

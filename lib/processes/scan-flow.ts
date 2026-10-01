@@ -84,7 +84,7 @@ const SERVER_OWNED: Record<"lead" | "group" | "settings" | "account", readonly s
     "tgMsgId", "groupId", "accountId", "mailingTaskId",
     "projectId", "score", "reason", "sourceKind", "draftKind", "feedback",
   ],
-  group: ["scanLockUntil", "scanLockToken", "scanCursor", "aiRejected", "leadTombstones", "projectId"],
+  group: ["scanLockUntil", "scanLockToken", "scanCursor", "judgeFailStreak", "aiRejected", "leadTombstones", "projectId"],
   settings: ["inboxPollCursor", "dmAiRejected", ...LEGACY_PROJECT_SETTINGS],
   // Telegram id from the account check: own-account DMs are never leads (lead core v2 REQ-15).
   account: ["tgUserId"],

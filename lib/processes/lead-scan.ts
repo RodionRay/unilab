@@ -150,6 +150,7 @@ export async function scanGroupLeads(db: D1LikeDatabase, input: GroupScanInput):
       scanCursor: String(group.scanCursor || ""),
       aiRejected: group.aiRejected,
       leadTombstones: group.leadTombstones,
+      judgeFailStreak: group.judgeFailStreak,
     },
     worker: input.worker,
     knownFingerprints: known.fingerprints,

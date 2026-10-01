@@ -8,7 +8,7 @@ import type { ReplyEntry } from "@/lib/lead-conversation";
 import { groupDmSenders, judgeDmSenders, type DmMessage, type DmSender } from "@/lib/leads/dm-judge";
 import { addSample, emptyCounts } from "@/lib/leads/funnel";
 import { filterMessages, normalizeScanMessage } from "@/lib/leads/filter";
-import { compareMsgIds, judgeMessages } from "@/lib/leads/judge";
+import { compareMsgIds, judgeMessages, type UnjudgedMessage } from "@/lib/leads/judge";
 import { projectSignature, type ProjectData, type ProjectRow } from "@/lib/leads/projects";
 import { activeAiRejects, rememberAiRejects, type AiRejectMemory } from "@/lib/leads/reject-memory";
 import type { FunnelCounts, JudgeGate, ScanDelta, ScanMessage, SourceKind } from "@/lib/leads/types";
@@ -17,6 +17,8 @@ export const HOT_SCORE = 80;
 export const DM_SOURCE = "Личные сообщения";
 const RUN_LINE_MAX = 200;
 const DM_DEFAULT_DEPTH_DAYS = 30;
+/** Consecutive scans whose judge call failed before the group advances past the stuck messages anyway. */
+export const JUDGE_FAIL_STREAK_MAX = 3;
 
 /** Raw worker `/scan-group` answer (REQ-5 fields). */
 export type WorkerScanResult = {
@@ -32,7 +34,16 @@ export type WorkerScanResult = {
 export type GroupScanDeps = {
   projectId: string;
   project: ProjectData;
-  group: { id: string; name: string; accountId: string; scanCursor: string; aiRejected: unknown; leadTombstones: unknown };
+  group: {
+    id: string;
+    name: string;
+    accountId: string;
+    scanCursor: string;
+    aiRejected: unknown;
+    leadTombstones: unknown;
+    /** Consecutive earlier scans with a failed judge call (`group.judgeFailStreak`). */
+    judgeFailStreak?: unknown;
+  };
   worker: WorkerScanResult;
   /** `leadMessageFingerprint` of the owner's existing leads. */
   knownFingerprints: ReadonlySet<string>;
@@ -80,6 +91,10 @@ export type GroupScanResult = {
   delta: ScanDelta;
   /** Judge error of this run ("" when none); never contains message text. */
   judgeError: string;
+  /** New `group.judgeFailStreak`. */
+  judgeFailStreak: number;
+  /** Russian scan-log note when the streak forced the cursor forward ("" otherwise). */
+  streakNote: string;
 };
 
 function count(v: unknown): number {
@@ -113,6 +128,36 @@ export function nextScanCursor(workerCursor: string, prevCursor: string, unjudge
     .sort(compareMsgIds);
   if (ids.length) return String(Math.max(0, Number(ids[0]) - 1));
   return workerCursor || prevCursor;
+}
+
+type CursorDecision = { nextCursor: string; judgeFailStreak: number; streakNote: string };
+
+/**
+ * A scan failed when a judge call failed on messages that must be seen again. A scan that judged
+ * nothing because it only waited (daily cap / no key) keeps the streak; any other scan resets it. After `JUDGE_FAIL_STREAK_MAX` such scans in a row the cursor takes the worker's
+ * value so one poisoned batch cannot stall the group forever.
+ */
+function decideCursor(deps: GroupScanDeps, judged: number, unjudged: readonly UnjudgedMessage[]): CursorDecision {
+  const workerCursor = String(deps.worker.cursor ?? "");
+  const rewind = unjudged.filter((u) => u.rewind).map((u) => u.message);
+  const failed = unjudged.some((u) => u.rewind && u.step === "judgeError");
+  if (!failed) {
+    const waited = judged === 0 && rewind.length > 0;
+    return {
+      nextCursor: nextScanCursor(workerCursor, deps.group.scanCursor, rewind),
+      judgeFailStreak: waited ? count(deps.group.judgeFailStreak) : 0,
+      streakNote: "",
+    };
+  }
+  const streak = count(deps.group.judgeFailStreak) + 1;
+  if (streak < JUDGE_FAIL_STREAK_MAX) {
+    return { nextCursor: nextScanCursor(workerCursor, deps.group.scanCursor, rewind), judgeFailStreak: streak, streakNote: "" };
+  }
+  return {
+    nextCursor: workerCursor || deps.group.scanCursor,
+    judgeFailStreak: 0,
+    streakNote: `Судья не ответил ${streak} скана подряд — курсор сдвинут вперёд, пропущено ${rewind.length} сообщ.`,
+  };
 }
 
 function groupLead(deps: GroupScanDeps, m: ScanMessage, score: number, reason: string): NewLead {
@@ -191,7 +236,7 @@ export async function runGroupScan(deps: GroupScanDeps): Promise<GroupScanResult
   return {
     leads,
     aiRejected: rememberAiRejects(active, rejectedIds, sig, now),
-    nextCursor: nextScanCursor(String(deps.worker.cursor ?? ""), deps.group.scanCursor, judge.unjudged.map((u) => u.message)),
+    ...decideCursor(deps, judge.judged.length, judge.unjudged),
     delta: { counts, samples, run: runLine(now, label, counts, judge.error, skip) },
     judgeError: judge.error,
   };

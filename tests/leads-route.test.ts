@@ -360,6 +360,28 @@ describe('lead core v2 · workspace route',()=>{
       expect(record(GROUP_ID).scanCursor).toBe('119');
     });
 
+    it('a judge failing 3 scans in a row advances the cursor and logs it in Russian',async()=>{
+      workerMessages=messages(3);
+      workerCursor='102';
+      judge=()=>new Response('down',{status:500});
+
+      await scan();
+      expect(record(GROUP_ID)).toMatchObject({scanCursor:'99',judgeFailStreak:1});
+      await scan();
+      expect(record(GROUP_ID)).toMatchObject({scanCursor:'99',judgeFailStreak:2});
+      await scan();
+
+      const g=record(GROUP_ID);
+      expect(g).toMatchObject({scanCursor:'102',judgeFailStreak:0});
+      expect(g.scanLog.some((e:Json)=>e.level==='warn'&&/3 скана подряд/.test(e.text))).toBe(true);
+    });
+
+    it('a client save cannot reset judgeFailStreak',async()=>{
+      patchRecord(GROUP_ID,{judgeFailStreak:2});
+      await post({action:'save',kind:'group',id:GROUP_ID,data:{...record(GROUP_ID),judgeFailStreak:0}});
+      expect(record(GROUP_ID).judgeFailStreak).toBe(2);
+    });
+
     it('no AI key → nothing judged, nothing lost: cursor stays before the first message',async()=>{
       vi.stubEnv('AI_API_KEY','');
       workerMessages=messages(3);

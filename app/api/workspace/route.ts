@@ -11,7 +11,7 @@ import {autoDraftCandidates,autoDraftLeads,autoDraftKind,draftLlm,draftLeadOf,ju
 import {createProject,deleteProject,generateAccountAbout,leadFeedback,projectFunnel,rebuildProduct,requestedProject,setGroupProject,updateProject,type ActionResult} from '@/lib/processes/lead-actions';
 import {after} from 'next/server';
 import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,generateTelegramUsername,hasMessageQuota,isAccountUsable,isOnCooldown,withFrozenStatus} from '@/lib/telegram-accounts';
-import {pushTaskLog} from '@/lib/audience-invite';
+import {pushTaskLog,pushTaskLogs} from '@/lib/audience-invite';
 import {canonicalizeTgUrl,duplicateReason,isDuplicateKind,telegramEntityKey} from '@/lib/record-identity';
 import {DEFAULT_DM_SOFT_CLOSE} from '@/lib/mailing';
 import {checkProxyTarget} from '@/lib/security/net-guard';
@@ -1870,11 +1870,16 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     lastScanned,
     // REQ-10: при сбое/пропуске судьи курсор откатывается к первому несуждённому сообщению
     scanCursor:scan.nextCursor,
+    judgeFailStreak:scan.judgeFailStreak,
     aiRejected:scan.aiRejected,
-    scanLog:pushTaskLog(base.scanLog,inserted.length?'ok':scan.judgeError?'warn':'info',`Переобход · ${scan.delta.run}`,50),
+    scanLog:pushTaskLogs(base.scanLog,[
+     {level:inserted.length?'ok':scan.judgeError?'warn':'info',text:`Переобход · ${scan.delta.run}`},
+     ...(scan.streakNote?[{level:'warn' as const,text:scan.streakNote}]:[]),
+    ],50),
    };
    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(groupNext),owner,id,'group').run();
    await appendGlobalRescanLog(owner,inserted.length?'ok':scan.judgeError?'warn':'info',scan.delta.run);
+   if(scan.streakNote)await appendGlobalRescanLog(owner,'warn',`${gdata.name||'Группа'}: ${scan.streakNote}`);
    return reply({
     ok:true,
     scanned:counts.returned,

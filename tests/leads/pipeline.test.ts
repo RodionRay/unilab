@@ -94,8 +94,8 @@ describe('runGroupScan', () => {
 });
 
 describe('cursor rewind (REQ-10)', () => {
-  it('rewinds to firstUnjudgedId − 1 when batch 2 fails', async () => {
-    const {llm} = scriptedLlm([answerAll(() => ({isLead: false, score: 1})), 'bad', 'bad']);
+  it('rewinds to firstUnjudgedId − 1 when batch 2 fails with a transient error', async () => {
+    const {llm} = scriptedLlm([answerAll(() => ({isLead: false, score: 1})), new Error('DeepSeek 503: down')]);
     const msgs = Array.from({length: 30}, (_, i) => makeMessage(101 + i));
     const r = await runGroupScan(groupDeps(msgs, llm));
     expect(r.nextCursor).toBe('120');
@@ -105,7 +105,7 @@ describe('cursor rewind (REQ-10)', () => {
   });
 
   it('ignores comment ids: only group/discussion ids reach the cursor', async () => {
-    const {llm} = scriptedLlm(['bad']);
+    const {llm} = scriptedLlm([new Error('DeepSeek 503: down')]);
     const msgs = [
       makeMessage(5000, {messageKind: 'comment'}),
       makeMessage(300, {messageKind: 'discussion'}),
@@ -115,6 +115,51 @@ describe('cursor rewind (REQ-10)', () => {
     expect(r.nextCursor).toBe('299');
     const onlyComments = await runGroupScan(groupDeps([makeMessage(5000, {messageKind: 'comment'})], llm));
     expect(onlyComments.nextCursor).toBe('900');
+  });
+
+  it('a schema-invalid answer twice is judgeError and the cursor moves past that batch', async () => {
+    const {llm} = scriptedLlm([answerAll(() => ({isLead: false, score: 1})), 'bad', 'bad']);
+    const msgs = Array.from({length: 30}, (_, i) => makeMessage(101 + i));
+    const r = await runGroupScan(groupDeps(msgs, llm));
+    expect(r.nextCursor).toBe('900');
+    expect(r.delta.counts).toMatchObject({judgeError: 10, rejected: 20});
+    expect(r.judgeFailStreak).toBe(0);
+    expectInvariant(r.delta.counts);
+  });
+
+  it('a schema-invalid batch followed by blocked batches rewinds to the first blocked id', async () => {
+    const {llm} = scriptedLlm([answerAll(() => ({isLead: false, score: 1})), 'bad', 'bad']);
+    const msgs = Array.from({length: 50}, (_, i) => makeMessage(101 + i));
+    const r = await runGroupScan(groupDeps(msgs, llm));
+    expect(r.nextCursor).toBe('140');
+  });
+
+  it('counts consecutive failed scans in judgeFailStreak; success resets it', async () => {
+    const failing = scriptedLlm([new Error('DeepSeek 503: down')]).llm;
+    const msgs = [makeMessage(50), makeMessage(51)];
+    const first = await runGroupScan(groupDeps(msgs, failing));
+    expect(first.judgeFailStreak).toBe(1);
+    expect(first.nextCursor).toBe('49');
+    expect(first.streakNote).toBe('');
+    const ok = scriptedLlm([answerAll(() => ({isLead: false, score: 1}))]).llm;
+    const after = await runGroupScan(groupDeps(msgs, ok, {group: {...groupDeps([], null).group, judgeFailStreak: 2}}));
+    expect(after.judgeFailStreak).toBe(0);
+  });
+
+  it('the third failed scan in a row advances to the worker cursor and says so in Russian', async () => {
+    const failing = scriptedLlm([new Error('DeepSeek 503: down')]).llm;
+    const msgs = [makeMessage(50), makeMessage(51)];
+    const r = await runGroupScan(groupDeps(msgs, failing, {group: {...groupDeps([], null).group, judgeFailStreak: 2}}));
+    expect(r.nextCursor).toBe('900');
+    expect(r.judgeFailStreak).toBe(0);
+    expect(r.streakNote).toMatch(/3 скана подряд/);
+    expect(r.streakNote).toMatch(/пропущено 2/);
+  });
+
+  it('daily cap and missing key never count as failed scans', async () => {
+    const r = await runGroupScan(groupDeps([makeMessage(50)], null, {group: {...groupDeps([], null).group, judgeFailStreak: 2}}));
+    expect(r.nextCursor).toBe('49');
+    expect(r.judgeFailStreak).toBe(2);
   });
 
   it('no AI key rewinds too (no non-LLM fallback)', async () => {

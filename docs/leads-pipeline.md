@@ -46,8 +46,15 @@ are no keyword / intent regexes on the lead path; project keywords are only a hi
      messages (`lib/processes/lead-scan.ts::judgeLlm`), no room → the batch fails as `judgeError`;
    - `isLead && score ≥ minScore` → lead (`hot` when score ≥ `HOT_SCORE` = 80); others → rejected and
      remembered in `group.aiRejected` (`lib/leads/reject-memory.ts`);
-   - a failed or skipped batch stops judging: `scanCursor = first unjudged group/discussion id − 1`
-     (`pipeline.ts::nextScanCursor`), so nothing is lost; comment ids never reach the cursor.
+   - a failed or skipped batch stops judging: `scanCursor = first rewind-marked unjudged group/discussion
+     id − 1` (`pipeline.ts::nextScanCursor`), so nothing is lost; comment ids never reach the cursor;
+   - `rewind` (`judge.ts::UnjudgedMessage`): every skip and call error rewinds, except a batch whose answer
+     stayed invalid JSON / failed the schema after the retry (`judge.ts::callFailure`) — it is `judgeError`
+     and the cursor moves past it;
+   - `group.judgeFailStreak` (server-owned) counts consecutive scans with a rewinding `judgeError`; a scan
+     that only waited (daily cap / no key, nothing judged) keeps it, any other resets it. The 3rd failed
+     scan in a row (`pipeline.ts::JUDGE_FAIL_STREAK_MAX`) takes the worker cursor, resets the streak and
+     writes a Russian `warn` note to `scanLog` and `rescanLog` (`pipeline.ts::decideCursor`).
 5. Leads inserted, `scan_day` upserted (`lib/leads/funnel.ts::upsertScanDay`, compare-and-set), group
    metrics/cursor/`aiRejected`/scan log written, notifications flushed (`route.ts::flushLeadNotifications`).
 6. Auto drafts: `lead-scan.ts::autoDraftCandidates` (hot leads of projects with `autoDraft`, ≤3) drafted
