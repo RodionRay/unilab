@@ -18,6 +18,7 @@ const HARD_DEAD = new Set([
   "disconnected",
   "unauthorized",
   "frozen",
+  "deleted",
   "spamblock",
   "proxy_error",
 ]);

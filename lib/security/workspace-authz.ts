@@ -52,6 +52,7 @@ export const ACTION_RULES:Readonly<Record<string,ActionRule>>={
  check_account:rule(['accounts']),
  check_accounts:rule(['accounts']),
  reset_checking_accounts:rule(['accounts','proxies']),
+ delete_telegram_deleted_accounts:rule(['accounts']),
  generate_account_about:rule(['accounts']),
  apply_account_profiles:rule(['accounts']),
  upload_account_photos:rule(['accounts']),

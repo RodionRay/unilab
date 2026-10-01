@@ -24,7 +24,13 @@ export function createTestD1():TestD1{
    return {
     bind(...raw:unknown[]){
      const values=raw.map(toSqlValue);
+     const runSync=()=>{
+      const stmt=sqlite.prepare(sql);
+      if(stmt.reader){stmt.all(...values);return {meta:{changes:0}}}
+      return {meta:{changes:stmt.run(...values).changes}};
+     };
      return {
+      runSync,
       async all(){
        const stmt=sqlite.prepare(sql);
        if(!stmt.reader){stmt.run(...values);return {results:[]}}
@@ -36,13 +42,15 @@ export function createTestD1():TestD1{
        return (stmt.get(...values) as T|undefined)??null;
       },
       async run(){
-       const stmt=sqlite.prepare(sql);
-       if(stmt.reader){stmt.all(...values);return {meta:{changes:0}}}
-       return {meta:{changes:stmt.run(...values).changes}};
+       return runSync();
       },
      };
     },
    };
+  },
+  async batch(statements){
+   // Like D1: one transaction, rolled back as a whole when any statement fails.
+   return sqlite.transaction(()=>statements.map(s=>(s as unknown as {runSync:()=>{meta:{changes:number}}}).runSync()))();
   },
  };
  return {db,sqlite};

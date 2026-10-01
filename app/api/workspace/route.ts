@@ -1,6 +1,6 @@
 import {getSessionUser} from '@/lib/auth';
 import {GROUP_CATALOG,isCatalogPlaceholderUrl} from '@/lib/group-catalog';
-import {JOIN_SUCCESS_PATCH,JOIN_WORKER_ERROR_RETRY_MS,accountBlindPatch,type JoinAccountState,type JoinProxyState,evaluateAccountJoinReadiness,isAccountBlindResult,isAccountResolveBlind,isJoinFarmCandidate,joinFailurePatch,planGroupHeal,sanitizeJoinStateError} from '@/lib/processes/join-flow';
+import {JOIN_SUCCESS_PATCH,JOIN_WORKER_ERROR_RETRY_MS,accountBlindDeferPatch,accountBlindPatch,deletedSuspectPatch,type JoinAccountState,type JoinProxyState,evaluateAccountJoinReadiness,isAccountBlindResult,isAccountResolveBlind,isJoinFarmCandidate,joinFailurePatch,planGroupHeal,sanitizeJoinStateError} from '@/lib/processes/join-flow';
 import {database,seal,unseal} from '@/lib/server-store';
 import {aiChatText,envAiApiKey,resolveAiConfig} from '@/lib/ai-client';
 import {buildProjectBrief,leadMessageFingerprint,parseLeadTemperature,ratingFromTemperatures,strongPlusTerms} from '@/lib/lead-filter';
@@ -24,7 +24,7 @@ import {
 } from '@/lib/processes/scan-flow';
 import {appendLearnExamples,extractTermsFromHotMessages,mergeKeywords,mergeKeywordsPreferNew,parseKeywordCsv} from '@/lib/ai-keywords';
 import {sanitizeMinusTerms,scanStopTerms} from '@/lib/lead-stopwords';
-import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpChatCounters,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasMemberInviteQuota,hasMessageQuota,isAccountFlooded,isAccountUsable,isDayLimitCooldown,isDayLimitedFor,dayLimitCooldownKind,isOnCooldown,joinWaitSec,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
+import {ACCOUNT_STATUSES,BLIND_ERROR_PREFIX,DEFAULT_ACCOUNT_LIMITS,DELETED_CONFIRM_AFTER_MS,accountTelegramBlock,isAccountJoinBlocked,isDeletedSuspect,type TelegramBlock,clearedSuspectPatch,keepServerOwnedAccountFields,needsAccountRecheck,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpChatCounters,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasMemberInviteQuota,hasMessageQuota,isAccountFlooded,isAccountUsable,isDayLimitCooldown,isDayLimitedFor,dayLimitCooldownKind,isOnCooldown,joinWaitSec,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
 import {INVITE_SOFT_FAIL_LIMIT,interpretInviteWorkerResult,inviteAccountStillLive,inviteBatchLimit,inviteUserPatch} from '@/lib/processes/invite-tick';
 import {bracketLabel,formatRuWhen,inviteUserFailText,inviteUserOkText,normalizeStatusFilters,normalizeTgRef,pushTaskLog,pushTaskLogs,randomPauseSec} from '@/lib/audience-invite';
 import {canonicalizeTgUrl,duplicateReason,isDuplicateKind,telegramEntityKey} from '@/lib/record-identity';
@@ -753,6 +753,30 @@ async function putAccountUnauthorized(owner:string,id:string,data:any,opts:{
  };
 }
 
+/**
+ * The check saw @telegram AND @durov unresolvable — a soft sign of a Telegram-deleted account. The account is out of
+ * every use at once (controlBlindSince → isDeletedSuspect); 'deleted' (and so the purge) needs a second such check
+ * at least DELETED_CONFIRM_AFTER_MS after the first: one bad resolve window must not cost an account irreversibly.
+ */
+async function saveControlBlindVerdict(owner:string,id:string,next:Record<string,unknown>,err:string,proxyRotated:string){
+ const since=Date.parse(String(next.controlBlindSince||''));
+ const confirmed=Number.isFinite(since)&&Date.now()-since>=DELETED_CONFIRM_AFTER_MS;
+ const verdict={
+  ...next,
+  status:confirmed?'deleted':'active',
+  controlBlindSince:Number.isFinite(since)?next.controlBlindSince:new Date().toISOString(),
+  error:(confirmed?`Подтверждено повторной проверкой: ${err}`:err).slice(0,500),
+ };
+ await database().prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(verdict),owner,id,'account').run();
+ return {id,ok:false,status:verdict.status,deletedSuspect:!confirmed,error:verdict.error,proxyRotated:proxyRotated||undefined};
+}
+
+async function keepDeletedAfterFailedCheck(owner:string,id:string,data:Record<string,unknown>,err:string,proxyRotated:string){
+ const kept={...data,status:'deleted',checkingAt:''};
+ await database().prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(kept),owner,id,'account').run();
+ return {id,ok:false,status:'deleted',error:String(data.error||err).slice(0,500),proxyRotated:proxyRotated||undefined};
+}
+
 async function runAccountCheck(owner:string,id:string,opts?:{
  checkRestrictions?:boolean;
  ensureUsername?:boolean;
@@ -809,9 +833,25 @@ async function runAccountCheck(owner:string,id:string,opts?:{
     ...(proxyRotated?{proxyId:proxyRotated}:{}),
    };
 
+   if(workerResult.deletedSuspect===true){
+    return saveControlBlindVerdict(owner,id,next,err,proxyRotated);
+   }
    if(workerResult.ok||status==='active'){
-    const okNext={...next,status:'active',cooldownUntil:'',cooldownReason:'',error:''};
+    // Only a positively resolved @telegram control proves the account alive; an inconclusive one (FloodWait,
+    // network, controlUnknown, an old worker) keeps 'deleted', the soft block signs and the blind error.
+    const proven=workerResult.controlOk===true;
+    const keepDeleted=!proven&&data.status==='deleted';
+    const keptError=!proven&&String(data.error||'').startsWith(BLIND_ERROR_PREFIX)?String(data.error):'';
+    const okNext={
+     ...next,
+     status:keepDeleted?'deleted':'active',
+     cooldownUntil:'',
+     cooldownReason:'',
+     error:keepDeleted?String(data.error||''):keptError,
+     ...(proven?clearedSuspectPatch():{}),
+    };
     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(okNext),owner,id,'account').run();
+    if(keepDeleted)return {id,ok:false,status:'deleted',error:okNext.error,profile,proxyRotated:proxyRotated||undefined};
     return {
      id,ok:true,status:'active',error:'',profile,
      proxyRotated:proxyRotated||undefined,
@@ -828,12 +868,17 @@ async function runAccountCheck(owner:string,id:string,opts?:{
     });
    }
 
-   if(status==='frozen'||status==='spamblock'){
-    // Подтверждённый проверкой спамблок без таймера: старый истёкший cooldownUntil не должен «снять» его (REQ-M8)
+   if(status==='frozen'||status==='spamblock'||status==='deleted'){
+    // Подтверждённый проверкой спамблок без таймера: старый истёкший cooldownUntil не должен «снять» его (REQ-M8).
+    // deleted — вердикт самого Telegram: смена прокси его не изменит.
     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...next,cooldownUntil:'',cooldownReason:status}),owner,id,'account').run();
     return {id,ok:false,status:next.status,error:next.error,profile,proxyRotated:proxyRotated||undefined};
    }
 
+   if(data.status==='deleted'&&(status==='disconnected'||status==='proxy_error')){
+    // A failed connect (FloodWait, network, proxy) proves nothing about a Telegram-deleted account: keep the verdict.
+    return keepDeletedAfterFailedCheck(owner,id,data,err||status,proxyRotated);
+   }
    if(status==='proxy_error'&&currentProxyId){
     await markProxyTelegramBad(owner,currentProxyId,err||'Ошибка прокси при подключении к Telegram');
    }
@@ -874,6 +919,7 @@ async function runAccountCheck(owner:string,id:string,opts?:{
    const msg=String((e as Error).message||e);
    lastError=msg;
    lastStatus='disconnected';
+   if(data.status==='deleted')return keepDeletedAfterFailedCheck(owner,id,data,msg,proxyRotated);
    const isTimeout=/timeout|AbortError|таймаут/i.test(msg);
    const looksProxy=/proxy|socks|ECONN|connection to telegram|прокси/i.test(msg);
    const sessionish=/сессия больше не действительн|session.*(revoked|invalid)|unauthorized|authkey/i.test(msg);
@@ -1042,7 +1088,7 @@ function scanLimitFromDays(days:number){
 
 function isHardDeadAccountStatus(status:string){
  const st=String(status||'');
- return ['disconnected','unauthorized','frozen','spamblock','proxy_error'].includes(st);
+ return ['disconnected','unauthorized','frozen','deleted','spamblock','proxy_error'].includes(st);
 }
 
 /** Нормализация joinStateError — см. lib/processes/join-flow.sanitizeJoinStateError */
@@ -1224,8 +1270,13 @@ async function healDeadGroupAccounts(owner:string){
  const liveIds=await listJoinTargetIds(owner);
  const accRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='account'").bind(owner).all();
  const accStatus=new Map<string,string>();
+ const accBlock=new Map<string,TelegramBlock|null>();
  for(const r of accRows.results){
-  try{accStatus.set(String(r.id),String(JSON.parse(String(r.data)).status||''))}catch{accStatus.set(String(r.id),'error')}
+  try{
+   const a=JSON.parse(String(r.data));
+   accStatus.set(String(r.id),String(a.status||''));
+   accBlock.set(String(r.id),accountTelegramBlock(a));
+  }catch{accStatus.set(String(r.id),'error')}
  }
  const groups=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='group'").bind(owner).all();
  const items:{id:string;name:string}[]=[];
@@ -1253,6 +1304,9 @@ async function healDeadGroupAccounts(owner:string){
     group:d,
     accountStatus:aid&&accStatus.has(aid)?accStatus.get(aid)!:null,
     previousAccountStatus:prev&&accStatus.has(prev)?accStatus.get(prev)!:null,
+    // A group never waits on an account with a Telegram block signal.
+    accountJoinBlock:accBlock.get(aid)??null,
+    previousAccountJoinBlock:accBlock.get(prev)??null,
    });
    const joinBusy=['queued','waiting','joining','scanning'].includes(String(d.joinState||''));
 
@@ -1292,7 +1346,7 @@ async function healDeadGroupAccounts(owner:string){
      lastScanned:'',
      joinState:'queued',
      joinStateAt:new Date().toISOString(),
-     joinStateError:'Аккаунт отключён Telegram — группа переназначена',
+     joinStateError:accBlock.get(aid)?'Аккаунт заблокирован Telegram — группа переназначена':'Аккаунт отключён Telegram — группа переназначена',
      ...JOIN_SUCCESS_PATCH,
     });
     reassigned++;
@@ -1310,6 +1364,53 @@ async function healDeadGroupAccounts(owner:string){
   return {ok:false as const,error:'Нет живых аккаунтов для переназначения',reassigned,restored,items};
  }
  return {ok:true as const,reassigned,restored,items,liveAccounts:liveIds.length};
+}
+
+const ACCOUNT_TASK_KINDS=['mailing_task','invite_task','audience_task'];
+/** Account references cleared by the purge: [kind, JSON field]. */
+const PURGED_ACCOUNT_REFS=[['group','accountId'],['group','joinedAccountId'],['lead','accountId'],['audience_task','sourceAccountId']] as const;
+const PURGE_TASK_PAUSE_REASON='Все аккаунты задачи удалены Telegram и стёрты — выберите рабочие аккаунты';
+
+/**
+ * Irreversible purge of accounts Telegram deleted. Deletes only ids the owner confirmed in the dialog, each re-checked
+ * for status 'deleted' inside the DELETE (the session lives in the record's secret, so it goes too). The DELETE and the
+ * reference cleanup run as one D1 batch (one transaction): a crash cannot leave a deleted account with dangling refs.
+ * References are cleared only for candidates that are really gone after the DELETE, by owner-scoped conditional
+ * UPDATEs, so a concurrent heal/join reassignment or task edit is never overwritten: groups/leads/audience lose the id
+ * (heal moves joined and owner-queued groups to a live account), tasks drop it and a running task left without accounts
+ * is paused with a reason. An audit line with the acting user goes to the rescan log.
+ */
+async function deleteTelegramDeletedAccounts(owner:string,actorId:string,requested:readonly string[]){
+ const db=database();
+ const deadSql="json_valid(data) AND json_extract(data,'$.status')='deleted'";
+ const want=JSON.stringify([...new Set(requested)]);
+ const rows=(await db.prepare(`SELECT id,data FROM records WHERE owner=? AND kind='account' AND ${deadSql} AND id IN (SELECT value FROM json_each(?))`).bind(owner,want).all()).results;
+ if(!rows.length)return {deleted:0,groupsDetached:0,tasksChanged:0};
+ const candidates=JSON.stringify(rows.map(r=>String(r.id)));
+ // Candidates with no account record left after the DELETE: the ids this purge actually removed.
+ const gone="(SELECT c.value FROM json_each(?) c WHERE NOT EXISTS (SELECT 1 FROM records a WHERE a.owner=? AND a.kind='account' AND a.id=c.value))";
+ const statements=[
+  db.prepare(`DELETE FROM records WHERE owner=? AND kind='account' AND ${deadSql} AND id IN (SELECT value FROM json_each(?))`).bind(owner,candidates),
+  ...PURGED_ACCOUNT_REFS.map(([kind,field])=>db.prepare(`UPDATE records SET data=json_set(data,'$.${field}','') WHERE owner=? AND kind=? AND json_valid(data) AND json_extract(data,'$.${field}') IN ${gone}`).bind(owner,kind,candidates,owner)),
+ ];
+ const kept=`(SELECT k.value FROM json_each(records.data,'$.accountIds') k WHERE k.value NOT IN ${gone})`;
+ const filtered=`json_set(data,'$.accountIds',json((SELECT json_group_array(value) FROM ${kept})))`;
+ const pause=`json_extract(data,'$.status') IN ('running','scheduled') AND NOT EXISTS ${kept}`;
+ const kinds=ACCOUNT_TASK_KINDS.map(()=>'?').join(',');
+ statements.push(db.prepare(`UPDATE records SET data=CASE WHEN ${pause} THEN json_set(${filtered},'$.status','paused','$.error',?) ELSE ${filtered} END
+  WHERE owner=? AND kind IN (${kinds}) AND json_valid(data) AND EXISTS (SELECT 1 FROM json_each(records.data,'$.accountIds') t WHERE t.value IN ${gone})`)
+  .bind(candidates,owner,candidates,owner,PURGE_TASK_PAUSE_REASON,candidates,owner,owner,...ACCOUNT_TASK_KINDS,candidates,owner));
+ const results=await db.batch(statements);
+ const deleted=Number(results[0]?.meta?.changes)||0;
+ const groupsDetached=Number(results[1+PURGED_ACCOUNT_REFS.findIndex(([k,f])=>k==='group'&&f==='accountId')]?.meta?.changes)||0;
+ const tasksChanged=Number(results[results.length-1]?.meta?.changes)||0;
+ if(!deleted)return {deleted:0,groupsDetached:0,tasksChanged:0};
+ const left=new Set((await db.prepare(`SELECT id FROM records WHERE owner=? AND kind='account' AND id IN (SELECT value FROM json_each(?))`).bind(owner,candidates).all()).results.map(r=>String(r.id)));
+ const names=rows.filter(r=>!left.has(String(r.id))).map(r=>{
+  try{const d=JSON.parse(String(r.data));return String(d.username||d.name||String(r.id).slice(0,8)).slice(0,40)}catch{return String(r.id).slice(0,8)}
+ });
+ try{await appendGlobalRescanLog(owner,'warn',`Удалены аккаунты, удалённые Telegram (${deleted}): ${names.join(', ')} · групп отвязано: ${groupsDetached} · задач изменено: ${tasksChanged} · запустил: ${actorId}`)}catch{/* журнал не блокирует чистку */}
+ return {deleted,groupsDetached,tasksChanged};
 }
 
 function workerLooksFrozen(result:any,msg?:string){
@@ -1331,7 +1432,7 @@ function workerLooksDeadAccount(result:any){
 }
 
 /** Пометить hard-dead аккаунт и пересадить группу на живой. Cooldown / смесь не трогаем через этот путь. */
-async function rotateGroupOffDeadAccount(owner:string,gid:string,gdata:any,deadAccountId:string,accountPatch:Record<string,unknown>){
+async function rotateGroupOffDeadAccount(owner:string,gid:string,gdata:any,deadAccountId:string,accountPatch:Record<string,unknown>,opts:{dropMembership?:boolean}={}){
  const db=database();
  if(deadAccountId){
   const arow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,deadAccountId,'account').first();
@@ -1346,9 +1447,10 @@ async function rotateGroupOffDeadAccount(owner:string,gid:string,gdata:any,deadA
  if(!live.length)return {ok:false as const,gdata};
  const nextAcc=live[0];
  if(!nextAcc||nextAcc===gdata.accountId)return {ok:false as const,gdata};
- if(groupLooksJoined(gdata))return {ok:false as const,gdata};
+ if(groupLooksJoined(gdata)&&!opts.dropMembership)return {ok:false as const,gdata};
  const next={
   ...gdata,
+  ...(groupLooksJoined(gdata)?{joinedAt:'',joinedAccountId:''}:{}),
   accountId:nextAcc,
   membership:'none' as const,
   status:'setup',
@@ -1936,7 +2038,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const rows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='account' ORDER BY created DESC").bind(owner).all();
   const ids=rows.results
    .map((r:any)=>({id:r.id as string,data:JSON.parse(r.data as string)}))
-   .filter((r:{id:string;data:any})=>mode==='all'||r.data.status!=='active')
+   .filter((r:{id:string;data:any})=>mode==='all'||needsAccountRecheck(r.data))
    .map(r=>r.id)
    .slice(0,40);
   const results:Awaited<ReturnType<typeof runAccountCheck>>[]=[];
@@ -1947,6 +2049,10 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   }
   const active=results.filter(r=>r.status==='active').length;
   return reply({ok:true,checked:results.length,active,results});
+ }
+ if(b.action==='delete_telegram_deleted_accounts'){
+  const ids=z.array(z.string().uuid()).max(500).parse(b.ids??[]);
+  return reply({ok:true,...await deleteTelegramDeletedAccounts(owner,actor.userId,ids)});
  }
  if(b.action==='reset_checking_accounts'){
   const fixedAcc=await healStuckAccountChecks(owner,0);
@@ -2030,7 +2136,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
        next.lastName=wr.profile.lastName??next.lastName;
        if(about!=null)next.about=about;
       }
-      if(wr.status==='frozen')next.status='frozen';
+      // 'deleted' is a stronger Telegram verdict than a frozen method: never downgrade it.
+      if(wr.status==='frozen'&&next.status!=='deleted')next.status='frozen';
      }catch(e){
       tgOk=false;
       tgError=internalError('apply_account_profiles',e,'Не удалось обновить профиль в Telegram');
@@ -2057,11 +2164,11 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     const wr=await workerPost('/upload-photo',{...payload,photoBase64});
     if(wr.ok){
      const next={...data,hasPhoto:true};
-     if(wr.status==='frozen')next.status='frozen';
+     if(wr.status==='frozen'&&next.status!=='deleted')next.status='frozen';
      await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'account').run();
      results.push({id,ok:true});
     }else{
-     if(wr.status==='frozen'){
+     if(wr.status==='frozen'&&data.status!=='deleted'){
       await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...data,status:'frozen'}),owner,id,'account').run();
      }
      results.push({id,ok:false,error:wr.error||'Ошибка фото'});
@@ -2105,6 +2212,11 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   let adata=JSON.parse(arow.data);
   let rotatedAccount=false;
   let gate=await accountJoinGate(owner,adata);
+  // Членство принадлежит этому слоту: с любым сигналом блокировки Telegram он не вступает (heal пересадит группу).
+  const ownBlock=alreadyIn?accountTelegramBlock(adata):null;
+  if(ownBlock){
+   return reply({error:'Аккаунт группы заблокирован Telegram — вступления с него остановлены, автопочинка переназначит группу',accountUnavailable:true,reason:ownBlock,group:gdata},409);
+  }
   // Членство принадлежит аккаунту группы: обновление peer другим слотом не сделать, ферму не крутим
   if(!alreadyIn&&!gate.ok){
    const farm=await listJoinFarmCandidates(owner);
@@ -2117,7 +2229,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     rotatedAccount=true;
     gate=await accountJoinGate(owner,adata);
     try{await appendGlobalRescanLog(owner,'info',`${gdata.name||'Группа'}: ферма ${fromId.slice(0,8)} → ${pick.id.slice(0,8)}`)}catch{/* */}
-   }else if(!pick&&gate.reason!=='cooldown'&&gate.reason!=='spamblock'&&gate.reason!=='frozen'&&gate.reason!=='resolve_blind'){
+   }else if(!pick&&!['cooldown','spamblock','frozen','deleted','flood','resolve_blind'].includes(gate.reason)){
     const inviteLimit=Number(adata.limits?.invite??DEFAULT_ACCOUNT_LIMITS.invite);
     return reply({
      error:gate.reason==='quota'
@@ -2136,6 +2248,9 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      waitSec:until?Math.max(60,Math.ceil((Date.parse(until)-Date.now())/1000)||300):300,
      cooldown:true,
     },429);
+   }
+   if(gate.reason==='flood'){
+    return reply({error:gate.message,waitSec:gate.waitSec,flood:true,cooldown:true,group:gdata},429);
    }
    if(gate.reason==='resolve_blind'){
     return reply({
@@ -2175,7 +2290,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const accountBlind=isAccountBlindResult(result);
    // Сессия/прокси/коннект упали — вина аккаунта, не группы (frozen обрабатывается ниже)
    const accountFault=!frozen&&!result.ok&&JOIN_ACCOUNT_FAULT_STATUSES.includes(String(result.status||''));
-   const workerTransient=!frozen&&!result.ok&&JOIN_WORKER_TRANSIENT_STATUSES.includes(String(result.status||''));
+   // controlUnknown: the worker could not run its @telegram control (FloodWait/network) — neither side is to blame.
+   const workerTransient=!frozen&&!result.ok&&(JOIN_WORKER_TRANSIENT_STATUSES.includes(String(result.status||''))||result.controlUnknown===true);
    const joinedOk=!!result.ok||result.join==='already'||result.join==='requested';
    // «already» не шлёт JoinChannel — дневной лимит и паузу не тратит
    const spentJoin=joinedOk&&result.join!=='already';
@@ -2194,7 +2310,11 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     joinStateAt:'',
     joinStateError:reallyJoined||result.join==='requested'?'':(result.error||'Не удалось вступить').slice(0,500),
     // FloodWait — проблема аккаунта, не группы: попытку не считаем
-    ...(joinedOk?JOIN_SUCCESS_PATCH:flood||accountBlind||accountFault?{}:workerTransient?{joinNextAt:new Date(Date.now()+JOIN_WORKER_ERROR_RETRY_MS).toISOString()}:joinFailurePatch(gdata)),
+    ...(joinedOk?{...JOIN_SUCCESS_PATCH,joinBlindAccounts:[]}:flood||accountBlind||accountFault?{}:workerTransient?{joinNextAt:new Date(Date.now()+JOIN_WORKER_ERROR_RETRY_MS).toISOString()}:joinFailurePatch(gdata)),
+    // Слеп аккаунт, не группа: без «ошибки» и с паузой — иначе автопочинка каждые 5 мин гоняет её по ферме.
+    ...(accountBlind&&!joinedOk?accountBlindDeferPatch(gdata,String(gdata.accountId)):{}),
+    // The worker could not run its own control: the group is not to blame, no error status.
+    ...(result.controlUnknown===true&&!joinedOk?{status:'setup'}:{}),
     name:result.title&&(!gdata.name||gdata.name.startsWith('http')||gdata.name==='Группа')?result.title:gdata.name,
    };
    // accessHash только от фактического join/already этой сессии
@@ -2229,16 +2349,21 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     }
    }
    if(accountBlind){
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...adata,...accountBlindPatch(),error:String(result.error||'').slice(0,500)}),owner,gdata.accountId,'account').run();
-    try{await appendGlobalRescanLog(owner,'warn',`Аккаунт ${String(gdata.accountId).slice(0,8)} слеп на ResolveUsername${result.sessionRefreshed?' (новая сессия)':''} — отлёжка 6 ч`)}catch{/* */}
+    // Не резолвит даже @telegram — так выглядит удалённый Telegram аккаунт; статус решает проверка (deletedSuspectPatch).
+    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...adata,...accountBlindPatch(),...deletedSuspectPatch(),error:String(result.error||'').slice(0,500)}),owner,gdata.accountId,'account').run();
+    try{await appendGlobalRescanLog(owner,'warn',`Аккаунт ${String(gdata.accountId).slice(0,8)} слеп на ResolveUsername${result.sessionRefreshed?' (новая сессия)':''} — отлёжка 6 ч, нужна перепроверка`)}catch{/* */}
    }
    if(frozen){
     const cooled=withFrozenStatus(adata,result.error||'Аккаунт заморожен Telegram');
     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(cooled),owner,gdata.accountId,'account').run();
-    const rotated=await rotateGroupOffDeadAccount(owner,id,gdata,gdata.accountId,{status:'frozen',error:(result.error||'Аккаунт заморожен Telegram').slice(0,500)});
-    if(rotated.ok){
-     return reply({ok:false,accountFrozen:true,reassigned:true,needJoin:true,rejoinItem:rotated.rejoinItem,group:rotated.gdata,result:{...result,status:'error'},error:'Аккаунт заморожен — группа переназначена на живой аккаунт',joinGapSec:JOIN_GAP_DEFAULT_SEC});
-    }
+    // Frozen is permanent: even a joined group leaves it (its membership is useless), the owner is not asked to.
+    const rotated=await rotateGroupOffDeadAccount(owner,id,next,gdata.accountId,{status:'frozen',error:(result.error||'Аккаунт заморожен Telegram').slice(0,500)},{dropMembership:true});
+    const msg=rotated.ok?'Аккаунт заморожен Telegram — группа переназначена на живой аккаунт':'Аккаунт заморожен Telegram — живых аккаунтов нет, группа ждёт автопочинку';
+    return reply({ok:false,accountFrozen:true,reassigned:rotated.ok,needJoin:rotated.ok,...(rotated.ok?{rejoinItem:rotated.rejoinItem}:{}),group:rotated.gdata,result:{ok:false,status:'error',join:'frozen',error:msg},error:msg,joinGapSec:JOIN_GAP_DEFAULT_SEC});
+   }
+   if(accountBlind&&!joinedOk){
+    const minutes=Math.ceil((Date.parse(String(next.joinNextAt))-Date.now())/60_000);
+    return reply({error:`Аккаунт не резолвит @username (ограничен Telegram) — повторим другим аккаунтом через ~${minutes} мин`,deferred:true,accountBlind:true,rotatedAccount,group:next},409);
    }
    return reply({ok:reallyJoined||result.join==='requested',result:{...result,status,membership:next.membership,joinedAt:next.joinedAt},group:next,accountFrozen:frozen,rotatedAccount,joinGapSec:JOIN_GAP_DEFAULT_SEC});
   }catch(e){
@@ -2267,6 +2392,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   if(!gdata.accountId)return reply({error:'Назначьте аккаунт группе'},400);
   if(isCatalogPlaceholderUrl(gdata.url||''))return reply({error:'Нужна реальная ссылка t.me/… или инвайт (это шаблон каталога)',needUrl:true},400);
   // Hard-dead аккаунт → переназначение. Cooldown / отлёжка — смесь не трогаем.
+  let scanJoinBlocked=false;
   {
    const arow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,gdata.accountId,'account').first();
    const adata=arow?JSON.parse(arow.data):null;
@@ -2290,7 +2416,9 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     const healedAcc={...adata,status:'active',cooldownUntil:'',error:''};
     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(healedAcc),owner,gdata.accountId,'account').run();
    }
-   if(isHardDeadAccountStatus(st)){
+   scanJoinBlocked=isAccountJoinBlocked(adata);
+   // Suspected Telegram-deleted account (blind on @telegram): out of every use, like a hard-dead one.
+   if(isHardDeadAccountStatus(st)||isDeletedSuspect(adata)){
     if(groupLooksJoined(gdata)){
      return reply({error:'Аккаунт недоступен — группа уже была вступившей, скан с этого слота пропущен',accountDead:true,preserved:true,group:gdata},409);
     }
@@ -2356,7 +2484,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   try{
   try{
    const {payload}=await loadAccountSessionPayload(owner,gdata.accountId);
-   const result=await workerPost('/scan-group',{...payload,url:gdata.url,keywords,minusKeywords,limit:scanLimit,days:scanDepthDays,minId:String(gdata.scanCursor||'')});
+   // allowJoin:false — the worker must not JoinChannel a discussion with a Telegram-blocked account.
+   const result=await workerPost('/scan-group',{...payload,url:gdata.url,keywords,minusKeywords,limit:scanLimit,days:scanDepthDays,minId:String(gdata.scanCursor||''),allowJoin:!scanJoinBlocked});
     if(!result.ok){
     if(workerLooksDeadAccount(result)){
      const frozen=workerLooksFrozen(result);
@@ -2376,6 +2505,14 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
        error:frozen?'Аккаунт заморожен — группа переназначена':'Аккаунт недоступен — группа переназначена',
       },409);
      }
+    }
+    // «Не видит @» от слепого слота или при сбое контрольной проверки — вина аккаунта, не группы: без ошибки группе.
+    if(isAccountBlindResult(result)||result.controlUnknown===true){
+     if(isAccountBlindResult(result)){
+      const arow=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,gdata.accountId,'account').first<{data:string}>();
+      if(arow)await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...JSON.parse(arow.data),...accountBlindPatch(),...deletedSuspectPatch(),error:String(result.error||'').slice(0,500)}),owner,gdata.accountId,'account').run();
+     }
+     return reply({ok:false,skipped:true,accountBlind:isAccountBlindResult(result),error:String(result.error||'Аккаунт не смог проверить группу').slice(0,500),group:gdata},409);
     }
     // Слот не резолвит публичный @ — пробуем другой живой аккаунт (ферма часто врёт)
     const usernameMissing=!!result.usernameMissing||result.join==='missing'||/не видит @|no user has|nobody is using|username_not_occupied/i.test(String(result.error||''));
@@ -3273,7 +3410,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    if(!a)return false;
    // status=cooldown без вида лимита (даже с истёкшим таймером) — для сбора не берём; дневной лимит ЛС/вступлений чтению не мешает
    if(String(a.status||'')==='cooldown'&&dayLimitCooldownKind(a)===null)return false;
-   return isAccountUsable(a);
+   // Сбор может вступать в источник: аккаунт с сигналом блокировки Telegram не берём.
+   return isAccountUsable(a)&&!isAccountJoinBlocked(a);
   });
   // Аккаунт, уже вступивший в этот источник (из «Группы») — первым
   let preferId='';
@@ -3505,6 +3643,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    if(joinBlind||isDeadSessionError(joinErr)){
     if(isDeadSessionError(joinErr)){
      try{await putAccountUnauthorized(owner,accountId,account,{lastError:joinErr})}catch{/* */}
+    }else if(isAccountBlindResult(joinRes)){
+     await saveAccount(accountId,{...account,...accountBlindPatch(),...deletedSuspectPatch(),error:joinErr.slice(0,500)});
     }
     // Ротация: пробуем следующий слот на следующем тике
     const next={
@@ -3714,7 +3854,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const a=accMap.get(aid);
    if(!a)return true;
    // spamblock/cooldown — временная отлёжка, не считаем «отвалом» для стоп-%
-   return ['disconnected','unauthorized','frozen','proxy_error'].includes(String(a.status));
+   return ['disconnected','unauthorized','frozen','deleted','proxy_error'].includes(String(a.status));
   }).length;
   const pct=Math.round((dead/accountIds.length)*100);
   if(pct>=Number(data.stopDisconnectedPct||30)&&dead>0){
@@ -3730,13 +3870,14 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   }
   const liveIds=accountIds.filter(aid=>{
    const a=accMap.get(aid);
-   return isAccountUsable(a)&&hasMemberInviteQuota(a)&&!isAccountResolveBlind(a);
+   // Инвайт начинается с вступления в целевую группу: аккаунт с сигналом блокировки Telegram не берём.
+   return isAccountUsable(a)&&hasMemberInviteQuota(a)&&!isAccountJoinBlocked(a);
   });
   if(!liveIds.length){
    // Все рабочие слоты слепы на ResolveUsername — не логиним их по кругу, ждём конца отлёжки
    const blindEnds=accountIds
     .map(aid=>accMap.get(aid))
-    .filter(a=>isAccountUsable(a)&&isAccountResolveBlind(a))
+    .filter(a=>isAccountResolveBlind(a))
     .map(a=>Date.parse(String(a.resolveBlindUntil)))
     .sort((a,b)=>a-b);
    if(blindEnds.length){
@@ -3847,7 +3988,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     const pause=randomPauseSec(data.pauseFromSec,data.pauseToSec);
     if(isAccountBlindResult(joinRes)){
      // Слот слеп — убираем из ротации на отлёжку, иначе задача логинит его каждый круг
-     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...(accMap.get(accountId)||{}),...accountBlindPatch(),error:String(joinRes.error||'').slice(0,500)}),owner,accountId,'account').run();
+     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...(accMap.get(accountId)||{}),...accountBlindPatch(),...deletedSuspectPatch(),error:String(joinRes.error||'').slice(0,500)}),owner,accountId,'account').run();
     }
     logEntries.push({level:'error',text:`Аккаунт ${bracketLabel(accountLabel)} не смог вступить в группу: ${String(joinRes.error||'').slice(0,120)}`});
     // Цель не видит ни один живой слот подряд — это цель, а не ферма: стоп вместо вечной ротации (REQ-V2)
@@ -3890,10 +4031,10 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const accBefore=accRow?JSON.parse(accRow.data):(accMap.get(accountId)||{});
    const outcome=interpretInviteWorkerResult(result,accBefore);
    if(outcome.accountPatch){
-    const accountPatch=outcome.kind==='account_blind'?{...outcome.accountPatch,...accountBlindPatch()}:outcome.accountPatch;
+    const accountPatch=outcome.kind==='account_blind'?{...outcome.accountPatch,...accountBlindPatch(),...deletedSuspectPatch()}:outcome.accountPatch;
     await updateInviteAccount(accountId,accountPatch);
    }else if(outcome.kind==='account_blind'){
-    await updateInviteAccount(accountId,{...accBefore,...accountBlindPatch(),error:outcome.message});
+    await updateInviteAccount(accountId,{...accBefore,...accountBlindPatch(),...deletedSuspectPatch(),error:outcome.message});
    }
    if(outcome.kind==='spamblock'){
     logEntries.push({level:'error',text:`Аккаунт ${bracketLabel(accountLabel)} получил блокировку на неопределённое время (PEER_FLOOD)`});
@@ -4271,7 +4412,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const dead=accountIds.filter(aid=>{
    const a=accMap.get(aid);
    if(!a)return true;
-   return ['disconnected','unauthorized','frozen','proxy_error'].includes(String(a.status));
+   return ['disconnected','unauthorized','frozen','deleted','proxy_error'].includes(String(a.status));
   }).length;
   const pct=Math.round((dead/accountIds.length)*100);
   const liveIds=accountIds.filter(canSendFrom);
@@ -4940,6 +5081,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const reason=duplicateReason(kind,data,other);
    if(reason)return reply({error:reason,duplicate:true},409);
   }
+ }
+ if(kind==='account'){
+  let prev:Record<string,unknown>={};
+  try{prev=existing?JSON.parse(existing.data):{}}catch{/* битая запись — как новая */}
+  const kept=keepServerOwnedAccountFields(prev,data);
+  for(const k of Object.keys(data))if(!(k in kept))delete data[k];
+  Object.assign(data,kept);
  }
  // REQ-L10: поля, которыми владеет сервер (переписка, скан, уведомления), клиентский save не затирает
  if(existing&&(kind==='lead'||kind==='group')){

@@ -767,6 +767,7 @@ async def join_group(client, url: str, peer_hint: dict | None = None) -> dict[st
                     "join": resolve_err.get("join") or "missing",
                     "usernameMissing": bool(resolve_err.get("usernameMissing")),
                     "accountBlind": bool(resolve_err.get("accountBlind")),
+                    "controlUnknown": bool(resolve_err.get("controlUnknown")),
                     "error": str(resolve_err.get("error") or "Не удалось найти группу")[:400],
                     "member": False,
                 }
@@ -1044,10 +1045,12 @@ async def scan_group(
     limit: int = 40,
     days: int = 0,
     cursor: str = "",
+    allow_join: bool = True,
 ) -> dict[str, Any]:
     """Скан лидов в переписках: группы + обсуждения/комментарии к каналам.
 
-    Посты канала и авторы-каналы НЕ считаются лидами.
+    Посты канала и авторы-каналы НЕ считаются лидами. allow_join=False — слот с сигналом блокировки
+    Telegram: в обсуждение канала не вступаем, отвечаем need_join.
     Лента читается вперёд от `cursor` (последний просмотренный id) или от глубины `days`;
     в ответе `cursor` — последний обработанный id, приложение хранит его на группе.
     """
@@ -1192,6 +1195,8 @@ async def scan_group(
                     "messages": [],
                     "member": False,
                     "usernameMissing": bool(resolve_err.get("usernameMissing")),
+                    "accountBlind": bool(resolve_err.get("accountBlind")),
+                    "controlUnknown": bool(resolve_err.get("controlUnknown")),
                     "title": "",
                 }
             if entity is None:
@@ -1240,6 +1245,8 @@ async def scan_group(
                 if not await member_of(linked):
                     # Пробуем вступить в обсуждение тем же аккаунтом
                     try:
+                        if not allow_join:
+                            raise PermissionError("join disabled for a Telegram-blocked account")
                         from telethon.tl.functions.channels import JoinChannelRequest
 
                         await client(JoinChannelRequest(linked))
@@ -1476,21 +1483,22 @@ async def _resolve_username_via_search(client, want: str):
 RESOLVE_CONTROL_USERNAME = "telegram"
 
 
-async def _account_resolve_blind(client) -> bool:
+async def _control_resolve_blind(client, control: str = RESOLVE_CONTROL_USERNAME) -> bool | None:
     """Аккаунт не резолвит даже @telegram → ограничен сам слот, группа ни при чём.
 
-    Только явный UsernameNotOccupied/Invalid считаем слепотой; сеть/прочее — «не знаем» (False).
+    True — явный UsernameNotOccupied/Invalid (слеп); False — контрольный виден;
+    None — FloodWait/сеть/прочее: про слот ничего не знаем.
     """
     from telethon.tl.functions.contacts import ResolveUsernameRequest
     from telethon.errors import UsernameNotOccupiedError, UsernameInvalidError
 
     try:
-        await client(ResolveUsernameRequest(RESOLVE_CONTROL_USERNAME))
+        await client(ResolveUsernameRequest(control))
         return False
     except (UsernameNotOccupiedError, UsernameInvalidError):
         return True
     except Exception:
-        return False
+        return None
 
 
 PRIVATE_LINK_ERROR = (
@@ -1580,7 +1588,24 @@ async def _resolve_entity(client, url: str, peer_hint: dict | None = None):
             or "cannot find any entity" in detail.lower()
             or "no user has" in detail.lower()
         ):
-            if await _account_resolve_blind(client):
+            control_blind = await _control_resolve_blind(client)
+            if control_blind is None:
+                # The control itself failed (FloodWait, network): neither the slot nor the group is to blame.
+                return None, {
+                    "ok": False,
+                    "status": "setup",
+                    "join": "missing",
+                    "usernameMissing": False,
+                    "accountBlind": False,
+                    "controlUnknown": True,
+                    "error": (
+                        f"Слот не смог проверить себя контрольным @{RESOLVE_CONTROL_USERNAME} — "
+                        f"@{uname} не штрафуем ({type(e).__name__}: {detail})"
+                    )[:400],
+                    "users": [],
+                    "hasMore": False,
+                }
+            if control_blind:
                 return None, {
                     "ok": False,
                     "status": "error",
@@ -2918,6 +2943,7 @@ async def ensure_account_username(
             "lastName": me.last_name or "",
             "phone": phone,
             "userId": me.id,
+            "deleted": bool(getattr(me, "deleted", False)),
             **extra,
         }
 
@@ -3065,62 +3091,115 @@ def acquire_work_dir() -> Path:
     return Path(tempfile.mkdtemp(prefix="uniseller-acc-"))
 
 
+# Second control for the soft «deleted» suspicion: one unresolvable @telegram may be a Telegram resolve hiccup.
+DELETED_CONFIRM_USERNAME = "durov"
+_DEACTIVATED_CLASSES = frozenset({"UserDeactivatedError", "UserDeactivatedBanError"})
+DELETED_BY_TELEGRAM_ERROR = "Аккаунт удалён Telegram (USER_DEACTIVATED) — для других он «Удалённый аккаунт»"
+DELETED_SELF_ERROR = "Telegram пометил аккаунт удалённым (deleted) — для других он «Удалённый аккаунт»"
+CONTROL_BLIND_ERROR = (
+    f"Аккаунт не резолвит даже @{RESOLVE_CONTROL_USERNAME} и @{DELETED_CONFIRM_USERNAME} — "
+    "похоже, Telegram удалил аккаунт; не используется до перепроверки"
+)
+
+
+def is_account_deactivated(exc: BaseException) -> bool:
+    """USER_DEACTIVATED(_BAN): Telegram удалил аккаунт — сессия больше ничего не сделает."""
+    return type(exc).__name__ in _DEACTIVATED_CLASSES or "USER_DEACTIVATED" in str(exc).upper()
+
+
+async def _control_outcome(client, payload: dict[str, Any]) -> str:
+    """Group-independent control: "ok" (@telegram resolved), "blind" (@telegram and @durov «not occupied»),
+    "unknown" (FloodWait / network on a control) or "skipped" (checkDeleted:false / @durov alone resolved).
+
+    A deleted account still logs in, but other users see «Удалённый аккаунт» and it resolves no @username.
+    Only "ok" proves the account alive; the route clears block signs on nothing else.
+    """
+    if not payload.get("checkDeleted", True):
+        return "skipped"
+    first = await _control_resolve_blind(client)
+    if first is False:
+        return "ok"
+    if first is None:
+        return "unknown"
+    second = await _control_resolve_blind(client, DELETED_CONFIRM_USERNAME)
+    if second is None:
+        return "unknown"
+    return "blind" if second else "skipped"
+
+
+async def check_account(client, payload: dict[str, Any]) -> dict[str, Any]:
+    """Проверка открытой сессии: профиль, @username, признаки удаления Telegram, ограничения SpamBot."""
+    create_username = payload.get("ensureUsername", True)
+    force_username = bool(payload.get("forceUsername"))
+    desired = str(payload.get("desiredUsername") or "").strip()
+    if create_username or force_username:
+        profile = await ensure_account_username(
+            client,
+            desired=desired or None,
+            force=force_username,
+        )
+    else:
+        me = await client.get_me()
+        phone = me.phone or ""
+        if phone and not str(phone).startswith("+"):
+            phone = "+" + phone
+        profile = {
+            "firstName": me.first_name or "",
+            "lastName": me.last_name or "",
+            "username": me.username or "",
+            "usernameCreated": False,
+            "phone": phone,
+            "userId": me.id,
+            "deleted": bool(getattr(me, "deleted", False)),
+        }
+    if profile.get("deleted"):
+        return {"ok": False, "status": "deleted", "error": DELETED_SELF_ERROR, "profile": profile}
+    control = await _control_outcome(client, payload)
+    control_fields = {"controlOk": control == "ok", "controlUnknown": control == "unknown"}
+    if control == "blind":
+        # Soft signal: the route excludes the account at once and confirms 'deleted' only on a later check.
+        return {
+            "ok": False,
+            "status": "active",
+            "deletedSuspect": True,
+            "error": CONTROL_BLIND_ERROR,
+            "profile": profile,
+            **control_fields,
+        }
+    restriction = None
+    if payload.get("checkRestrictions", True):
+        restriction = await check_spambot(client)
+    status = "active"
+    error = ""
+    if profile.get("frozenMethod"):
+        # UpdateUsername заморожен — часто и JoinChannel тоже; помечаем аккаунт
+        status = "frozen"
+        error = "Аккаунт заморожен Telegram (FROZEN_METHOD_INVALID). Вступление в группы недоступно — нужен другой аккаунт."
+    elif restriction == "spamblock":
+        status = "spamblock"
+        error = "Ограничения по SpamBot"
+    elif restriction == "frozen":
+        status = "frozen"
+        error = "Аккаунт заморожен"
+    elif not profile.get("username") and profile.get("usernameError"):
+        error = f"Без @username: {profile['usernameError']}"
+    return {"ok": status == "active", "status": status, "error": error, "profile": profile, **control_fields}
+
+
 async def run_check(payload: dict[str, Any]) -> dict[str, Any]:
     work = acquire_work_dir()
     client = None
     try:
         client = await open_client(payload, work)
-        create_username = payload.get("ensureUsername", True)
-        force_username = bool(payload.get("forceUsername"))
-        desired = str(payload.get("desiredUsername") or "").strip()
-        if create_username or force_username:
-            profile = await ensure_account_username(
-                client,
-                desired=desired or None,
-                force=force_username,
-            )
-        else:
-            me = await client.get_me()
-            phone = me.phone or ""
-            if phone and not str(phone).startswith("+"):
-                phone = "+" + phone
-            profile = {
-                "firstName": me.first_name or "",
-                "lastName": me.last_name or "",
-                "username": me.username or "",
-                "usernameCreated": False,
-                "phone": phone,
-                "userId": me.id,
-            }
-        restriction = None
-        if payload.get("checkRestrictions", True):
-            restriction = await check_spambot(client)
-        status = "active"
-        error = ""
-        if profile.get("frozenMethod"):
-            # UpdateUsername заморожен — часто и JoinChannel тоже; помечаем аккаунт
-            status = "frozen"
-            error = "Аккаунт заморожен Telegram (FROZEN_METHOD_INVALID). Вступление в группы недоступно — нужен другой аккаунт."
-        elif restriction == "spamblock":
-            status = "spamblock"
-            error = "Ограничения по SpamBot"
-        elif restriction == "frozen":
-            status = "frozen"
-            error = "Аккаунт заморожен"
-        elif not profile.get("username") and profile.get("usernameError"):
-            error = f"Без @username: {profile['usernameError']}"
-        return {
-            "ok": status == "active",
-            "status": status,
-            "error": error,
-            "profile": profile,
-            "sessionRefreshed": bool(
-                getattr(client, "_uniseller_session_refreshed", False)
-            ),
-        }
+        result = await check_account(client, payload)
+        result["sessionRefreshed"] = bool(getattr(client, "_uniseller_session_refreshed", False))
+        return result
     except asyncio.CancelledError:
         return {"ok": False, "status": "disconnected", "error": "Операция прервана (таймаут/отмена)"}
     except Exception as e:
+        if is_account_deactivated(e):
+            # Other actions keep classify_error's verdict; only the check names the real cause.
+            return {"ok": False, "status": "deleted", "error": DELETED_BY_TELEGRAM_ERROR}
         return {"ok": False, "status": classify_error(e), "error": str(e)[:400]}
     finally:
         try:
@@ -3162,7 +3241,10 @@ async def run_action(payload: dict[str, Any]) -> dict[str, Any]:
                 limit = int(payload.get("limit") or 40)
                 days = int(payload.get("days") or 0)
                 cursor = str(payload.get("minId") or "")
-                return await scan_group(client, url, keywords, minus, limit, days=days, cursor=cursor)
+                allow_join = payload.get("allowJoin", True) is not False
+                return await scan_group(
+                    client, url, keywords, minus, limit, days=days, cursor=cursor, allow_join=allow_join
+                )
             if action == "collect":
                 return await collect_audience(client, payload)
             if action == "invite":

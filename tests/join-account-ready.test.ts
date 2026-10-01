@@ -44,7 +44,8 @@ describe("готовность аккаунта к вступлению · evalu
     }
   });
 
-  it("держит FloodWait дольше обычной паузы между вступлениями", () => {
+  // A live FloodWait is a Telegram block signal: the account leaves the join farm until it ends.
+  it("FloodWait на вступлении исключает аккаунт из вступлений до конца паузы", () => {
     const acc = {
       ...ready,
       lastJoinAt: new Date(NOW - 10 * 60_000).toISOString(),
@@ -53,9 +54,11 @@ describe("готовность аккаунта к вступлению · evalu
     expect(joinWaitSec(acc, NOW)).toBe(3000);
     expect(evaluateAccountJoinReadiness(acc, { now: NOW })).toMatchObject({
       ok: false,
-      reason: "pace",
+      reason: "flood",
       waitSec: 3000,
     });
+    expect(isJoinFarmCandidate(acc, { now: NOW })).toBe(false);
+    expect(isJoinFarmCandidate(acc, { now: NOW + 3_001_000 })).toBe(true);
   });
 
   it("в ферму берёт аккаунт на паузе, но не на отлёжке и не слепой", () => {
