@@ -2,7 +2,8 @@ import { defineConfig, devices } from "@playwright/test";
 
 /**
  * e2e runs against the PRODUCTION build served by wrangler (`npm run build` first).
- * Port: TMA_E2E_PORT (default 5191). The backend is mocked per test with page.route,
+ * Port: TMA_E2E_PORT (default 5191). Playwright starts `npm start` itself; TMA_E2E_REUSE=1 reuses a running one.
+ * The backend is mocked per test with page.route,
  * so the server only has to render /tma/<wsKey>.
  */
 const PORT = Number(process.env.TMA_E2E_PORT ?? 5191);
@@ -34,7 +35,8 @@ export default defineConfig({
   webServer: {
     command: `npm start -- --port ${PORT}`,
     url: `${BASE}/`,
-    reuseExistingServer: true,
+    // Opt-in reuse (TMA_E2E_REUSE=1): a stray server of another worktree on the same port must fail loudly.
+    reuseExistingServer: process.env.TMA_E2E_REUSE === "1",
     timeout: 120_000,
     stdout: "ignore",
     stderr: "pipe",
