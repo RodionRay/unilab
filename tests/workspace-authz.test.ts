@@ -135,7 +135,7 @@ describe('workspace API: владелец без изменений',()=>{
   it('видит все записи живых видов и токен бота; задачи удалённых функций не отдаются',async()=>{
     const records=await visibleRecords();
 
-    expect(new Set(records.map(r=>r.kind))).toEqual(new Set(['account','proxy','lead','settings']));
+    expect(new Set(records.map(r=>r.kind))).toEqual(new Set(['account','proxy','lead','settings','project']));
     expect(JSON.stringify(records)).toContain(BOT_TOKEN);
   });
 
