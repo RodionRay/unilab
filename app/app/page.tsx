@@ -546,6 +546,7 @@ function WorkspaceHome(){
   const pausedTasksRef=useRef(new Set<string>());
   const lastInboxPollAt=useRef(0);
   const lastBotPollAt=useRef(0);
+  const botPollBusy=useRef(false);
   const deepLinkLead=useRef<string|null>(searchParams.get('lead'));
   const replySendKeyRef=useRef<{leadId:string;mode:string;text:string;key:string}|null>(null);
 
@@ -856,15 +857,6 @@ function WorkspaceHome(){
             }
           }
         }catch{/* */}
-        try{
-          // Ответы менеджера из Telegram-бота → клиенту; фоновая вкладка реже (сервер держит lease)
-          const botEvery=document.visibilityState==='visible'?5_000:30_000;
-          if(Date.now()-lastBotPollAt.current>=botEvery){
-            lastBotPollAt.current=Date.now();
-            const bot=await api({action:'poll_bot_updates'});
-            if(bot?.sent>0)await refresh();
-          }
-        }catch{/* */}
       }finally{
         taskPollLock.current=false;
       }
@@ -873,6 +865,27 @@ function WorkspaceHome(){
     const first=window.setTimeout(()=>{void tick()},1_000);
     return()=>{window.clearInterval(id);window.clearTimeout(first)};
   },[telegramConnected]);
+
+  /** Ответы менеджера из Telegram-бота → клиенту: свой цикл, не держит lock тиков задач (отправка до ~3 мин). */
+  const botNotifyOn=!!settings?.data?.notifyEnabled;
+  useEffect(()=>{
+    if(!botNotifyOn)return;
+    const pollBot=async()=>{
+      if(botPollBusy.current)return;
+      // Фоновая вкладка реже; параллельные опросы сервер отсекает lease, без кабинета опрашивает cron
+      const every=document.visibilityState==='visible'?5_000:30_000;
+      if(Date.now()-lastBotPollAt.current<every)return;
+      botPollBusy.current=true;
+      lastBotPollAt.current=Date.now();
+      try{
+        const bot=await api({action:'poll_bot_updates'});
+        if(bot?.sent>0)await refresh();
+      }catch{/* */}
+      finally{botPollBusy.current=false}
+    };
+    const id=window.setInterval(()=>{void pollBot()},5_000);
+    return()=>window.clearInterval(id);
+  },[botNotifyOn,refresh]);
 
   async function startAudienceTask(id:string){
     if(!telegramConnected){toast.error('Запустите: npm run dev');return}

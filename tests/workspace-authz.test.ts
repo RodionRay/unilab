@@ -127,6 +127,17 @@ describe('workspace API: доступ по разделам',()=>{
     const row=testDb().sqlite.prepare('SELECT data FROM records WHERE id=?').get(SETTINGS_ID) as {data:string};
     expect(JSON.parse(row.data).notifyBotToken).toBe(BOT_TOKEN);
   });
+
+  it('сотрудник с доступом к настройкам не может перенаправить бота (chat id / токен / вкл.)',async()=>{
+    addMember('staff-s','manager',{...ROLE_PRESETS.manager,settings:true});
+    login('staff-s');
+
+    const res=await POST(postRequest({action:'save',kind:'settings',id:SETTINGS_ID,data:{name:'Проект',notifyBotToken:'999:attacker-bot',notifyChatId:'777000',notifyEnabled:true}}));
+
+    expect(res.status).toBe(200);
+    const row=testDb().sqlite.prepare('SELECT data FROM records WHERE id=?').get(SETTINGS_ID) as {data:string};
+    expect(JSON.parse(row.data)).toMatchObject({notifyBotToken:BOT_TOKEN,notifyChatId:'42',notifyEnabled:false});
+  });
 });
 
 describe('workspace API: владелец без изменений',()=>{

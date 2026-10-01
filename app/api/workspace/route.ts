@@ -1492,10 +1492,20 @@ async function notifyMailingEvent(db:any,owner:string,title:string,detail:string
  if(!sent.ok)await reportNotifyFailure(owner,'Уведомление о рассылке не доставлено в Telegram-бота',sent.error);
 }
 
-/** A Bot API failure goes to the cabinet log (token already redacted by callBotApi) with what to do about it. */
+/** The same notify failure is logged again only after this long (a mailing would flood the log otherwise). */
+const NOTIFY_ERROR_REPEAT_MS=15*60_000;
+
+/**
+ * A Bot API failure goes to the cabinet log (token already redacted by callBotApi) with what to do about it —
+ * once per distinct error per NOTIFY_ERROR_REPEAT_MS (claimed atomically in an ai_guard row).
+ */
 async function reportNotifyFailure(owner:string,title:string,error:string){
  const why=explainBotError(error);
  console.error('[workspace] notify:',why.slice(0,300));
+ const now=Date.now();
+ const claim=await database().prepare("INSERT INTO records(id,owner,kind,data,created) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,created=excluded.created WHERE records.owner=excluded.owner AND (COALESCE(json_extract(records.data,'$.key'),'')<>json_extract(excluded.data,'$.key') OR records.created<?)")
+  .bind(`bot-notify-error:${owner}`,owner,'ai_guard',JSON.stringify({key:`${title}|${why}`.slice(0,600)}),new Date(now).toISOString(),new Date(now-NOTIFY_ERROR_REPEAT_MS).toISOString()).run();
+ if(!claim.meta.changes)return;
  await appendGlobalRescanLog(owner,'warn',`${title}: ${why}`.slice(0,400));
 }
 
@@ -2090,8 +2100,8 @@ async function sendLeadMessage(db:D1LikeDatabase,owner:string,ctx:NotifyCtx,inpu
  return sendReply({ok:true,lead:next,mode,link,messageId,rotatedAccount,accountId:sendAccountId});
 }
 
-/** One bot poll per owner; covers one client send (SEND_MESSAGE_TIMEOUT_MS) plus Bot API calls. */
-const BOT_POLL_LEASE_MS=4*60_000;
+/** One bot poll per owner; covers one client send (worker call + invalid-peer retry) plus Bot API calls. */
+const BOT_POLL_LEASE_MS=2*SEND_MESSAGE_TIMEOUT_MS+60_000;
 const botPollLeaseId=(owner:string)=>`bot-poll-lease:${owner}`;
 const botStateId=(owner:string)=>`bot-state:${owner}`;
 const UUID_RE=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -2170,7 +2180,8 @@ async function pollBotUpdates(db:D1LikeDatabase,owner:string,ctx:NotifyCtx){
 /** Acts on one authorized update; returns whether a client send was attempted ('sent' | 'failed') or ''. */
 async function handleBotCommand(db:D1LikeDatabase,owner:string,ctx:NotifyCtx,token:string,cmd:BotCommand):Promise<''|'sent'|'failed'>{
  const say=async(chatId:string,html:string,replyTo?:number,markup?:ReplyMarkup)=>{
-  const r=await sendBotMessage(token,chatId,{html,plain:html.replace(/<[^>]+>/g,''),replyToMessageId:replyTo,replyMarkup:markup});
+  const plain=html.replace(/<[^>]+>/g,'').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&amp;/g,'&');
+  const r=await sendBotMessage(token,chatId,{html,plain,replyToMessageId:replyTo,replyMarkup:markup});
   if(!r.ok)console.error('[workspace] bot_reply:',r.error.slice(0,200));
   return r;
  };
@@ -5151,7 +5162,9 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   data.apiBase='https://api.deepseek.com';
   data.keywords=sanitizeLeadKeywords(String(data.keywords||''));
   data.minusKeywords=ensureJunkMinus(String(data.minusKeywords||''));
-  if(existing){try{Object.assign(data,keepOwnerSecretsOnSave(actor,data,JSON.parse(existing.data)))}catch{/* битые старые настройки — перезаписываем */}}
+  let storedSettings:Record<string,unknown>|null=null;
+  if(existing){try{storedSettings=JSON.parse(existing.data)}catch{/* битые старые настройки — перезаписываем */}}
+  Object.assign(data,keepOwnerSecretsOnSave(actor,data,storedSettings));
   if(!String(data.leadCriteria||'').trim()){
    data.leadCriteria='Целевой лид ЯВНО ищет сервис/инструмент/подрядчика под ваш продукт (остатки, синхронизация, цены, отзывы, кабинеты, 1С/МойСклад) и готов обсуждать демо или внедрение. Не лид: обычный чат селлеров, жалобы без запроса сервиса, чужая реклама.';
   }

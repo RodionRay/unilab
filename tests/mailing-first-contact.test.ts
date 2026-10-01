@@ -80,4 +80,17 @@ describe('рассылка · первый контакт сразу в «Пер
     expect(Date.parse(String(lead.conversationAt))).toBeGreaterThan(Date.now()-60_000);
     expect(lead.replies.at(-1)).toMatchObject({from:'us',ok:true});
   });
+
+  it('REQ-1: лиду, которому мы уже писали, рассылка не шлёт второе «Начата переписка»',async()=>{
+    addRecord(LEAD,'lead',{name:'Пётр',message:'Ищу склад',status:'working',temperature:'hot',senderId:'3003',senderUsername:'petr3',conversationOpen:true,conversationAt:'2026-09-30T10:00:00.000Z',
+      replies:[{text:'Ранее',mode:'dm',at:'2026-09-30T10:00:00.000Z',ok:true,error:'',messageId:'1',link:'',chatId:'3003',from:'us'}]});
+    seedMailing({sourceKind:'leads',leadFilter:'hot_warm',audienceTaskId:''});
+    enableNotifications();
+    const w=stubWorkerAndBot(()=>({ok:true,messageId:'3',chatId:'3003'}));
+
+    await tick();
+
+    expect(w.sent().filter(c=>String(c.body.text).includes('Начата переписка'))).toHaveLength(0);
+    expect(readRecord(LEAD).conversationAt).toBe('2026-09-30T10:00:00.000Z');
+  });
 });

@@ -51,8 +51,13 @@ async function ownerIdentities(): Promise<Map<string, OwnerIdentity>> {
   return map;
 }
 
-/** Bot poll call: one client send through the worker (185 s) + Bot API calls. */
-const BOT_POLL_TIMEOUT_MS = 210_000;
+/**
+ * Bot poll call: one client send through the worker (2 × 185 s with the invalid-peer retry) + Bot API calls;
+ * stays below the tg-worker fetch timeout of this route (TASKS_TICK_FETCH_MS, 480 s).
+ */
+const BOT_POLL_TIMEOUT_MS = 440_000;
+/** Bot polls in parallel per run (each is a self-fetch; one owner's slow send must not hold the rest). */
+const BOT_POLL_CONCURRENCY = 3;
 
 /** Owners whose notification bot is configured — their bot replies are polled every loop, tasks or not. */
 async function listBotOwners(): Promise<string[]> {
@@ -63,6 +68,19 @@ async function listBotOwners(): Promise<string[]> {
     .bind()
     .all();
   return rows.results.map((r) => String(r.owner));
+}
+
+async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = [];
+  let next = 0;
+  const lane = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
+  return out;
 }
 
 function describeError(e: unknown): string {
@@ -143,7 +161,7 @@ export async function POST(req: Request) {
       callTimeoutMs: TASKS_TICK_CALL_TIMEOUT_MS,
       concurrency: CONCURRENCY,
     }),
-    Promise.all(botOwners.map(pollBot)),
+    mapLimit(botOwners, BOT_POLL_CONCURRENCY, pollBot),
   ]);
   return reply({
     ok: run.outcomes.every((o) => o.ok),
@@ -151,7 +169,7 @@ export async function POST(req: Request) {
     ticked: run.outcomes.length,
     skipped: listed.length - due.length,
     more: run.more,
-    bots: bots.length,
+    bots: bots.filter(Boolean).length,
     results: run.outcomes.map((o) => ({ kind: o.task.kind, id: o.task.id, ok: o.ok, note: o.note })),
     ms: Date.now() - started,
     at: new Date().toISOString(),

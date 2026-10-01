@@ -177,6 +177,38 @@ describe('Telegram-бот · ответ клиенту из бота (poll_bot_u
     expect(w.botCalls).toHaveLength(0);
   });
 
+  it('REQ-4: за один опрос — не больше одной отправки клиенту, следующий update ждёт следующего опроса',async()=>{
+    const w=stubWorkerAndBot(worker());
+    const notice=await notified(w);
+    w.queueUpdates([managerReply(110,notice,'Первое'),managerReply(111,notice,'Второе')]);
+    w.queueUpdates([managerReply(111,notice,'Второе')]);
+
+    await pollBot();
+    expect(clientSends(w).map(c=>c.body.text)).toEqual(['Первое']);
+    await pollBot();
+
+    expect(clientSends(w).map(c=>c.body.text)).toEqual(['Первое','Второе']);
+    expect(w.botCalls.filter(c=>c.method==='getUpdates')[1]?.body.offset).toBe(111);
+  });
+
+  it('REQ-4: параллельный опрос бота того же владельца пропускается (lease), getUpdates один',async()=>{
+    let release:()=>void=()=>{};
+    const gate=new Promise<void>(r=>{release=r});
+    const w=stubWorkerAndBot(worker(),async(call)=>{
+      if(call.method==='getUpdates'){await gate;return {ok:true,result:[]}}
+      return undefined;
+    });
+
+    const first=pollBot();
+    await vi.waitFor(()=>expect(w.botCalls.length).toBe(1));
+    const second=await pollBot();
+    release();
+    await first;
+
+    expect(second).toMatchObject({skipped:true,reason:'busy'});
+    expect(w.botCalls.filter(c=>c.method==='getUpdates')).toHaveLength(1);
+  });
+
   it('REQ-4: токен бота не утекает в ответ API при сетевой ошибке getUpdates',async()=>{
     const w=stubWorkerAndBot(worker(),(call)=>{
       if(call.method==='getUpdates')throw new Error(`fetch failed ${call.url}`);

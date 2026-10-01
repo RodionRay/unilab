@@ -73,6 +73,24 @@ describe('Telegram-бот · уведомления о переписке',()=>{
     expect(rescanLog()).not.toContain(BOT_TOKEN);
   });
 
+  it('REQ-2: одна и та же ошибка бота пишется в журнал один раз (не засоряет при рассылке)',async()=>{
+    addChatLead();
+    enableNotifications();
+    let n=0;
+    stubWorkerAndBot((call)=>{
+      if(call.path==='/send-message')return {ok:true};
+      const messages=call.body.apiId===API_ID[ACC_A]?[clientMsg(String(910+(n++)))]:[];
+      return {ok:true,messages,complete:true,scanStartedTs:NOW_TS};
+    },(call)=>call.method==='sendMessage'
+      ?new Response(JSON.stringify({ok:false,error_code:403,description:"Forbidden: bot can't initiate conversation with a user"}),{status:403})
+      :undefined);
+
+    await poll();
+    await poll();
+
+    expect(rescanLog().match(/initiate conversation/g)).toHaveLength(1);
+  });
+
   it('REQ-2: «chat not found» от Telegram объясняет, что делать (нажать /start в боте)',async()=>{
     addChatLead();
     enableNotifications();
