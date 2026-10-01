@@ -62,9 +62,18 @@ export function addLeadTombstone(list: unknown, tgMsgId: string): string[] {
 }
 
 /**
+ * Project fields of the pre-v2 settings row. A settings save never writes them (REQ-4): they stay as stored,
+ * read only by `lib/leads/projects.ts::defaultProjectFromSettings` when the default project is created.
+ */
+export const LEGACY_PROJECT_SETTINGS = [
+  "product", "projectUrl", "audience", "leadCriteria", "keywords", "minusKeywords",
+  "tone", "cta", "valueProps", "avoidTopics", "scanDepthDays",
+] as const;
+
+/**
  * REQ-L10 / REQ-L7 / lead core v2 REQ-24: fields the server owns; a client save (stale copy or
  * zod-stripped) never overwrites or introduces them. Lead: conversation, sender, scan and judge data.
- * Group: scan lock, cursor, memories, project. Settings: DM inbox cursor and DM AI-reject memory.
+ * Group: scan lock, cursor, memories, project. Settings: DM inbox cursor, DM AI-reject memory, legacy project fields.
  * Account: Telegram user id.
  */
 const SERVER_OWNED: Record<"lead" | "group" | "settings" | "account", readonly string[]> = {
@@ -76,7 +85,7 @@ const SERVER_OWNED: Record<"lead" | "group" | "settings" | "account", readonly s
     "projectId", "score", "reason", "sourceKind", "draftKind", "feedback",
   ],
   group: ["scanLockUntil", "scanLockToken", "scanCursor", "aiRejected", "leadTombstones", "projectId"],
-  settings: ["inboxPollCursor", "dmAiRejected"],
+  settings: ["inboxPollCursor", "dmAiRejected", ...LEGACY_PROJECT_SETTINGS],
   // Telegram id from the account check: own-account DMs are never leads (lead core v2 REQ-15).
   account: ["tgUserId"],
 };

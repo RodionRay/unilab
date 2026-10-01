@@ -618,6 +618,22 @@ describe('lead core v2 · workspace route',()=>{
       expect(record(SETTINGS_ID).product).toBe(SETTINGS.product);
     });
 
+    it('a settings save never writes project fields; legacy values stay for the default-project read',async()=>{
+      const dead={product:'взлом',keywords:'a',minusKeywords:'b',audience:'новая',leadCriteria:'x',projectUrl:'https://evil.test',
+        tone:'t',cta:'c',pains:'p',valueProps:'v',avoidTopics:'n',hotSignals:'h',productNotes:'pn',learnExamples:'l',
+        aiQualify:false,lastMinusAdded:['x'],lastMinusAddedAt:nowIso(),scanDepthDays:30};
+
+      const r=await post({action:'save',kind:'settings',id:SETTINGS_ID,data:{name:'Кабинет',notifyEnabled:false,autoRescanMinutes:45,...dead}});
+
+      expect(r.status).toBe(200);
+      const s=record(SETTINGS_ID);
+      expect(s).toMatchObject({name:'Кабинет',autoRescanMinutes:45,product:SETTINGS.product,keywords:SETTINGS.keywords,
+        minusKeywords:SETTINGS.minusKeywords,audience:SETTINGS.audience,leadCriteria:SETTINGS.leadCriteria});
+      for(const key of ['projectUrl','tone','cta','pains','valueProps','avoidTopics','hotSignals','productNotes','learnExamples','aiQualify','lastMinusAdded','lastMinusAddedAt','scanDepthDays']){
+        expect(s).not.toHaveProperty(key);
+      }
+    });
+
     it('generate_account_about reads the project card',async()=>{
       otherAnswer=()=>JSON.stringify({about:'Остатки без ошибок',firstName:'Анна',lastName:''});
       const id=await createProject('Второй',{product:'Уникальный продукт XYZ'});

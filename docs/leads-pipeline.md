@@ -22,7 +22,10 @@ are no keyword / intent regexes on the lead path; project keywords are only a hi
   (`app/api/workspace/route.ts::ensureOwnerProject`), the first scan or any project action.
 - Server-owned fields (a client `save` never sets them): `lib/processes/scan-flow.ts::keepServerOwnedFields`
   (lead `projectId`, `score`, `reason`, `sourceKind`, `draftKind`, `feedback`; group `projectId`; settings
-  `inboxPollCursor`, `dmAiRejected`).
+  `inboxPollCursor`, `dmAiRejected`, and the legacy project fields `scan-flow.ts::LEGACY_PROJECT_SETTINGS`).
+- A settings save never writes project fields (REQ-4): `route.ts::settingsSchema` has no product / keyword /
+  stop-word / depth fields; legacy values stay in the row only for `projects.ts::defaultProjectFromSettings`.
+  The settings page has no scan depth input (depth is the project card's `scanDepthDays`).
 
 ## Group scan (`scan_group`)
 

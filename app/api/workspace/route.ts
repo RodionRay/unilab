@@ -26,42 +26,27 @@ import {z} from 'zod';
 export const dynamic='force-dynamic';
 const kindSchema=z.enum(RECORD_KINDS);
 const short=z.string().trim().min(1).max(200);
+/**
+ * Настройки кабинета. Поля проекта (продукт, ключи, стоп-слова, глубина скана) живут только в `project`
+ * (lead core v2 REQ-4): схема их не принимает, а старые значения в строке settings не трогаются —
+ * их читает только `lib/leads/projects.ts::defaultProjectFromSettings` (scan-flow.ts::SERVER_OWNED).
+ */
 const settingsSchema=z.object({
  name:short,
- product:z.string().max(12000).default(''),
- projectUrl:z.string().max(500).default(''),
- audience:z.string().max(2000).default(''),
- leadCriteria:z.string().max(4000).default(''),
- keywords:z.string().max(8000).default(''),
- minusKeywords:z.string().max(8000).default(''),
  model:z.string().max(100).default('deepseek-chat'),
  provider:z.enum(['deepseek','openai','custom']).default('deepseek'),
  apiBase:z.string().max(300).default('https://api.deepseek.com'),
- tone:z.string().max(500).default(''),
- cta:z.string().max(500).default(''),
- pains:z.string().max(4000).default(''),
- valueProps:z.string().max(4000).default(''),
- avoidTopics:z.string().max(4000).default(''),
- hotSignals:z.string().max(4000).default(''),
- productNotes:z.string().max(4000).default(''),
- learnExamples:z.string().max(4000).default(''),
  /** Мягкое закрытие в ЛС: не банить / не мутить */
  dmSoftClose:z.string().max(2000).default(DEFAULT_DM_SOFT_CLOSE),
- aiQualify:z.boolean().default(true),
  autoRescanEnabled:z.boolean().default(true),
  autoRescanMinutes:z.coerce.number().int().min(5).max(180).default(30),
  lastAutoRescanAt:z.string().max(40).default(''),
- /** Последние стоп-слова, добавленные кнопкой «В стоп-слова». */
- lastMinusAdded:z.array(z.string().max(80)).max(20).default([]),
- lastMinusAddedAt:z.string().max(40).default(''),
  /** Журнал переобходов групп (глобальный). */
  rescanLog:z.array(z.object({
   at:z.string().max(40),
   level:z.enum(['info','ok','warn','error']),
   text:z.string().max(400),
  })).max(150).default([]),
- /** Глубина просмотра истории чата (дней). */
- scanDepthDays:z.coerce.number().int().min(1).max(90).default(7),
  /** Профиль кабинета */
  profileName:z.string().max(120).default(''),
  profileAbout:z.string().max(500).default(''),
