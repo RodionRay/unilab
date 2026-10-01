@@ -10,12 +10,14 @@ import { z } from "zod";
 import type { JsonLlm } from "@/lib/ai-client";
 import { buildGroupJudgePrompt } from "@/lib/leads/prompt";
 import type { ProjectData } from "@/lib/leads/projects";
-import type { JudgeGate, ScanMessage, UnjudgedStep, Verdict } from "@/lib/leads/types";
+import type { JudgeGate, JudgeSkipReason, ScanMessage, UnjudgedStep, Verdict } from "@/lib/leads/types";
 
 export const JUDGE_BATCH_SIZE = 20;
 export const JUDGE_MAX_BATCHES = 4;
 export const REASON_MAX = 200;
 export const NO_VERDICT_REASON = "нет вердикта";
+/** Wall-clock budget of one scan's judging; checked before each batch (the first always runs). */
+export const JUDGE_DEADLINE_MS = 90_000;
 
 const idSchema = z.union([z.string(), z.number()]).transform((v) => String(v).trim());
 const reasonSchema = z
@@ -46,7 +48,14 @@ export type JudgeResult = {
   /** Error of the failed batch ("" when none); never contains message text. */
   error: string;
 };
-export type JudgeOptions = { gate?: JudgeGate; batchSize?: number; maxBatches?: number };
+export type JudgeOptions = {
+  gate?: JudgeGate;
+  batchSize?: number;
+  maxBatches?: number;
+  /** Wall clock for the deadline (default `Date.now`). */
+  clock?: () => number;
+  deadlineMs?: number;
+};
 
 type BatchStop = { step: UnjudgedStep; reason: string; error: string; rewind: boolean };
 
@@ -117,14 +126,17 @@ export async function judgeMessages(
   const sorted = [...messages].sort((a, b) => compareMsgIds(a.tgMsgId, b.tgMsgId));
   const batches = chunk(sorted, opts.batchSize ?? JUDGE_BATCH_SIZE);
   const maxBatches = opts.maxBatches ?? JUDGE_MAX_BATCHES;
+  const clock = opts.clock ?? Date.now;
+  const deadline = clock() + (opts.deadlineMs ?? JUDGE_DEADLINE_MS);
   const judged: JudgedMessage[] = [];
   const unjudged: UnjudgedMessage[] = [];
-  let stopped = false;
+  let skip: JudgeSkipReason | null = null;
   let error = "";
   for (const [index, batch] of batches.entries()) {
-    if (stopped || index >= maxBatches) {
-      const reason = stopped ? "blocked" : "batch_limit";
-      for (const message of batch) unjudged.push({ message, step: "judgeSkipped", reason, rewind: true });
+    if (!skip && index >= maxBatches) skip = "batch_limit";
+    else if (!skip && index > 0 && clock() >= deadline) skip = "deadline";
+    if (skip) {
+      for (const message of batch) unjudged.push({ message, step: "judgeSkipped", reason: skip, rewind: true });
       continue;
     }
     const outcome = await judgeBatch(project, batch, llm, opts.gate);
@@ -135,7 +147,7 @@ export async function judgeMessages(
       }
       continue;
     }
-    stopped = true;
+    skip = "blocked";
     error = outcome.error;
     for (const message of batch) unjudged.push({ message, step: outcome.step, reason: outcome.reason, rewind: outcome.rewind });
   }

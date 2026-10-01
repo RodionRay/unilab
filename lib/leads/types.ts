@@ -67,9 +67,10 @@ export type ScanDelta = { counts: FunnelCounts; samples: FunnelSamples; run: str
 
 export type Verdict = { id: string; isLead: boolean; score: number; reason: string };
 
-/** Why a message was not judged: no key / daily cap / earlier failure / per-scan batch limit / DM limits. */
+/** Why a message was not judged: no key / daily cap / earlier failure / per-scan batch limit / 90 s deadline / DM limits. */
 export type JudgeSkipReason =
   | "no_ai_key"
+  | "deadline"
   | "daily_cap"
   | "blocked"
   | "batch_limit"

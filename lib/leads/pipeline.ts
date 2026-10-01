@@ -50,6 +50,8 @@ export type GroupScanDeps = {
   llm: JsonLlm | null;
   gate?: JudgeGate;
   now: () => number;
+  /** Wall clock of the judge deadline (default `Date.now`); `now` stays the scan's fixed timestamp. */
+  clock?: () => number;
   notifyEnabled: boolean;
 };
 
@@ -204,7 +206,7 @@ export async function runGroupScan(deps: GroupScanDeps): Promise<GroupScanResult
     aiRejects: active,
     stopWords: deps.project.stopWords,
   });
-  const judge = await judgeMessages(deps.project, filtered.passed, deps.llm, { gate: deps.gate });
+  const judge = await judgeMessages(deps.project, filtered.passed, deps.llm, { gate: deps.gate, ...(deps.clock ? { clock: deps.clock } : {}) });
 
   const counts = { ...emptyCounts(), ...filtered.counts, ...judge.counts };
   counts.skippedNotUser = count(deps.worker.skippedNotUser);

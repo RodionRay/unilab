@@ -139,6 +139,35 @@ describe('judgeMessages failure stops judging (REQ-10)', () => {
     expect(r.counts.judgeError).toBe(2);
   });
 
+  it('stops at the 90 s deadline: the rest is judgeSkipped deadline and rewinds', async () => {
+    let t = 0;
+    const clock = () => t;
+    const {llm, calls} = scriptedLlm([
+      (p) => {
+        t += 50_000;
+        return answerAll(lead)(p);
+      },
+    ]);
+    const r = await judgeMessages(makeProject(), range(1, 70), llm, {clock});
+    expect(calls).toHaveLength(2);
+    expect(r.counts).toEqual({judged: 40, judgeSkipped: 30, judgeError: 0});
+    expect(r.unjudged.every((u) => u.reason === 'deadline' && u.rewind)).toBe(true);
+    expect(r.firstUnjudgedId).toBe('41');
+  });
+
+  it('a custom deadline is honoured and the first batch always runs', async () => {
+    let t = 0;
+    const {llm, calls} = scriptedLlm([
+      (p) => {
+        t += 10;
+        return answerAll(lead)(p);
+      },
+    ]);
+    const r = await judgeMessages(makeProject(), range(1, 45), llm, {clock: () => t, deadlineMs: 10});
+    expect(calls).toHaveLength(1);
+    expect(r.counts.judgeSkipped).toBe(25);
+  });
+
   it('an empty input makes no call', async () => {
     const {llm, calls} = scriptedLlm([answerAll(lead)]);
     const r = await judgeMessages(makeProject(), [], llm);

@@ -162,6 +162,22 @@ describe('cursor rewind (REQ-10)', () => {
     expect(r.judgeFailStreak).toBe(2);
   });
 
+  it('the judge deadline rewinds to the first skipped id and is not a failed scan', async () => {
+    let t = 0;
+    const {llm} = scriptedLlm([
+      (p) => {
+        t += 95_000;
+        return answerAll(() => ({isLead: false, score: 1}))(p);
+      },
+    ]);
+    const msgs = Array.from({length: 30}, (_, i) => makeMessage(101 + i));
+    const r = await runGroupScan(groupDeps(msgs, llm, {clock: () => t}));
+    expect(r.nextCursor).toBe('120');
+    expect(r.judgeFailStreak).toBe(0);
+    expect(r.delta.samples.judgeSkipped?.[0]?.reason).toBe('deadline');
+    expectInvariant(r.delta.counts);
+  });
+
   it('no AI key rewinds too (no non-LLM fallback)', async () => {
     const r = await runGroupScan(groupDeps([makeMessage(50), makeMessage(51)], null));
     expect(r.leads).toHaveLength(0);
