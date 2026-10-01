@@ -5456,18 +5456,16 @@ button.aiw-row-main {
   justify-content: space-between;
   gap: 12px;
 }
-.aiw-draft-meta {
-  display: flex;
-  min-width: 0;
-  white-space: nowrap;
-}
 .aiw-draft-chat {
+  margin: 0;
   min-width: 0;
   overflow: hidden;
+  white-space: nowrap;
   text-overflow: ellipsis;
 }
 .aiw-draft-age {
-  flex-shrink: 0;
+  margin: 0;
+  color: var(--spike-muted);
 }
 .aiw-draft-name {
   margin: 0;
@@ -5829,7 +5827,7 @@ button.aiw-row-main {
 .aiw-first {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  align-items: center;
+  align-items: start;
   gap: 32px;
 }
 .aiw-first-copy {
@@ -5845,10 +5843,7 @@ button.aiw-row-main {
   display: grid;
   gap: 4px;
   margin: 0;
-  padding: 20px;
-  border: 1px solid var(--spike-border);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.02);
+  padding: 0;
 }
 .aiw-first-preview .aiw-headline {
   margin-bottom: 8px;
@@ -5920,6 +5915,12 @@ button.aiw-row-main {
   .aiw .aiw-alert > button {
     min-height: 44px;
   }
+  /* one text-field height on touch: name, site and the example inputs line up */
+  .aiw .aiw-field > input,
+  .aiw .aiw-site-row > input,
+  .aiw .aiw-example-add > input {
+    min-height: 44px;
+  }
   .aiw-tab {
     min-height: 40px;
   }
@@ -5984,6 +5985,42 @@ button.aiw-row-main {
   .aiw .aiw-example-add > button {
     width: 100%;
     min-height: 44px;
+  }
+  /* in a column `flex: 1` sizes the height from 0: the input collapses to its padding */
+  .aiw .aiw-site-row > input,
+  .aiw .aiw-example-add > input {
+    flex: none;
+    min-height: 44px;
+  }
+}
+
+/* the site field is narrower than the viewport at 768 (sidebar): stack by its own width, not the screen's */
+.aiw-site-field {
+  container-type: inline-size;
+}
+@container (max-width: 479px) {
+  .aiw .aiw-site-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .aiw .aiw-site-row > input {
+    flex: none;
+  }
+  .aiw .aiw-site-row > button {
+    width: 100%;
+  }
+}
+
+/* the key banner keeps text + action side by side only when the text gets a readable measure */
+.aiw-banners {
+  container-type: inline-size;
+}
+@container (max-width: 899px) {
+  .aiw .aiw-alert {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .aiw .aiw-alert > button {
+    grid-column: 1 / -1;
   }
 }
 

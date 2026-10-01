@@ -1,6 +1,6 @@
 {
   "base": "http://127.0.0.1:8011",
-  "started": "2026-10-01T11:29:42.919Z",
+  "started": "2026-10-01T12:02:04.578Z",
   "routes": {
     "/app?view=ai": {
       "390x844": {
@@ -334,7 +334,7 @@
             "inView": true,
             "size": [
               324,
-              36
+              44
             ],
             "covered": false
           },
@@ -345,7 +345,7 @@
             "inView": true,
             "size": [
               324,
-              27
+              44
             ],
             "covered": false
           },
@@ -598,7 +598,7 @@
             "inView": true,
             "size": [
               324,
-              27
+              44
             ],
             "covered": false
           },
@@ -631,7 +631,7 @@
             "inView": true,
             "size": [
               324,
-              27
+              44
             ],
             "covered": false
           },
@@ -704,9 +704,9 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 1748,
+          "lcp": 1184,
           "cls": 0,
-          "inp": 24,
+          "inp": 16,
           "interactions": [
             "field"
           ],
@@ -1093,7 +1093,7 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              163,
+              389,
               40
             ],
             "covered": false
@@ -1302,7 +1302,7 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              194,
+              415,
               36
             ],
             "covered": false
@@ -1313,7 +1313,7 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              213,
+              415,
               40
             ],
             "covered": false
@@ -1629,7 +1629,7 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 1308,
+          "lcp": 1048,
           "cls": 0,
           "inp": 32,
           "interactions": [
@@ -2017,7 +2017,7 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              163,
+              562,
               40
             ],
             "covered": false
@@ -2553,7 +2553,7 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 1188,
+          "lcp": 1104,
           "cls": 0.03,
           "inp": 32,
           "interactions": [

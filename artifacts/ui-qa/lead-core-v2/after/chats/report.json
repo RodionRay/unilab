@@ -1,6 +1,6 @@
 {
   "base": "http://127.0.0.1:8011",
-  "started": "2026-10-01T07:08:52.613Z",
+  "started": "2026-10-01T12:03:16.879Z",
   "routes": {
     "/app?view=chats": {
       "390x844": {
@@ -118,7 +118,7 @@
           {
             "tag": "button",
             "label": "Хороший лид",
-            "visibleRing": false,
+            "visibleRing": true,
             "inView": true,
             "size": [
               152,
@@ -129,7 +129,7 @@
           {
             "tag": "button",
             "label": "Не лид",
-            "visibleRing": false,
+            "visibleRing": true,
             "inView": true,
             "size": [
               152,
@@ -151,9 +151,9 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 220,
+          "lcp": 548,
           "cls": 0.141,
-          "inp": 24,
+          "inp": 16,
           "interactions": [
             "field"
           ],
@@ -168,7 +168,7 @@
           "A4 1 standalone controls < 24px",
           "A4 8 primary buttons < 44px on mobile",
           "A10 1 inputs < 16px on mobile (iOS zoom)",
-          "C2 4 focused elements without visible ring",
+          "C2 2 focused elements without visible ring",
           "E7 CLS 0.141 > 0.1"
         ]
       },
@@ -529,7 +529,7 @@
           {
             "tag": "button",
             "label": "Хороший лид",
-            "visibleRing": false,
+            "visibleRing": true,
             "inView": true,
             "size": [
               152,
@@ -540,7 +540,7 @@
           {
             "tag": "button",
             "label": "Не лид",
-            "visibleRing": false,
+            "visibleRing": true,
             "inView": true,
             "size": [
               152,
@@ -562,9 +562,9 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 180,
+          "lcp": 436,
           "cls": 0.011,
-          "inp": 32,
+          "inp": 16,
           "interactions": [
             "field"
           ],
@@ -577,7 +577,7 @@
         "ok": false,
         "issues": [
           "A4 13 standalone controls < 24px",
-          "C2 4 focused elements without visible ring"
+          "C2 2 focused elements without visible ring"
         ]
       },
       "1440x900": {
@@ -992,7 +992,7 @@
           {
             "tag": "button",
             "label": "Хороший лид",
-            "visibleRing": false,
+            "visibleRing": true,
             "inView": true,
             "size": [
               152,
@@ -1003,7 +1003,7 @@
           {
             "tag": "button",
             "label": "Не лид",
-            "visibleRing": false,
+            "visibleRing": true,
             "inView": true,
             "size": [
               152,
@@ -1025,9 +1025,9 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 296,
-          "cls": 0.008,
-          "inp": 24,
+          "lcp": 576,
+          "cls": 0.006,
+          "inp": 16,
           "interactions": [
             "field"
           ],
@@ -1040,7 +1040,7 @@
         "ok": false,
         "issues": [
           "A4 18 standalone controls < 24px",
-          "C2 4 focused elements without visible ring"
+          "C2 2 focused elements without visible ring"
         ]
       }
     }

@@ -135,14 +135,14 @@ export function FunnelPanel(props: Props) {
         />
       ) : (
         <div className="aiw-empty">
-          <p className="aiw-empty-title">{data?.funnel.runs.length ? `Сообщений ${periodLabel(days)} нет` : 'Ещё не было обхода'}</p>
+          <p className="aiw-empty-title">{data?.funnel.runs.length ? `Сообщений ${periodLabel(days)} нет` : 'Чаты ещё не проверялись'}</p>
           <p className="aiw-help">
             {data?.funnel.runs.length
-              ? 'Чаты проекта читались, но новых сообщений не пришло. Выберите «7 дней» или запустите обход.'
-              : 'Обход читает новые сообщения в чатах проекта и показывает здесь, что с ними стало.'}
+              ? 'Чаты проекта проверялись, но новых сообщений не пришло. Выберите «7 дней» или проверьте чаты сейчас.'
+              : 'Проверка читает новые сообщения в чатах проекта и показывает здесь, что с ними стало.'}
           </p>
           <Button disabled={rescanning} onClick={() => void rescan()}>
-            <RefreshCw size={16} className={rescanning ? 'animate-spin' : ''} />{rescanning ? 'Идёт обход…' : 'Запустить обход'}
+            <RefreshCw size={16} className={rescanning ? 'animate-spin' : ''} />{rescanning ? 'Проверяем чаты…' : 'Проверить чаты сейчас'}
           </Button>
         </div>
       )}
@@ -186,7 +186,7 @@ function FunnelLedger({ view, dm, days, scanDepthDays, aiKeyReady, isOwner, lead
   const total = rows[0]?.count ?? 0;
   return (
     <>
-      <FunnelHeadline view={view} days={days} keyMissing={isKeyMissing(view, aiKeyReady)} onOpenLeads={onOpenLeads} />
+      <FunnelHeadline view={view} days={days} keyMissing={isKeyMissing(view, aiKeyReady)} onOpenLeads={leadTextVisible ? onOpenLeads : undefined} />
       <p className="aiw-meta">
         {view.runs.length} {pluralRu(view.runs.length, 'обход', 'обхода', 'обходов')} {periodLabel(days)} · полоса показывает долю от собранного
       </p>
@@ -256,7 +256,7 @@ function FunnelBanners({ view, aiKeyReady, isOwner, rescanning, onRescan, onOpen
           <div className="min-w-0">
             <p className="aiw-alert-title">AI не подключён — сообщения ждут проверки</p>
             <p className="aiw-help">Подключите ключ AI в настройках или попросите администратора. Пропущенные сообщения проверятся при следующем обходе.</p>
-            {isOwner && <p className="aiw-meta aiw-owner-note">Для владельца: ключ можно задать и на сервере, переменной окружения AI_API_KEY.</p>}
+            {isOwner && <p className="aiw-meta aiw-owner-note">Если ключа нет в настройках, его задаёт администратор сервера.</p>}
           </div>
           {onOpenSettings && (
             <Button variant="outline" size="sm" onClick={onOpenSettings}><Settings size={14} />Открыть настройки</Button>

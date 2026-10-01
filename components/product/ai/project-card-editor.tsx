@@ -132,7 +132,7 @@ export function ProjectCardEditor({ project, aiKeyReady, leadTextVisible, onDirt
               />
               {nameError && <p className="aiw-field-error" id={`${titleId}-name-error`}>{nameError}</p>}
             </div>
-            <div className="aiw-field">
+            <div className="aiw-field aiw-site-field">
               <label className="aiw-label" htmlFor={`${titleId}-url`}>Сайт</label>
               <div className="aiw-inline aiw-site-row">
                 <Input id={`${titleId}-url`} type="url" inputMode="url" value={draft.url} maxLength={500} placeholder="https://" onChange={(e) => set('url', e.target.value)} />
@@ -222,12 +222,14 @@ export function ProjectCardEditor({ project, aiKeyReady, leadTextVisible, onDirt
               ? `Есть несохранённые изменения: ${Object.keys(patch).length}`
               : savedAt ? <><Check size={15} aria-hidden />Сохранено</> : 'Все изменения сохранены'}
           </p>
-          <div className="aiw-draft-actions">
-            <Button variant="ghost" disabled={!dirty || saving} onClick={() => setDraft(project.data)}>Отменить</Button>
-            <Button variant={dirty ? 'default' : 'outline'} className="aiw-save-btn" disabled={!dirty || saving} onClick={() => void save()}>
-              {saving && <Loader2 size={15} className="animate-spin" />}Сохранить
-            </Button>
-          </div>
+          {(dirty || saving) && (
+            <div className="aiw-draft-actions">
+              <Button variant="ghost" disabled={saving} onClick={() => setDraft(project.data)}>Отменить</Button>
+              <Button className="aiw-save-btn" disabled={saving} onClick={() => void save()}>
+                {saving && <Loader2 size={15} className="animate-spin" />}Сохранить
+              </Button>
+            </div>
+          )}
         </div>
       </div>
     </section>

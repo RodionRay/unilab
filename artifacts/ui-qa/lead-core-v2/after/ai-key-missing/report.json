@@ -1,6 +1,6 @@
 {
   "base": "http://127.0.0.1:8011",
-  "started": "2026-10-01T11:29:56.810Z",
+  "started": "2026-10-01T12:02:42.403Z",
   "routes": {
     "/app?view=ai": {
       "390x844": {
@@ -301,7 +301,7 @@
             "inView": true,
             "size": [
               324,
-              36
+              44
             ],
             "covered": false
           },
@@ -312,7 +312,7 @@
             "inView": true,
             "size": [
               324,
-              27
+              44
             ],
             "covered": false
           },
@@ -554,7 +554,7 @@
             "inView": true,
             "size": [
               324,
-              27
+              44
             ],
             "covered": false
           },
@@ -587,7 +587,7 @@
             "inView": true,
             "size": [
               324,
-              27
+              44
             ],
             "covered": false
           },
@@ -660,7 +660,7 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 1184,
+          "lcp": 1120,
           "cls": 0,
           "inp": 24,
           "interactions": [
@@ -1038,7 +1038,7 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              198,
+              389,
               40
             ],
             "covered": false
@@ -1225,7 +1225,7 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              194,
+              415,
               36
             ],
             "covered": false
@@ -1234,7 +1234,7 @@
             "tag": "textarea",
             "label": "Фулфилмент для Wildberries и Ozon в Подо",
             "visibleRing": true,
-            "inView": false,
+            "inView": true,
             "size": [
               415,
               113
@@ -1574,7 +1574,7 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 1208,
+          "lcp": 1052,
           "cls": 0,
           "inp": 24,
           "interactions": [
@@ -1951,7 +1951,7 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              198,
+              562,
               40
             ],
             "covered": false
@@ -2487,9 +2487,9 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 1264,
+          "lcp": 1088,
           "cls": 0.03,
-          "inp": 32,
+          "inp": 24,
           "interactions": [
             "field"
           ],

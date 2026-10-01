@@ -164,10 +164,8 @@ function DraftDetail({ item, telegramConnected, onOpenThread, onDone }: DetailPr
       <header className="aiw-draft-head">
         <div className="min-w-0">
           <p className="aiw-draft-name">{item.name || 'Без имени'}{item.username && <span className="aiw-muted"> @{item.username}</span>}</p>
-          <p className="aiw-meta aiw-draft-meta">
-            <span className="aiw-draft-chat">{item.chatName || SOURCE_LABEL[item.sourceKind] || 'Telegram'}</span>
-            {shortAgoRu(item.created) && <span className="aiw-draft-age"> · {shortAgoRu(item.created)}</span>}
-          </p>
+          <p className="aiw-meta aiw-draft-chat">{item.chatName || SOURCE_LABEL[item.sourceKind] || 'Telegram'}</p>
+          {shortAgoRu(item.created) && <p className="aiw-meta aiw-draft-age">{shortAgoRu(item.created)}</p>}
         </div>
         <Button variant="ghost" size="sm" className="aiw-link-btn" onClick={() => onOpenThread(item.id)}>
           Открыть переписку<ExternalLink size={13} />
@@ -201,7 +199,7 @@ function DraftDetail({ item, telegramConnected, onOpenThread, onDone }: DetailPr
           </Button>
         </div>
         <p className="aiw-meta">
-          {telegramConnected ? `Уйдёт ${where}${item.accountName ? ` от ${item.accountName}` : ''}` : 'Telegram не подключён: отправка недоступна'}
+          {telegramConnected ? `Ответ уйдёт ${where}` : 'Telegram не подключён: отправка недоступна'}
         </p>
       </footer>
     </article>

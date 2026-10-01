@@ -35,14 +35,14 @@ const STATES = {
   'card-dirty': async (page) => {
     const field = page.locator('fieldset.aiw-group', { hasText: 'Кто лид' }).locator('textarea').first();
     await field.click();
-    await field.press('End');
+    await field.press('ControlOrMeta+End');
     await field.pressSequentially(' Отгрузки от 300 единиц в месяц.');
     await page.locator('.aiw-savebar[data-dirty]').waitFor();
   },
   'draft-editing': async (page) => {
     const area = page.locator('.aiw-draft textarea').first();
     await area.click();
-    await area.press('End');
+    await area.press('ControlOrMeta+End');
     await area.pressSequentially(' Могу созвониться сегодня после 15:00.');
   },
   'leave-dialog': async (page) => {

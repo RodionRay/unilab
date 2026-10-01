@@ -1,6 +1,6 @@
 {
   "base": "http://127.0.0.1:8011",
-  "started": "2026-10-01T07:07:50.427Z",
+  "started": "2026-10-01T12:02:30.231Z",
   "routes": {
     "/app?view=ai": {
       "390x844": {
@@ -117,11 +117,11 @@
           },
           {
             "tag": "button",
-            "label": "Запустить обход",
+            "label": "Проверить чаты сейчас",
             "visibleRing": true,
             "inView": true,
             "size": [
-              179,
+              225,
               44
             ],
             "covered": false
@@ -144,7 +144,7 @@
             "inView": true,
             "size": [
               324,
-              36
+              44
             ],
             "covered": false
           },
@@ -155,7 +155,7 @@
             "inView": true,
             "size": [
               324,
-              27
+              44
             ],
             "covered": false
           },
@@ -408,7 +408,7 @@
             "inView": true,
             "size": [
               324,
-              27
+              44
             ],
             "covered": false
           },
@@ -441,7 +441,7 @@
             "inView": true,
             "size": [
               324,
-              27
+              44
             ],
             "covered": false
           },
@@ -514,9 +514,9 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 2100,
+          "lcp": 1124,
           "cls": 0,
-          "inp": 40,
+          "inp": 16,
           "interactions": [
             "field"
           ],
@@ -888,11 +888,11 @@
           },
           {
             "tag": "button",
-            "label": "Запустить обход",
+            "label": "Проверить чаты сейчас",
             "visibleRing": true,
             "inView": true,
             "size": [
-              179,
+              225,
               40
             ],
             "covered": false
@@ -925,7 +925,7 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              194,
+              415,
               36
             ],
             "covered": false
@@ -936,7 +936,7 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              213,
+              415,
               40
             ],
             "covered": false
@@ -1285,9 +1285,9 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 2060,
+          "lcp": 1148,
           "cls": 0,
-          "inp": 9024,
+          "inp": 24,
           "interactions": [
             "field"
           ],
@@ -1299,8 +1299,7 @@
         "failedReq": [],
         "ok": false,
         "issues": [
-          "A4 13 standalone controls < 24px",
-          "E7 INP 9024 ms > 200"
+          "A4 13 standalone controls < 24px"
         ]
       },
       "1440x900": {
@@ -1659,11 +1658,11 @@
           },
           {
             "tag": "button",
-            "label": "Запустить обход",
+            "label": "Проверить чаты сейчас",
             "visibleRing": true,
             "inView": true,
             "size": [
-              179,
+              225,
               40
             ],
             "covered": false
@@ -2056,9 +2055,9 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 1948,
+          "lcp": 1080,
           "cls": 0.03,
-          "inp": 32,
+          "inp": 24,
           "interactions": [
             "field"
           ],
@@ -2075,6 +2074,6 @@
       }
     }
   },
-  "failures": 5,
+  "failures": 4,
   "visualFailures": 0
 }

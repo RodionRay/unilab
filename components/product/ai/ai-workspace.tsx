@@ -16,7 +16,7 @@ import {
 import { ApprovalQueue, type QueueItem } from './approval-queue';
 import { DeleteProjectDialog } from './delete-project-dialog';
 import { FunnelPanel } from './funnel-panel';
-import { approvalQueue, deleteBlockedReason, isDraftKind, projectIdOf, type ProjectRecord, type WorkspaceRecord } from './model';
+import { approvalQueue, deleteBlockedReason, isDraftKind, oldStepLabel, projectIdOf, type ProjectRecord, type WorkspaceRecord } from './model';
 import { ProjectCardEditor } from './project-card-editor';
 import { NewProjectDialog, ProjectSwitcher } from './project-switcher';
 
@@ -148,7 +148,7 @@ export function AiWorkspace(props: Props) {
           <figure className="aiw-first-preview" aria-label="Так будет выглядеть воронка проекта">
             <figcaption className="aiw-meta">Так выглядит воронка проекта (пример)</figcaption>
             <p className="aiw-headline is-small">Из <strong>540</strong> сообщений за 7 дней AI нашёл <strong>9 лидов</strong></p>
-            {[['Собрано', 540, 100], ['Короткие', 196, 36], ['Стоп-слова', 142, 26], ['Не лид', 61, 11], ['Лиды', 9, 2]].map(([label, count, pct]) => (
+            {[['Собрано', 540, 100], [oldStepLabel(7), 88, 16], ['Короткие (меньше 12 символов)', 196, 36], ['Стоп-слова', 142, 26], ['Не лид', 105, 19], ['Лиды', 9, 2]].map(([label, count, pct]) => (
               <div key={label} className="aiw-row-main is-static" data-tone={label === 'Лиды' ? 'lead' : label === 'Собрано' ? 'total' : 'neutral'}>
                 <span className="aiw-row-label"><span className="aiw-row-name">{label}</span></span>
                 <span className="aiw-row-figures"><span className="aiw-row-count">{count}</span></span>

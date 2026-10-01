@@ -2069,10 +2069,10 @@ function WorkspaceHome(){
       </button>
       <div className="flex flex-col gap-1 shrink-0">
         <Button variant="ghost" onClick={()=>openLead(r)}>Открыть<ChevronRight size={16}/></Button>
-        <Button variant="ghost" size="sm" disabled={busy} aria-pressed={r.data.feedback==='good'} title="Добавить в примеры хороших лидов проекта" onClick={()=>void leadFeedback(r,'good')}>
+        <Button variant="ghost" size="sm" className="focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--spike-primary)]" disabled={busy} aria-pressed={r.data.feedback==='good'} title="Добавить в примеры хороших лидов проекта" onClick={()=>void leadFeedback(r,'good')}>
           <ThumbsUp size={15}/>Хороший лид
         </Button>
-        <Button variant="ghost" size="sm" disabled={busy} aria-pressed={r.data.feedback==='bad'} title="Добавить в примеры «не лид» проекта" onClick={()=>void leadFeedback(r,'bad')}>
+        <Button variant="ghost" size="sm" className="focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--spike-primary)]" disabled={busy} aria-pressed={r.data.feedback==='bad'} title="Добавить в примеры «не лид» проекта" onClick={()=>void leadFeedback(r,'bad')}>
           <ThumbsDown size={15}/>Не лид
         </Button>
       </div>
@@ -3001,7 +3001,7 @@ function WorkspaceHome(){
               onOpenThread={(id)=>{const item=records.find(r=>r.id===id);if(item)void openLead(item)}}
               onGoGroups={()=>goChats()}
               onOpenSettings={()=>navigate('Настройки')}
-              onOpenLeads={()=>{setLeadProjectScope('active');goLeads()}}
+              onOpenLeads={canSeeLeadText(workspaceMeta)?()=>{setLeadProjectScope('active');goLeads()}:undefined}
               onDirtyChange={setAiDirty}
               onRescan={async()=>{
                 try{
@@ -3853,10 +3853,10 @@ function WorkspaceHome(){
               <Button variant="outline" disabled={busy} onClick={async()=>{if(!detail)return;await draft(detail);const updated=records.find(r=>r.id===detail.id)||detail;setChatText(prev=>prev||updated.data.draft||'')}}>
                 <Sparkles size={15}/>Черновик AI
               </Button>
-              <Button variant="ghost" disabled={busy||!detail} onClick={()=>{if(detail)void leadFeedback(detail,'good')}}>
+              <Button variant="ghost" className="focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--spike-primary)]" disabled={busy||!detail} onClick={()=>{if(detail)void leadFeedback(detail,'good')}}>
                 <ThumbsUp size={15}/>Хороший лид
               </Button>
-              <Button variant="ghost" disabled={busy||!detail} onClick={()=>{if(detail)void leadFeedback(detail,'bad')}}>
+              <Button variant="ghost" className="focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--spike-primary)]" disabled={busy||!detail} onClick={()=>{if(detail)void leadFeedback(detail,'bad')}}>
                 <ThumbsDown size={15}/>Не лид
               </Button>
               <Button variant="outline" disabled={!chatText} onClick={async()=>{try{await navigator.clipboard.writeText(chatText);toast.success('Скопировано')}catch{toast.error('Не удалось скопировать')}}}>Копировать</Button>
@@ -4147,8 +4147,8 @@ function WorkspaceHome(){
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Остаться</AlertDialogCancel>
-            <AlertDialogAction onClick={()=>{const apply=pendingLeave;setPendingLeave(null);setAiDirty(false);apply?.()}}>Перейти без сохранения</AlertDialogAction>
+            <AlertDialogAction variant="outline" onClick={()=>{const apply=pendingLeave;setPendingLeave(null);setAiDirty(false);apply?.()}}>Перейти без сохранения</AlertDialogAction>
+            <AlertDialogCancel variant="default">Остаться</AlertDialogCancel>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

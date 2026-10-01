@@ -1,6 +1,6 @@
 {
   "base": "http://127.0.0.1:8011",
-  "started": "2026-10-01T07:08:35.463Z",
+  "started": "2026-10-01T12:02:55.047Z",
   "routes": {
     "/app?view=ai": {
       "390x844": {
@@ -9,7 +9,7 @@
           "overflow": false,
           "offenders": [],
           "smallTargets": 1,
-          "smallPrimary": 21,
+          "smallPrimary": 20,
           "smallInputs": 0,
           "imgsNoDims": 0,
           "imgsBroken": 0,
@@ -117,17 +117,6 @@
           },
           {
             "tag": "button",
-            "label": "27 лидов: открыть раздел «Лиды»",
-            "visibleRing": true,
-            "inView": true,
-            "size": [
-              95,
-              26
-            ],
-            "covered": false
-          },
-          {
-            "tag": "button",
             "label": "Обойти сейчас",
             "visibleRing": true,
             "inView": true,
@@ -166,7 +155,7 @@
             "inView": true,
             "size": [
               324,
-              36
+              44
             ],
             "covered": false
           },
@@ -177,7 +166,7 @@
             "inView": true,
             "size": [
               324,
-              27
+              44
             ],
             "covered": false
           },
@@ -459,9 +448,9 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 464,
+          "lcp": 1044,
           "cls": 0,
-          "inp": 32,
+          "inp": 24,
           "interactions": [
             "field"
           ],
@@ -474,7 +463,7 @@
         "ok": false,
         "issues": [
           "A4 1 standalone controls < 24px",
-          "A4 21 primary buttons < 44px on mobile"
+          "A4 20 primary buttons < 44px on mobile"
         ]
       },
       "768x1024": {
@@ -679,22 +668,11 @@
           },
           {
             "tag": "button",
-            "label": "27 лидов: открыть раздел «Лиды»",
-            "visibleRing": true,
-            "inView": true,
-            "size": [
-              103,
-              29
-            ],
-            "covered": false
-          },
-          {
-            "tag": "button",
             "label": "Обойти сейчас",
             "visibleRing": true,
             "inView": true,
             "size": [
-              163,
+              389,
               40
             ],
             "covered": false
@@ -738,7 +716,7 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              194,
+              415,
               36
             ],
             "covered": false
@@ -749,7 +727,7 @@
             "visibleRing": true,
             "inView": true,
             "size": [
-              213,
+              415,
               40
             ],
             "covered": false
@@ -1021,9 +999,9 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 404,
+          "lcp": 1084,
           "cls": 0.043,
-          "inp": 32,
+          "inp": 24,
           "interactions": [
             "field"
           ],
@@ -1240,22 +1218,11 @@
           },
           {
             "tag": "button",
-            "label": "27 лидов: открыть раздел «Лиды»",
-            "visibleRing": true,
-            "inView": true,
-            "size": [
-              126,
-              35
-            ],
-            "covered": false
-          },
-          {
-            "tag": "button",
             "label": "Обойти сейчас",
             "visibleRing": true,
             "inView": true,
             "size": [
-              163,
+              562,
               40
             ],
             "covered": false
@@ -1582,9 +1549,9 @@
         ],
         "axe": null,
         "vitals": {
-          "lcp": 604,
+          "lcp": 1052,
           "cls": 0.124,
-          "inp": 40,
+          "inp": 32,
           "interactions": [
             "field"
           ],
