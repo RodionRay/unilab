@@ -65,3 +65,16 @@ fixed shell mid-page (capture artefact).
 - Gate @f7e75ee: vitest 614/614, build OK, tsc 0 in owned files (18 elsewhere), eslint ai/ 0, page.tsx 28 (base 31).
 - e2e harness/e2e-ai.mjs 8/8 PASS on mock @4eccd5e (1440 only).
 - Next if owner extends: round 6 on FIX list 1–5, re-run critic + judge.
+
+# Round 6 (panel FIX 1–5), 2026-10-01, stopped at context threshold
+Head a1ae7ca (pushed). Merged origin/task/lead-core-v2-2026-10-01 first (364795f).
+Done, NOT yet verified by screenshots: cc406b1 «обход» → «проверка чатов» (funnel-panel.tsx, model.ts, test);
+a1ae7ca FAB docks (position static at page end) on view=ai|chats via useSearchParams in ai-assistant-widget.tsx
+(vinext patches replaceState, so the view param updates); .aiw padding-bottom 104 + savebar 196px reservation removed;
+tabs edge fade (`useOverflowEdges`, data-more-start/end, mask-image) + snap; ≤767 44px floor on .aiw controls;
+first run = one centred column + framed preview.
+Server 8001 + proxy 8011 (scenario full) running, storage.json fresh.
+Next: ui-qa after/{full,no-project} 390/768/1440 + `ONLY=draft-editing node harness/states.mjs` (approval state);
+check FAB position at page end, tabs fade at 390, smallPrimary inside .aiw; then gate (vitest full, eslint owned, build);
+stop servers (`harness/serve.sh --stop`).
+Pre-existing: eslint no-explicit-any at ai-assistant-widget.tsx:68 (`const data: any`, not item 1).

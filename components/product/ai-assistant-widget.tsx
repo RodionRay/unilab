@@ -1,10 +1,18 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { Loader2, MessageCircle, Send, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { PRODUCT_NAME } from "@/lib/product-knowledge";
+
+/**
+ * Workspace views whose reply composer («Отправить») sits bottom-right, where the floating button lives.
+ * There the closed button docks at the end of the page instead of floating, so it never covers a draft.
+ */
+const DOCKED_VIEWS: ReadonlySet<string> = new Set(["ai", "chats"]);
+const DOCKED_STYLE: React.CSSProperties = { position: "static", padding: "0 20px 20px" };
 
 type ChatMessage = { role: "user" | "assistant"; content: string };
 type Surface = "admin" | "site";
@@ -32,6 +40,8 @@ export function AiAssistantWidget({
     },
   ]);
   const listRef = useRef<HTMLDivElement>(null);
+  const view = useSearchParams()?.get("view") ?? "";
+  const docked = surface === "admin" && !open && DOCKED_VIEWS.has(view);
 
   useEffect(() => {
     if (!open) return;
@@ -74,7 +84,12 @@ export function AiAssistantWidget({
   }
 
   return (
-    <div className="assistant-root" data-surface={surface}>
+    <div
+      className="assistant-root"
+      data-surface={surface}
+      data-docked={docked || undefined}
+      style={docked ? DOCKED_STYLE : undefined}
+    >
       {open && (
         <section
           className="assistant-panel"

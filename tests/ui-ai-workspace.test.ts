@@ -105,7 +105,7 @@ describe("funnel headline never calls unchecked messages «no leads»", () => {
     expect(funnelHeadline(c, 7, true)).toBe("Из 797 сообщений 91 ещё не проверено — AI не подключён");
     expect(funnelHeadline(c, 7, true)).not.toContain("не нашлось");
     expect(funnelHeadline(counts({ fetched: 10, judgeSkipped: 3 }), 1, false)).toBe(
-      "Из 10 сообщений 3 ещё не проверены — AI проверит их при следующем обходе",
+      "Из 10 сообщений 3 ещё не проверены — AI оценит их при следующей проверке чатов",
     );
   });
 

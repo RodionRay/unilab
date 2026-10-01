@@ -91,8 +91,8 @@ export type FunnelResponse = { ok: true; funnel: FunnelView; dm: FunnelView };
 export const SKIP_REASON_LABEL: Record<string, string> = {
   no_ai_key: 'Нет ключа AI',
   daily_cap: 'Дневной лимит оценок исчерпан',
-  blocked: 'AI не ответил раньше в этом обходе',
-  batch_limit: 'Не поместилось в обход: оценим в следующем',
+  blocked: 'AI не ответил раньше в этой проверке',
+  batch_limit: 'Не поместилось в эту проверку: оценим в следующей',
   sender_limit: 'Слишком много новых собеседников за раз',
   no_project: 'Нет активного проекта',
 };
@@ -227,7 +227,7 @@ const STEPS: StepDef[] = [
   { key: 'short', label: 'Короткие (меньше 12 символов)', hint: 'Ответы вроде «+», «спасибо», «в лс»: в них нет запроса.', tone: 'neutral', parts: ['short'], sampleKeys: ['short'] },
   { key: 'duplicate', label: 'Повторы', hint: 'Уже видели это сообщение или уже отклонили его.', tone: 'neutral', parts: ['duplicate'], sampleKeys: ['duplicate'] },
   { key: 'stopword', label: 'Стоп-слова', hint: 'Нашлось слово из стоп-списка проекта.', tone: 'neutral', parts: ['stopword'], sampleKeys: ['stopword'] },
-  { key: 'judgeSkipped', label: 'Без оценки', hint: 'AI не смотрел: нет ключа или дневной лимит. Оценит при следующем обходе.', tone: 'warning', parts: ['judgeSkipped'], sampleKeys: ['judgeSkipped'] },
+  { key: 'judgeSkipped', label: 'Без оценки', hint: 'AI не смотрел: нет ключа или дневной лимит. Оценит при следующей проверке чатов.', tone: 'warning', parts: ['judgeSkipped'], sampleKeys: ['judgeSkipped'] },
   { key: 'error', label: 'Ошибка AI или чтения', hint: 'AI не ответил или Telegram не отдал автора сообщения.', tone: 'error', parts: ['judgeError', 'skippedError', 'skippedErrorApp'], sampleKeys: ['judgeError', 'skippedErrorApp'] },
   { key: 'rejected', label: 'Не лид', hint: 'AI прочитал и решил, что автор не ищет ваш продукт.', tone: 'neutral', parts: ['rejected'], sampleKeys: ['rejected'] },
   { key: 'leads', label: 'Лиды', hint: 'AI решил, что автор ищет ваш продукт, и балл не ниже порога.', tone: 'lead', parts: ['leads'], sampleKeys: ['leads'] },
@@ -302,7 +302,7 @@ export function headlineKind(counts: FunnelCounts): HeadlineKind {
 }
 
 /** Why the unchecked messages wait: drives the tail of the `unchecked` headline. */
-export const uncheckedCause = (keyMissing: boolean): string => (keyMissing ? 'AI не подключён' : 'AI проверит их при следующем обходе');
+export const uncheckedCause = (keyMissing: boolean): string => (keyMissing ? 'AI не подключён' : 'AI оценит их при следующей проверке чатов');
 
 /** «Из 1 240 сообщений за 7 дней AI нашёл 9 лидов» / «Из 797 сообщений 91 ещё не проверено — AI не подключён». */
 export function funnelHeadline(counts: FunnelCounts, days: 1 | 7, keyMissing = false): string {

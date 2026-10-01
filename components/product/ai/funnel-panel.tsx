@@ -188,7 +188,7 @@ function FunnelLedger({ view, dm, days, scanDepthDays, aiKeyReady, isOwner, lead
     <>
       <FunnelHeadline view={view} days={days} keyMissing={isKeyMissing(view, aiKeyReady)} onOpenLeads={leadTextVisible ? onOpenLeads : undefined} />
       <p className="aiw-meta">
-        {view.runs.length} {pluralRu(view.runs.length, 'обход', 'обхода', 'обходов')} {periodLabel(days)} · полоса показывает долю от собранного
+        {view.runs.length} {pluralRu(view.runs.length, 'проверка', 'проверки', 'проверок')} чатов {periodLabel(days)} · полоса показывает долю от собранного
       </p>
       <FunnelBanners view={view} aiKeyReady={aiKeyReady} isOwner={isOwner} rescanning={rescanning} onRescan={onRescan} onOpenSettings={onOpenSettings} />
       <ol className="aiw-ledger">
@@ -255,7 +255,7 @@ function FunnelBanners({ view, aiKeyReady, isOwner, rescanning, onRescan, onOpen
           <AlertTriangle size={18} aria-hidden />
           <div className="min-w-0">
             <p className="aiw-alert-title">AI не подключён — сообщения ждут проверки</p>
-            <p className="aiw-help">Подключите ключ AI в настройках или попросите администратора. Пропущенные сообщения проверятся при следующем обходе.</p>
+            <p className="aiw-help">Подключите ключ AI в настройках или попросите администратора. Пропущенные сообщения AI оценит при следующей проверке чатов.</p>
             {isOwner && <p className="aiw-meta aiw-owner-note">Если ключа нет в настройках, его задаёт администратор сервера.</p>}
           </div>
           {onOpenSettings && (
@@ -268,7 +268,7 @@ function FunnelBanners({ view, aiKeyReady, isOwner, rescanning, onRescan, onOpen
           <AlertTriangle size={18} aria-hidden />
           <div className="min-w-0">
             <p className="aiw-alert-title">Дневной лимит AI исчерпан{skipped ? `: ${msgs(skipped)} ждут оценки` : ''}</p>
-            <p className="aiw-help">Лимит обновится в 03:00 по Москве, тогда эти сообщения оценятся при обходе.</p>
+            <p className="aiw-help">Лимит обновится в 03:00 по Москве, тогда эти сообщения оценятся при следующей проверке чатов.</p>
           </div>
         </div>
       )}
@@ -277,10 +277,10 @@ function FunnelBanners({ view, aiKeyReady, isOwner, rescanning, onRescan, onOpen
           <AlertTriangle size={18} aria-hidden />
           <div className="min-w-0">
             <p className="aiw-alert-title">AI не ответил на {msgs(failed)}</p>
-            <p className="aiw-help">Сообщения не потеряны: обход вернётся к ним и спросит AI ещё раз.</p>
+            <p className="aiw-help">Сообщения не потеряны: следующая проверка чатов вернётся к ним и спросит AI ещё раз.</p>
           </div>
           <Button variant="outline" size="sm" disabled={rescanning} onClick={() => void onRescan()}>
-            <RefreshCw size={14} className={rescanning ? 'animate-spin' : ''} />Обойти сейчас
+            <RefreshCw size={14} className={rescanning ? 'animate-spin' : ''} />Проверить чаты сейчас
           </Button>
         </div>
       )}
