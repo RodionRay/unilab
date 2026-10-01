@@ -3,25 +3,22 @@ import {GROUP_CATALOG,isCatalogPlaceholderUrl} from '@/lib/group-catalog';
 import {JOIN_SUCCESS_PATCH,JOIN_WORKER_ERROR_RETRY_MS,accountBlindPatch,type JoinAccountState,type JoinProxyState,evaluateAccountJoinReadiness,isAccountBlindResult,isAccountResolveBlind,isJoinFarmCandidate,joinFailurePatch,planGroupHeal,sanitizeJoinStateError} from '@/lib/processes/join-flow';
 import {database,seal,unseal} from '@/lib/server-store';
 import {aiChatText,envAiApiKey,resolveAiConfig} from '@/lib/ai-client';
-import {buildProjectBrief,leadMessageFingerprint,parseLeadTemperature,ratingFromTemperatures,strongPlusTerms} from '@/lib/lead-filter';
+import {buildProjectBrief,parseLeadTemperature,ratingFromTemperatures,strongPlusTerms} from '@/lib/lead-filter';
 import {
  explainLeadDecision,
  workerKeywordsFromSettings,
  type LeadCoreSettings,
- type LeadScoreResult,
 } from '@/lib/lead-core';
 import {
  activeAiRejects,
  addLeadTombstone,
  aiSettingsSignature,
- applyAiVerdicts,
- decideScanLead,
  evaluateScanGate,
  keepServerOwnedFields,
  rememberAiRejects,
- type AiBatchOutcome,
 } from '@/lib/processes/scan-flow';
 import {qualifyLeadsWithAi} from '@/lib/processes/lead-ai';
+import {pickLeads} from '@/lib/processes/lead-ingest';
 import {appendLearnExamples,extractTermsFromHotMessages,mergeKeywords,mergeKeywordsPreferNew,parseKeywordCsv} from '@/lib/ai-keywords';
 import {sanitizeMinusTerms,scanStopTerms} from '@/lib/lead-stopwords';
 import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpChatCounters,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasMemberInviteQuota,hasMessageQuota,isAccountFlooded,isAccountUsable,isDayLimitCooldown,isDayLimitedFor,dayLimitCooldownKind,isOnCooldown,joinWaitSec,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
@@ -1356,8 +1353,8 @@ async function rememberDeletedLead(owner:string,leadId:string){
  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,groupId,'group').run();
 }
 
-/** Message of the worker /scan-group answer; `_core` is attached by scan_group after the core decision. */
-type ScanWorkerMessage={tgMsgId?:unknown;message?:string;name?:string;_core?:{score?:number;reasons?:string[]}};
+/** Message of the worker /scan-group answer (fields scan_group reads). */
+type ScanWorkerMessage={tgMsgId?:unknown;message?:string;name?:string;date?:unknown;senderId?:unknown;senderUsername?:unknown;senderAccessHash?:unknown;messageKind?:unknown;peerId?:unknown;replyToMsgId?:unknown};
 
 /** Scan of one group runs at most once at a time (cron + manual force); TTL covers worker + AI batches. */
 const SCAN_LOCK_TTL_MS=10*60_000;
@@ -2417,68 +2414,44 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    }
    const cutoff=Date.now()-scanDepthDays*24*60*60*1000;
    const workerRaw=Array.isArray(result.messages)?result.messages.length:0;
-   let candidates=(result.messages||[]).filter((msg:{tgMsgId?:unknown;date?:string;message?:string;_core?:unknown})=>{
-    if(!String(msg.tgMsgId||''))return false;
-    if(msg.date){
-     const t=Date.parse(msg.date);
-     if(Number.isFinite(t)&&t<cutoff)return false;
-    }
-    const decision=decideScanLead(msg.message||'',coreSettings);
-    if(!decision.pass)return false;
-    msg._core=decision.core;
-    return true;
-   });
+   const workerMessages:ScanWorkerMessage[]=Array.isArray(result.messages)?result.messages:[];
    const existing=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='lead'").bind(owner).all();
+   // Дедуп по groupId:tgMsgId (REQ-L8) — в рамках группы ключ = tgMsgId
    const seen=new Set<string>();
    for(const r of existing.results){
     try{
      const d=JSON.parse(String(r.data));
-     seen.add(leadMessageFingerprint(d.message||'',d.groupId||'',d.tgMsgId||''));
+     if(d.groupId===id&&d.tgMsgId)seen.add(String(d.tgMsgId));
     }catch{/* */}
    }
    // Удалённые пользователем лиды — как существующие (REQ-L6)
-   for(const t of Array.isArray(gdata.leadTombstones)?gdata.leadTombstones:[])seen.add(leadMessageFingerprint('',id,String(t)));
-   const isNewMessage=(msg:{tgMsgId?:unknown;message?:string})=>
-    !seen.has(leadMessageFingerprint(msg.message||'',id,String(msg.tgMsgId||'')));
-   const prefilterCount=candidates.length;
-   // Дедуп до AI: уже известные сообщения не отправляем в модель повторно
-   candidates=candidates.filter(isNewMessage);
+   for(const t of Array.isArray(gdata.leadTombstones)?gdata.leadTombstones:[])seen.add(String(t));
    const now=Date.now();
    const aiSig=aiSettingsSignature(settings);
-   const apiKey=settings.aiQualify!==false&&candidates.length?await resolveApiKey(owner,config):'';
+   const apiKey=settings.aiQualify!==false?await resolveApiKey(owner,config):'';
    const aiRejectsActive=activeAiRejects(gdata.aiRejected,aiSig,now);
-   let aiRemembered=0;
-   let batches:AiBatchOutcome[]|null=null;
-   if(apiKey){
-    // REQ-L11: отказ AI помним (TTL) — не шлём то же сообщение в модель на каждом переобходе
-    const fresh=candidates.filter((m:{tgMsgId?:unknown})=>!aiRejectsActive[String(m.tgMsgId)]);
-    aiRemembered=candidates.length-fresh.length;
-    candidates=fresh;
-    if(candidates.length){
-     batches=await qualifyLeadsWithAi(apiKey,settings,candidates.map((m:ScanWorkerMessage)=>({
-      tgMsgId:String(m.tgMsgId||''),
-      message:String(m.message||''),
-      name:String(m.name||''),
-      coreScore:Number(m._core?.score)||0,
-      coreReasons:Array.isArray(m._core?.reasons)?m._core.reasons:[],
-     })));
-    }
-   }
-   const aiUsed=!!batches?.some(b=>b.ok);
-   // REQ-L1: ответ AI по батчу — вердикт; упавший батч — по ядру
-   const verdict=applyAiVerdicts(candidates.map((m:ScanWorkerMessage)=>({tgMsgId:String(m.tgMsgId),core:m._core as LeadScoreResult})),batches);
-   const keptById=new Map(verdict.kept.map(k=>[k.tgMsgId,k]));
-   candidates=candidates.filter((m:{tgMsgId?:unknown})=>keptById.has(String(m.tgMsgId)));
-   const aiRejectedNext=apiKey?rememberAiRejects(aiRejectsActive,verdict.rejectedIds,aiSig,now):gdata.aiRejected;
+   // Ядро → дедуп до AI → память отказов AI (REQ-L11) → AI-вердикт по батчам, сбой батча — по ядру (REQ-L1)
+   const picked=await pickLeads({
+    items:workerMessages.map(m=>({
+     key:String(m.tgMsgId||''),
+     message:String(m.message||''),
+     name:String(m.name||''),
+     date:m.date?String(m.date):undefined,
+     raw:m,
+    })),
+    coreSettings,
+    seen,
+    aiRejects:aiRejectsActive,
+    depthCutoff:cutoff,
+    qualify:apiKey?msgs=>qualifyLeadsWithAi(apiKey,settings,msgs):null,
+   });
+   const {core:prefilterCount,aiRemembered,aiUsed,matched}=picked.funnel;
+   const aiRejectedNext=apiKey&&picked.funnel.fresh?rememberAiRejects(aiRejectsActive,picked.rejectedIds,aiSig,now):gdata.aiRejected;
    let added=0;
    const addedByTemp={hot:0,warm:0,cold:0};
-   for(const msg of candidates){
-    const key=leadMessageFingerprint(msg.message||'',id,String(msg.tgMsgId||''));
-    if(seen.has(key))continue;
-    seen.add(key);
-    const tgMsgId=String(msg.tgMsgId||'');
-    const kept=keptById.get(tgMsgId);
-    if(!kept)continue;
+   for(const kept of picked.kept){
+    const msg=kept.item.raw;
+    const tgMsgId=kept.item.key;
     const temperature=kept.temperature;
     addedByTemp[temperature]++;
     const lead={
@@ -2500,7 +2473,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      peerId:String(msg.peerId||'').slice(0,40),
      replyToMsgId:String(msg.replyToMsgId||'').slice(0,40),
      replies:[],
-     coreScore:Number(msg._core?.score)||0,
+     coreScore:Number(kept.core.score)||0,
      accountId:String(gdata.joinedAccountId||gdata.accountId||''),
      notifyPending:!!settings.notifyEnabled,
      notifiedAt:'',
@@ -2543,7 +2516,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     leadsHot:counts.hot,
     leadsWarm:counts.warm,
     leadsCold:counts.cold,
-    scanMatched:candidates.length,
+    scanMatched:matched,
     rating,
     lastScanned:new Date().toISOString(),
     scanCursor:String(result.cursor||base.scanCursor||''),
@@ -2552,8 +2525,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      base.scanLog,
      added?'ok':'info',
      added
-      ?`Переобход · +${added} · ${String(result.scanMode||'chat')} · worker ${workerRaw} → ядро ${prefilterCount} → AI/match ${candidates.length}${aiUsed?' · AI':''}${aiRemembered?` · отказ AI помним ${aiRemembered}`:''}`
-      :`Переобход · 0 · ${String(result.scanMode||'chat')} · worker ${workerRaw} → ядро ${prefilterCount} → AI/match ${candidates.length}${aiUsed?' · AI':''}${aiRemembered?` · отказ AI помним ${aiRemembered}`:''}`,
+      ?`Переобход · +${added} · ${String(result.scanMode||'chat')} · worker ${workerRaw} → ядро ${prefilterCount} → AI/match ${matched}${aiUsed?' · AI':''}${aiRemembered?` · отказ AI помним ${aiRemembered}`:''}`
+      :`Переобход · 0 · ${String(result.scanMode||'chat')} · worker ${workerRaw} → ядро ${prefilterCount} → AI/match ${matched}${aiUsed?' · AI':''}${aiRemembered?` · отказ AI помним ${aiRemembered}`:''}`,
      50,
     ),
    };
@@ -2569,11 +2542,11 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     fetched:Number(result.fetched)||(result.messages||[]).length,
     workerRaw,
     prefilter:prefilterCount,
-    matched:candidates.length,
+    matched:matched,
     added,
     addedByTemp,
     aiUsed,
-    funnel:{worker:workerRaw,core:prefilterCount,matched:candidates.length,added},
+    funnel:{worker:workerRaw,core:prefilterCount,matched:matched,added},
     title:result.title||gdata.name,
     metrics:{leadsTotal,leadsHot:counts.hot,leadsWarm:counts.warm,leadsCold:counts.cold,rating,lastScanned:groupNext.lastScanned},
     taskLog:groupNext.scanLog,
