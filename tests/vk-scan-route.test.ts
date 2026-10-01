@@ -429,6 +429,47 @@ describe('workspace API: scan_vk_source',()=>{
       expect(saved).not.toHaveProperty('msgKey');
       expect(saved.tgMsgId).toBe('');
     });
+
+    it('a created lead never stores client-sent server-owned fields (javascript: link, VK identity)',async()=>{
+      const res=await POST(postRequest({action:'save',kind:'lead',data:{name:'X',message:'Ищу сервис для остатков',platform:'vk',msgKey:'vk:-11000_501',url:'javascript:alert(1)',vkSourceId:SEARCH_ID,senderId:'666',coreScore:99}}));
+      const {id}=await res.json() as {id:string};
+
+      expect(res.status).toBe(200);
+      const saved=record(id);
+      for(const f of ['platform','msgKey','url','vkSourceId','coreScore'])expect(saved).not.toHaveProperty(f);
+      expect(saved.senderId??'').toBe('');
+    });
+
+    it('an update of a Telegram lead cannot add url, platform or msgKey',async()=>{
+      const tgId='c0000000-0000-4000-8000-000000000001';
+      addRecord(tgId,'lead',{name:'T',message:'Ищу сервис для остатков',status:'new',tgMsgId:'55',groupId:'g1'});
+
+      const res=await POST(postRequest({action:'save',kind:'lead',id:tgId,data:{name:'T',message:'Ищу сервис для остатков',status:'working',platform:'vk',msgKey:'vk:-11000_501',url:'https://vk.com/wall-1_1'}}));
+
+      expect(res.status).toBe(200);
+      const saved=record(tgId);
+      expect(saved).toMatchObject({status:'working',tgMsgId:'55',groupId:'g1'});
+      for(const f of ['platform','msgKey','url'])expect(saved).not.toHaveProperty(f);
+    });
+
+    it('a forged msgKey from a client save cannot suppress the real VK lead',async()=>{
+      await POST(postRequest({action:'save',kind:'lead',data:{name:'X',message:'Ищу сервис для остатков',platform:'vk',msgKey:'vk:-11000_501'}}));
+
+      const r=await scan(SEARCH_ID);
+
+      expect(r.body.added).toBe(2);
+      expect(keys()).toEqual(['vk:-11000_501','vk:700300_77']);
+    });
+
+    it('the notification omits a VK link that is not https://vk.com/',async()=>{
+      setSettings({notifyEnabled:true});
+      addRecord('c0000000-0000-4000-8000-000000000002','lead',{name:'Bad',message:'Ищу сервис для остатков',status:'new',temperature:'hot',source:'s',platform:'vk',msgKey:'vk:1_1',url:'javascript:alert(1)',notifyPending:true});
+
+      await scan(SEARCH_ID);
+
+      expect(calls.tg.join('\n')).not.toContain('javascript:');
+      expect(calls.tg.join('\n')).toContain('https://vk.com/wall-11000_501');
+    });
   });
 
   describe('REQ-8 rescan_groups',()=>{

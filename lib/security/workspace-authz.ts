@@ -135,6 +135,8 @@ const ACCOUNT_PICKER_FIELDS=[
 ] as const;
 /** Owner-only secrets that live inside record data (not in the sealed `secret` column). */
 const OWNER_ONLY_SETTINGS_FIELDS=['notifyBotToken'] as const;
+/** Pool internals no UI reads: token fingerprint (dedup) and scan lease id (lock ownership). Hidden from everyone. */
+const VK_ACCOUNT_INTERNAL_FIELDS=['tokenFp','leaseId'] as const;
 
 export type WorkspaceRecordView={kind:string;data:Record<string,unknown>}&Record<string,unknown>;
 
@@ -146,6 +148,13 @@ function redactOwnerSecrets(data:Record<string,unknown>):Record<string,unknown>{
  const next={...data};
  for(const f of OWNER_ONLY_SETTINGS_FIELDS)if(f in next)next[f]='';
  return next;
+}
+
+function withoutInternals<T extends WorkspaceRecordView>(rec:T):T{
+ if(rec.kind!=='vk_account')return rec;
+ const data={...rec.data};
+ for(const f of VK_ACCOUNT_INTERNAL_FIELDS)delete data[f];
+ return {...rec,data};
 }
 
 function viewRecord<T extends WorkspaceRecordView>(actor:WorkspaceActor,rec:T):T|null{
@@ -160,10 +169,10 @@ function viewRecord<T extends WorkspaceRecordView>(actor:WorkspaceActor,rec:T):T
  return null;
 }
 
-/** GET projection: drop kinds outside the member's sections, strip owner-only secrets. */
+/** GET projection: drop kinds outside the member's sections, strip owner-only secrets and pool internals. */
 export function visibleRecordsFor<T extends WorkspaceRecordView>(actor:WorkspaceActor,records:readonly T[]):T[]{
- if(actor.isOwner)return [...records];
- return records.flatMap(r=>{const v=viewRecord(actor,r);return v?[v]:[]});
+ if(actor.isOwner)return records.map(withoutInternals);
+ return records.flatMap(r=>{const v=viewRecord(actor,r);return v?[withoutInternals(v)]:[]});
 }
 
 /**

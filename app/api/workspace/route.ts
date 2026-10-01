@@ -15,6 +15,7 @@ import {
  aiSettingsSignature,
  evaluateScanGate,
  keepServerOwnedFields,
+ dropServerOwnedFields,
  rememberAiRejects,
 } from '@/lib/processes/scan-flow';
 import {qualifyLeadsWithAi} from '@/lib/processes/lead-ai';
@@ -23,6 +24,7 @@ import {scanVkSource,type VkActionResult,type VkScanDeps} from '@/lib/processes/
 import {addVkGroupSource,deleteVkAccounts,deleteVkSource,importVkAccounts,setVkAccountProxy,type VkAccountDeps} from '@/lib/processes/vk-accounts';
 import {VK_SOURCE_KIND,loadVkAccounts,loadVkSources} from '@/lib/vk/records';
 import {noUsableVkAccount} from '@/lib/vk/session';
+import {VK_LEAD_URL} from '@/lib/vk/url';
 import {appendLearnExamples,extractTermsFromHotMessages,mergeKeywords,mergeKeywordsPreferNew,parseKeywordCsv} from '@/lib/ai-keywords';
 import {sanitizeMinusTerms,scanStopTerms} from '@/lib/lead-stopwords';
 import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpChatCounters,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,cooldownHoursFromNow,generateTelegramUsername,hasChatQuota,hasMemberInviteQuota,hasMessageQuota,isAccountFlooded,isAccountUsable,isDayLimitCooldown,isDayLimitedFor,dayLimitCooldownKind,isOnCooldown,joinWaitSec,moscowDayKey,moscowNextMidnightIso,withFrozenStatus,withSpamblockStatus} from '@/lib/telegram-accounts';
@@ -269,7 +271,7 @@ const schemas={
   /** REQ-15: VK leads; a missing platform means Telegram. Server-owned (scan-flow.ts::SERVER_OWNED). */
   platform:z.enum(['telegram','vk']).optional(),
   msgKey:z.string().max(120).optional(),
-  url:z.string().max(300).optional(),
+  url:z.string().max(300).regex(VK_LEAD_URL).optional(),
   vkSourceId:z.string().max(100).optional(),
  }),
  settings:settingsSchema,
@@ -1329,7 +1331,7 @@ async function notifyNewLeadsTelegram(settings:any,leads:NotifyLead[]){
  const lines=leads.slice(0,8).map((l,i)=>{
   const msg=String(l.message||'').replace(/\s+/g,' ').slice(0,180);
   // REQ-7 / AM-14: VK leads carry a mark and the deep link the owner answers from by hand
-  if(l.platform==='vk')return `${i+1}. [VK] [${l.temperature}] ${l.name||'Лид'} · ${l.source||''}\n${l.url||''}\n${msg}`;
+  if(l.platform==='vk')return `${i+1}. [VK] [${l.temperature}] ${l.name||'Лид'} · ${l.source||''}\n${VK_LEAD_URL.test(String(l.url||''))?l.url:''}\n${msg}`;
   return `${i+1}. [${l.temperature}] ${l.name||'Лид'} · ${l.source||''}\n${msg}`;
  });
  const text=`UniLab · новые лиды (${leads.length})\n\n${lines.join('\n\n')}`;
@@ -4899,7 +4901,9 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
  if(b.kind==='group'&&b.data&&typeof b.data==='object'){
   b.data={...b.data,joinStateError:sanitizeJoinStateError(b.data.joinStateError)};
  }
- const data:any=schemas[kind].parse(b.data);let id=b.id?z.string().uuid().parse(b.id):crypto.randomUUID();let existing:any=null;
+ // REQ-15: серверные поля лида (VK-идентичность, отправитель, скан) клиент не задаёт ни при создании, ни при правке
+ if(kind==='lead'&&b.data&&typeof b.data==='object')b.data=dropServerOwnedFields(kind,b.data);
+ let data:any=schemas[kind].parse(b.data);let id=b.id?z.string().uuid().parse(b.id):crypto.randomUUID();let existing:any=null;
  if(kind==='settings'){existing=await db.prepare('SELECT * FROM records WHERE owner=? AND kind=? LIMIT 1').bind(owner,kind).first();if(existing)id=existing.id}else if(b.id){existing=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,kind).first();if(!existing)return reply({error:'Запись не найдена'},404)}
  if(kind==='settings'){
   data.provider='deepseek';
@@ -4949,7 +4953,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
  }
  // REQ-L10: поля, которыми владеет сервер (переписка, скан, уведомления), клиентский save не затирает
  if(existing&&(kind==='lead'||kind==='group')){
-  try{Object.assign(data,keepServerOwnedFields(kind,JSON.parse(existing.data),data))}catch{/* битая запись — сохраняем как пришло */}
+  // Присваивание, не Object.assign: иначе клиентский ключ, которого нет в сохранённой записи, не удаляется
+  try{data=keepServerOwnedFields(kind,JSON.parse(existing.data),data)}catch{/* битая запись — сохраняем как пришло */}
  }
  if(kind==='group'&&existing){
   try{
