@@ -64,6 +64,9 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* Telegram Desktop / Web open Mini Apps in a resizable window: keep a phone-width column, never stretch rows. */
+  max-width: 640px;
+  margin-inline: auto;
   padding: var(--tma-inset-top) var(--tma-inset-right) 0 var(--tma-inset-left);
   -webkit-tap-highlight-color: transparent;
 }
