@@ -1,6 +1,7 @@
 # STATE (partial — task note only; regenerate via /project-sync)
 
 ## Now
+- Inbound DMs → Переписки: branch task/inbound-dm-leads-2026-10-01 @78e97dd (PR by owner, no gh); next = REQ-D3 one card per (person, account) — docs/project/tasks/handoff-2026-10-01-e8c85146.md
 - task/remove-lead-ignore-stopwords-2026-10-01 (worktree ~/worktrees/wt-unilab-remove-lead-ignore-stopwords), commit 260664e pushed.
   Removes lead ignore / stop-word learning. Gate: vitest 670/670, tsc 0 new, build ok; UI NOT verified visually.
   Handoff: docs/project/tasks/handoff-2026-10-01-9cb70af9.md
