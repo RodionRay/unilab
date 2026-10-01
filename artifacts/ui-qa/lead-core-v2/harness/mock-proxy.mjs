@@ -52,7 +52,8 @@ async function handleGet(req, res) {
   if (up.status !== 200) return send(res, up.status, up.body);
   if (SCENARIO === 'error') return send(res, 500, { error: 'Не удалось загрузить данные. Повторите попытку.' });
   const records = [...state.records].sort((a, b) => b.created.localeCompare(a.created));
-  send(res, 200, { ...up.body, records, telegramConnected: state.telegramConnected, ai: state.ai });
+  const workspace = state.workspace ? { ...up.body.workspace, ...state.workspace } : up.body.workspace;
+  send(res, 200, { ...up.body, workspace, records, telegramConnected: state.telegramConnected, ai: state.ai });
 }
 
 function patchLead(id, patch) {
@@ -84,13 +85,13 @@ const ACTIONS = {
   project_create(b) {
     const record = { id: randomUUID(), kind: 'project', data: { ...(b.data || {}), updatedAt: nowIso() }, created: nowIso(), hasSecret: false };
     state.records.push(record);
-    return [200, { ok: true, id: record.id, record }];
+    return [200, { ok: true, id: record.id, project: record.data }];
   },
   project_update(b) {
     const r = find(b.id, 'project');
     if (!r) return [404, { error: 'Проект не найден' }];
     r.data = { ...r.data, ...(b.patch || {}), updatedAt: nowIso() };
-    return [200, { ok: true, id: r.id, record: r }];
+    return [200, { ok: true, id: r.id, project: r.data }];
   },
   project_delete(b) {
     if (!find(b.id, 'project')) return [404, { error: 'Проект не найден' }];
@@ -103,39 +104,54 @@ const ACTIONS = {
       }
     }
     state.records = state.records.filter((r) => r.id !== b.id);
-    return [200, { ok: true, moved }];
+    return [200, { ok: true, id: b.id, moved: moved.groups + moved.leads, moveToProjectId: b.moveToProjectId || projects()[0]?.id }];
   },
   set_group_project(b) {
     if (b.projectId && !find(b.projectId, 'project')) return [404, { error: 'Проект не найден' }];
     let updated = 0;
     for (const id of b.groupIds || []) { const g = find(id, 'group'); if (g) { g.data = { ...g.data, projectId: b.projectId || '' }; updated += 1; } }
-    return [200, { ok: true, updated }];
+    return [200, { ok: true, projectId: b.projectId, updated }];
   },
   funnel(b) {
     if (SCENARIO === 'error') return [500, { error: 'Не удалось посчитать воронку. Повторите попытку.' }];
     const projectId = b.projectId || projects()[0]?.id;
     if (projectId && !find(projectId, 'project')) return [404, { error: 'Проект не найден' }];
-    return [200, funnelFor(SCENARIO, projectId, Number(b.days) === 1 ? 1 : 7)];
+    const body = funnelFor(SCENARIO, projectId, Number(b.days) === 1 ? 1 : 7);
+    return [200, body];
   },
   lead_feedback(b) {
-    const r = patchLead(b.id, { feedback: b.verdict, feedbackAt: nowIso() });
-    return r ? [200, { ok: true, lead: r.data }] : [404, { error: 'Лид не найден' }];
+    const lead = find(b.id, 'lead');
+    if (!lead) return [404, { error: 'Лид не найден' }];
+    const project = find(lead.data.projectId, 'project') || projects()[0];
+    const key = b.verdict === 'good' ? 'goodExamples' : 'badExamples';
+    const list = [...(project.data[key] || []), String(lead.data.message || '').slice(0, 300)].slice(-10);
+    project.data = { ...project.data, [key]: list, updatedAt: nowIso() };
+    patchLead(b.id, { feedback: b.verdict, ...(b.verdict === 'bad' && !lead.data.viewed ? { viewed: true, viewedAt: nowIso() } : {}) });
+    return [200, { ok: true, lead: lead.data, projectId: project.id, project: project.data }];
   },
   draft(b) {
     if (!state.ai.hasEnvKey) return [409, { error: 'DeepSeek не настроен: добавьте AI_API_KEY в .env и перезапустите сервер' }];
-    const draft = DRAFTS[b.kind] || DRAFTS.reply;
-    const r = patchLead(b.id, { draft, draftKind: b.kind || '' });
-    return r ? [200, { ok: true, draft, model: 'deepseek-chat' }] : [404, { error: 'Лид не найден' }];
+    const kind = ['group_reply', 'dm_first', 'dm_continue'].includes(b.kind) ? b.kind : null;
+    const draft = { group_reply: DRAFTS.reply, dm_first: DRAFTS.dm, dm_continue: DRAFTS.followup }[kind] || DRAFTS.reply;
+    const lead = find(b.id, 'lead');
+    if (!lead) return [404, { error: 'Лид не найден' }];
+    const { draftKind: _old, ...rest } = lead.data;
+    lead.data = kind ? { ...rest, draft, draftKind: kind } : { ...rest, draft };
+    return [200, { ok: true, draft, kind, model: 'deepseek-chat' }];
   },
   dismiss_draft(b) {
-    const r = patchLead(b.id, { draft: '', draftKind: '' });
-    return r ? [200, { ok: true, lead: r.data }] : [404, { error: 'Лид не найден' }];
+    const lead = find(b.id, 'lead');
+    if (!lead) return [404, { error: 'Лид не найден' }];
+    const { draftKind: _old, ...rest } = lead.data;
+    lead.data = { ...rest, draft: '' };
+    return [200, { ok: true, lead: lead.data }];
   },
   send_lead_message(b) {
     const r = find(b.id, 'lead');
     if (!r) return [404, { error: 'Лид не найден' }];
     const reply = { text: String(b.text || r.data.draft || ''), mode: b.mode || 'dm', at: nowIso(), ok: true, error: '', messageId: String(Date.now() % 100000), link: '', chatId: '', from: 'us', status: 'sent', accountId: r.data.accountId || '' };
-    patchLead(b.id, { replies: [...(r.data.replies || []), reply], conversationOpen: true, conversationAt: nowIso(), draft: '', draftKind: '' });
+    const { draftKind: _old, ...rest } = r.data;
+    r.data = { ...rest, replies: [...(r.data.replies || []), reply], conversationOpen: true, conversationAt: nowIso(), draft: '' };
     return [200, { ok: true, lead: r.data, mode: reply.mode, link: '', messageId: reply.messageId, accountId: reply.accountId }];
   },
   mark_lead_viewed(b) {
@@ -147,19 +163,38 @@ const ACTIONS = {
     if (!p) return [404, { error: 'Проект не найден' }];
     if (!state.ai.hasEnvKey) return [409, { error: 'DeepSeek не настроен: добавьте AI_API_KEY в .env и перезапустите сервер' }];
     p.data = { ...p.data, updatedAt: nowIso() };
-    return [200, { ok: true, id: p.id, data: p.data }];
+    return [200, { ok: true, id: p.id, project: p.data }];
   },
   rescan_groups() { return [200, { ok: true, scanned: state.records.filter((r) => r.kind === 'group').length, added: 0, matched: 0 }]; },
   poll_dm_replies() { return [200, { ok: true, opened: 0, skipped: true, reason: 'mock' }]; },
   heal_group_join_state() { return [200, { ok: true, fixed: 0 }]; },
 };
 
+// staff-redacted mirrors lib/security/workspace-authz.ts for STAFF_WORKSPACE (ai + groups, no leads/chats).
+const LEAD_ACTIONS = new Set(['draft', 'mark_lead_viewed', 'send_lead_message', 'lead_feedback', 'dismiss_draft', 'poll_dm_replies']);
+function staffDenial(b) {
+  if (SCENARIO !== 'staff-redacted') return '';
+  if (LEAD_ACTIONS.has(b.action) || ((b.action === 'save' || b.action === 'delete') && b.kind === 'lead')) return 'Нет доступа к этому разделу. Обратитесь к владельцу кабинета.';
+  const patch = b.patch || {};
+  if (b.action === 'project_update' && ('goodExamples' in patch || 'badExamples' in patch)) return 'Примеры лидов меняют только сотрудники с доступом к лидам';
+  return '';
+}
+function redactLeadText(body) {
+  const next = { ...body };
+  for (const key of ['funnel', 'dm']) if (next[key]) next[key] = { ...next[key], samples: {} };
+  if (next.project) next.project = { ...next.project, goodExamples: [], badExamples: [] };
+  return next;
+}
+
 async function handlePost(req, res) {
   const chunks = []; for await (const c of req) chunks.push(c);
   let b; try { b = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { return send(res, 400, { error: 'Некорректный запрос' }); }
   const fn = ACTIONS[b.action];
   if (!fn) return send(res, 200, { ok: true, mocked: true });
-  const [status, body] = fn(b);
+  const denied = staffDenial(b);
+  if (denied) { console.log(`[mock] POST ${b.action} -> 403 (${denied})`); return send(res, 403, { error: denied }); }
+  const [status, raw] = fn(b);
+  const body = SCENARIO === 'staff-redacted' ? redactLeadText(raw) : raw;
   console.log(`[mock] POST ${b.action} -> ${status}`);
   send(res, status, body);
 }

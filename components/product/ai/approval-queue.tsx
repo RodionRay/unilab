@@ -33,11 +33,13 @@ const KIND_LABEL: Record<DraftKind, string> = {
 type Props = {
   items: readonly QueueItem[];
   telegramConnected: boolean;
+  /** Drafts are lead records: a viewer without lead access never receives them. */
+  leadTextVisible: boolean;
   onOpenThread: (id: string) => void;
   onChanged: () => Promise<void> | void;
 };
 
-export function ApprovalQueue({ items, telegramConnected, onOpenThread, onChanged }: Props) {
+export function ApprovalQueue({ items, telegramConnected, leadTextVisible, onOpenThread, onChanged }: Props) {
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
   const visible = useMemo(() => items.filter((i) => !hidden.has(i.id)), [items, hidden]);
   const [selectedId, setSelectedId] = useState('');
@@ -61,9 +63,14 @@ export function ApprovalQueue({ items, telegramConnected, onOpenThread, onChange
   return (
     <section className="panel aiw-queue" aria-labelledby={titleId}>
       <div className="aiw-panel-head">
-        <h2 id={titleId}>На одобрении <span className="aiw-count">{visible.length}</span></h2>
+        <h2 id={titleId}>На одобрении {leadTextVisible && <span className="aiw-count">{visible.length}</span>}</h2>
       </div>
-      {!visible.length ? (
+      {!leadTextVisible ? (
+        <div className="aiw-empty is-compact">
+          <p className="aiw-empty-title">Черновики видны сотрудникам с доступом к лидам</p>
+          <p className="aiw-help">Одобряет и отправляет черновики тот, у кого открыт раздел «Лиды» или «Переписки».</p>
+        </div>
+      ) : !visible.length ? (
         <div className="aiw-empty is-compact">
           <p className="aiw-empty-title">Черновиков на одобрении нет</p>
           <p className="aiw-help">Когда AI найдёт горячего лида, он напишет черновик ответа. Без вашего клика ничего не отправится.</p>

@@ -302,6 +302,12 @@ export const isPatchEmpty = (patch: ProjectPatch): boolean => Object.keys(patch)
 /** GET `/api/workspace` → `workspace`: who is looking at the page. */
 export type WorkspaceViewer = { isOwner: boolean; role: string; access: Readonly<Partial<Record<string, boolean>>> };
 
+/** Group records reach only owner, admin and members with «Группы и каналы» (`KIND_ACCESS.group`). */
+export function canSeeGroups(viewer: WorkspaceViewer | null): boolean {
+  if (!viewer || viewer.isOwner || viewer.role === 'admin' || viewer.role === 'owner') return true;
+  return viewer.access.groups === true;
+}
+
 /** Project fields the server blanks (`[]`) for a viewer without lead access. */
 export const LEAD_TEXT_PROJECT_FIELDS = ['goodExamples', 'badExamples'] as const;
 

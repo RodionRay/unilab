@@ -2,7 +2,15 @@
 // app/api/workspace/route.ts::GET (records envelope) and app/app/page.tsx::defaults.
 // Times are relative to load time so "N минут назад" labels stay fresh in screenshots.
 
-export const SCENARIOS = ['full', 'no-project', 'no-groups', 'no-scans', 'ai-key-missing', 'error'];
+export const SCENARIOS = ['full', 'no-project', 'no-groups', 'no-scans', 'ai-key-missing', 'error', 'staff-redacted'];
+
+// Real GET `workspace` of a manager with AI + groups but without «Лиды» / «Переписки»
+// (lib/security/workspace-authz.ts::canSeeLeadText is false for it).
+export const STAFF_WORKSPACE = {
+  isOwner: false,
+  role: 'manager',
+  access: { overview: true, notifications: false, leads: false, chats: false, groups: true, accounts: false, proxies: false, ai: true, settings: false, staff: false },
+};
 
 export const IDS = {
   settings: 'b0000000-0000-4000-8000-000000000001',
@@ -145,20 +153,20 @@ function groupRecords() {
   }, 60 * 24 * (21 - g.n)));
 }
 
-const LEAD_BASE = { source: 'Telegram', status: 'new', draft: '', draftKind: '', tgMsgId: '', reason: '', viewed: false, viewedAt: '', excludeFromTraining: false, senderId: '', senderUsername: '', senderAccessHash: '', messageKind: 'group', peerId: '', replyToMsgId: '', replies: [], conversationOpen: false, conversationAt: '', incomingLastText: '', needsManager: false, accountId: '' };
+const LEAD_BASE = { source: 'Telegram', status: 'new', draft: '', tgMsgId: '', reason: '', viewed: false, viewedAt: '', excludeFromTraining: false, senderId: '', senderUsername: '', senderAccessHash: '', messageKind: 'group', peerId: '', replyToMsgId: '', replies: [], conversationOpen: false, conversationAt: '', incomingLastText: '', needsManager: false, accountId: '' };
 
 const LEADS = [
   { n: 1, g: 1, p: IDS.projectFulfillment, name: 'Марина Кузнецова', user: 'marina_kuz_wb', t: 'hot', score: 92, src: 'group', min: 35,
     msg: 'Ищу фулфилмент в Подмосковье под WB, одежда, около 2500 единиц в месяц. Нужна маркировка и отгрузка на Коледино. Кто работает — посоветуйте, пожалуйста.',
-    reason: 'Прямо ищет фулфилмент, назван объём и склад отгрузки.', draftKind: 'auto',
+    reason: 'Прямо ищет фулфилмент, назван объём и склад отгрузки.', draftKind: 'group_reply',
     draft: 'Марина, добрый день. Мы в Подольске, отгружаем на Коледино каждый день, маркировка «Честный знак» входит в тариф. На 2500 единиц одежды выйдет около 21 ₽ за штуку. Пришлю расчёт под ваш ассортимент?' },
   { n: 2, g: 2, p: IDS.projectFulfillment, name: 'Дмитрий Орлов', user: 'd_orlov_shoes', t: 'hot', score: 88, src: 'discussion', min: 70,
     msg: 'Наш фф третий раз срывает поставку на Электросталь, ищем нового подрядчика срочно. Обувь, нужен «Честный знак».',
-    reason: 'Срочно меняет подрядчика, есть боль со сроками.', draftKind: 'auto',
+    reason: 'Срочно меняет подрядчика, есть боль со сроками.', draftKind: 'dm_first',
     draft: 'Дмитрий, понимаю, срыв поставки в сезон бьёт по выдаче. Можем принять партию завтра и отгрузить на Электросталь за 24 часа, маркировку обуви делаем сами. Удобно созвониться на 10 минут?' },
   { n: 3, g: 4, p: IDS.projectCards, name: 'Ольга Лебедева', user: 'olga_kids_brand', t: 'hot', score: 81, src: 'comment', min: 125,
     msg: 'Посоветуйте дизайнера для инфографики, 15 карточек детской одежды на WB. Бюджет обсуждаем.',
-    reason: 'Ищет дизайнера карточек, назван объём.', draftKind: 'auto',
+    reason: 'Ищет дизайнера карточек, назван объём.', draftKind: 'group_reply',
     draft: 'Ольга, здравствуйте. Делаем карточки детской одежды под ключ: инфографика, SEO-описание, две правки бесплатно. Могу бесплатно разобрать одну из ваших карточек и показать, что поменяем. Пришлёте ссылку?' },
   { n: 4, g: 3, p: '', name: 'Сергей Панов', user: 'panov_home_goods', t: 'warm', score: 64, src: 'group', min: 190,
     msg: 'Кто-нибудь работал с фулфилментом по FBS для Ozon? Товары для дома, небольшие объёмы, интересует цена хранения.',
@@ -186,7 +194,7 @@ const LEADS = [
     reason: 'Запуск нового бренда, нужен контент под ключ.', viewed: true },
   { n: 10, g: 1, p: IDS.projectFulfillment, name: 'Роман Ткачёв', user: 'tkachev_tools', t: 'hot', score: 77, src: 'group', min: 60 * 50,
     msg: 'Ищем склад с приёмкой в выходные, инструменты, 800 коробов в месяц, FBO на WB и Ozon.',
-    reason: 'Ищет склад с конкретным объёмом и маркетплейсами.', viewed: true },
+    reason: 'Ищет склад с конкретным объёмом и маркетплейсами.', viewed: true, feedback: 'good' },
 ];
 
 function leadRecords() {
@@ -197,27 +205,28 @@ function leadRecords() {
     score: l.score, sourceKind: l.src, senderUsername: l.user, senderId: String(700000000 + l.n * 1371),
     tgMsgId: String(48000 + l.n * 17), messageKind: l.src === 'dm' ? 'dm' : 'group',
     source: GROUPS.find((g) => g.n === l.g).name,
-    draft: l.draft || '', draftKind: l.draftKind || '',
+    draft: l.draft || '', ...(l.draftKind ? { draftKind: l.draftKind } : {}),
     viewed: !!l.viewed, viewedAt: l.viewed ? ago(l.min - 5) : '',
     conversationOpen: !!l.conversationOpen, conversationAt: l.conversationOpen ? ago(60 * 3) : '',
     incomingLastText: l.incomingLastText || '', needsManager: !!l.needsManager,
     replies: l.replies || [], accountId: GROUPS.find((g) => g.n === l.g).accountId,
+    ...(l.feedback ? { feedback: l.feedback } : {}),
   }, l.min));
 }
 
 // ---- Funnel: totals derived from parts, so the invariant holds by construction ----
-const STEPS = ['old', 'short', 'duplicate', 'stopword', 'judgeSkipped', 'judgeError', 'rejected', 'leads'];
+const STEPS = ['skippedErrorApp', 'old', 'short', 'duplicate', 'stopword', 'judgeSkipped', 'judgeError', 'rejected', 'leads'];
 
 export function buildCounts(parts) {
-  const p = { skippedNotUser: 0, skippedOldWorker: 0, skippedError: 0, old: 0, short: 0, duplicate: 0, stopword: 0, judgeSkipped: 0, judgeError: 0, rejected: 0, leads: 0, ...parts };
+  const p = { skippedNotUser: 0, skippedOldWorker: 0, skippedError: 0, skippedErrorApp: 0, old: 0, short: 0, duplicate: 0, stopword: 0, judgeSkipped: 0, judgeError: 0, rejected: 0, leads: 0, ...parts };
   const returned = STEPS.reduce((s, k) => s + p[k], 0);
   const fetched = p.skippedNotUser + p.skippedOldWorker + p.skippedError + returned;
-  return { fetched, skippedNotUser: p.skippedNotUser, skippedOldWorker: p.skippedOldWorker, skippedError: p.skippedError, returned, old: p.old, short: p.short, duplicate: p.duplicate, stopword: p.stopword, judged: p.rejected + p.leads, judgeSkipped: p.judgeSkipped, judgeError: p.judgeError, rejected: p.rejected, leads: p.leads };
+  return { fetched, skippedNotUser: p.skippedNotUser, skippedOldWorker: p.skippedOldWorker, skippedError: p.skippedError, returned, skippedErrorApp: p.skippedErrorApp, old: p.old, short: p.short, duplicate: p.duplicate, stopword: p.stopword, judged: p.rejected + p.leads, judgeSkipped: p.judgeSkipped, judgeError: p.judgeError, rejected: p.rejected, leads: p.leads };
 }
 
 export function assertFunnelInvariant(c) {
   const ok = c.fetched === c.skippedNotUser + c.skippedOldWorker + c.skippedError + c.returned
-    && c.returned === c.old + c.short + c.duplicate + c.stopword + c.judgeSkipped + c.judgeError + c.rejected + c.leads
+    && c.returned === c.skippedErrorApp + c.old + c.short + c.duplicate + c.stopword + c.judgeSkipped + c.judgeError + c.rejected + c.leads
     && c.judged === c.rejected + c.leads;
   if (!ok) throw new Error('funnel invariant broken: ' + JSON.stringify(c));
   return c;
@@ -275,29 +284,27 @@ function moveJudgedToSkipped(parts) {
   return { ...parts, judgeSkipped: (parts.judgeSkipped || 0) + (parts.judgeError || 0) + (parts.rejected || 0) + (parts.leads || 0), judgeError: 0, rejected: 0, leads: 0 };
 }
 
+const view = (projectId, days, parts, samples, runs) => ({ projectId, days, counts: assertFunnelInvariant(buildCounts(parts)), samples, runs });
+
+/** Action `funnel` answer: `{ok, funnel, dm}` like lib/processes/lead-actions.ts::projectFunnel. */
 export function funnelFor(scenario, projectId, days) {
-  const zero = { counts: assertFunnelInvariant(buildCounts({})), samples: {}, runs: [] };
-  if (scenario === 'no-scans' || scenario === 'no-groups') return zero;
+  const empty = (id) => view(id, days, {}, {}, []);
   const table = FUNNEL_PARTS[projectId];
-  if (!table) return zero;
+  if (scenario === 'no-scans' || scenario === 'no-groups' || !table) return { ok: true, funnel: empty(projectId), dm: empty('dm') };
   let parts = table[days];
-  const samples = Object.fromEntries(Object.entries(SAMPLES[projectId] || {}).map(([k, v]) => [k, clip(v)]));
-  const errors = [];
+  let samples = Object.fromEntries(Object.entries(SAMPLES[projectId] || {}).map(([k, v]) => [k, clip(v)]));
+  const dmBase = { short: 1, leads: days === 1 ? 1 : 3, rejected: days === 1 ? 0 : 2 };
+  let dmParts = dmBase;
+  let dmSamples = { leads: clip([{ text: LEADS[6].msg, reason: LEADS[6].reason }]) };
   if (scenario === 'ai-key-missing') {
     parts = moveJudgedToSkipped(parts);
+    dmParts = moveJudgedToSkipped(dmBase);
     delete samples.rejected; delete samples.leads; delete samples.judgeError;
-    samples.judgeSkipped = clip((SAMPLES[projectId]?.leads || []).map(({ text }) => ({ text })));
-    errors.push({ kind: 'ai_key_missing', message: 'Нет AI_API_KEY в .env: сообщения не оценены, лиды не создаются.' });
-  } else if (parts.judgeError) {
-    errors.push({ kind: 'judge_error', message: `DeepSeek не ответил на ${parts.judgeError} ${parts.judgeError === 1 ? 'сообщение' : 'сообщения'}, они будут оценены при следующем обходе.` });
+    samples.judgeSkipped = clip((SAMPLES[projectId]?.leads || []).map(({ text }) => ({ text, reason: 'no_ai_key' })));
+    dmSamples = { judgeSkipped: clip([{ text: LEADS[6].msg, reason: 'no_ai_key' }]) };
   }
-  const out = { counts: assertFunnelInvariant(buildCounts(parts)), samples, runs: runsFor(days) };
-  if (projectId === IDS.projectFulfillment) {
-    const dmParts = scenario === 'ai-key-missing' ? moveJudgedToSkipped({ short: 1, leads: days === 1 ? 1 : 3, rejected: days === 1 ? 0 : 2 }) : { short: 1, leads: days === 1 ? 1 : 3, rejected: days === 1 ? 0 : 2 };
-    out.dm = { counts: assertFunnelInvariant(buildCounts(dmParts)), samples: { leads: clip([{ text: LEADS[6].msg, reason: LEADS[6].reason }]) } };
-  }
-  if (errors.length) out.errors = errors;
-  return out;
+  if (scenario === 'staff-redacted') { samples = {}; dmSamples = {}; }
+  return { ok: true, funnel: view(projectId, days, parts, samples, runsFor(days)), dm: view('dm', days, dmParts, dmSamples, runsFor(days)) };
 }
 
 export function initialState(scenario) {
@@ -310,6 +317,15 @@ export function initialState(scenario) {
   }
   if (scenario === 'no-project') return { ...base, records: [settings] };
   if (scenario === 'no-groups') return { ...base, records: [settings, ...projectRecords(), ...accountRecords(), proxyRecord()] };
+  if (scenario === 'staff-redacted') {
+    // lib/security/workspace-authz.ts::visibleRecordsFor for STAFF_WORKSPACE: no leads, no proxies,
+    // accounts reduced to picker fields, project examples blanked, settings with owner secrets blanked.
+    const picker = ['name', 'username', 'firstName', 'lastName', 'status', 'cooldownUntil', 'limits', 'hasPhoto', 'joinsToday', 'joinsDay'];
+    const accounts = accountRecords().map((a) => ({ ...a, data: Object.fromEntries(picker.filter((f) => f in a.data).map((f) => [f, a.data[f]])) }));
+    const projects = projectRecords().map((p) => ({ ...p, data: { ...p.data, goodExamples: [], badExamples: [] } }));
+    settings.data = { ...settings.data, notifyBotToken: '' };
+    return { ...base, workspace: STAFF_WORKSPACE, records: [settings, ...projects, ...groupRecords(), ...accounts] };
+  }
   if (scenario === 'no-scans') return { ...base, records: [settings, ...projectRecords(), ...groupRecords().map((g) => ({ ...g, data: { ...g.data, lastScanned: '', scanLog: [], leadsTotal: 0, leadsHot: 0, leadsWarm: 0, scanMatched: 0, rating: 0 } })), ...accountRecords(), proxyRecord()] };
   return { ...base, records: [settings, ...projectRecords(), ...groupRecords(), ...accountRecords(), proxyRecord(), ...leadRecords()] };
 }

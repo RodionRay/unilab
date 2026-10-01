@@ -26,7 +26,8 @@ type Days = 1 | 7;
 
 type Props = {
   projectId: string;
-  groupCount: number;
+  /** `null` = the viewer cannot see groups: ask the server instead of showing «нет чатов». */
+  groupCount: number | null;
   aiKeyReady: boolean;
   /** Viewer may read lead/DM texts; without it the server sends `samples: {}`. */
   leadTextVisible: boolean;
@@ -45,7 +46,7 @@ export function FunnelPanel({ projectId, groupCount, aiKeyReady, leadTextVisible
   const titleId = useId();
 
   useEffect(() => {
-    if (!projectId || !groupCount) return;
+    if (!projectId || groupCount === 0) return;
     let cancelled = false;
     setLoading(true);
     setError('');
@@ -79,7 +80,7 @@ export function FunnelPanel({ projectId, groupCount, aiKeyReady, leadTextVisible
     </div>
   );
 
-  if (!groupCount) {
+  if (groupCount === 0) {
     return (
       <section className="panel aiw-funnel" aria-labelledby={titleId}>
         {header}

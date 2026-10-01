@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  canSeeGroups,
   canSeeLeadText,
   diffProjectPatch,
   funnelRows,
@@ -36,6 +37,15 @@ describe("canSeeLeadText mirrors lib/security/workspace-authz.ts::canSeeLeadText
     expect(canSeeLeadText({ isOwner: false, role: "operator", access: { chats: true } })).toBe(true);
     expect(canSeeLeadText({ isOwner: false, role: "manager", access: { ai: true, settings: true } })).toBe(false);
     expect(canSeeLeadText({ isOwner: false, role: "viewer", access: { ai: true, leads: false } })).toBe(false);
+  });
+});
+
+describe("canSeeGroups mirrors KIND_ACCESS.group", () => {
+  it("only owner, admin or «Группы и каналы» get group records", () => {
+    expect(canSeeGroups({ isOwner: true, role: "owner", access: {} })).toBe(true);
+    expect(canSeeGroups({ isOwner: false, role: "admin", access: {} })).toBe(true);
+    expect(canSeeGroups({ isOwner: false, role: "manager", access: { groups: true } })).toBe(true);
+    expect(canSeeGroups({ isOwner: false, role: "manager", access: { ai: true } })).toBe(false);
   });
 });
 

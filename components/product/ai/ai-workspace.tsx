@@ -28,6 +28,8 @@ type Props = {
   aiKeyReady: boolean;
   /** `model.ts::canSeeLeadText` of the GET `workspace` viewer. */
   leadTextVisible: boolean;
+  /** `model.ts::canSeeGroups`: without it GET has no groups, so the group count is unknown, not zero. */
+  groupsVisible: boolean;
   telegramConnected: boolean;
   activeProjectId: string;
   onSelectProject: (id: string) => void;
@@ -151,7 +153,7 @@ export function AiWorkspace(props: Props) {
       <div className="aiw-top">
         <FunnelPanel
           projectId={project.id}
-          groupCount={groupCountOf(project.id)}
+          groupCount={props.groupsVisible ? groupCountOf(project.id) : null}
           aiKeyReady={props.aiKeyReady}
           leadTextVisible={props.leadTextVisible}
           reloadKey={reloadKey}
@@ -161,6 +163,7 @@ export function AiWorkspace(props: Props) {
         <ApprovalQueue
           items={queue}
           telegramConnected={props.telegramConnected}
+          leadTextVisible={props.leadTextVisible}
           onOpenThread={props.onOpenThread}
           onChanged={onRefresh}
         />
