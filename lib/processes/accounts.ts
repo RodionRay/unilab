@@ -12,7 +12,7 @@ export function isProxyInUse(accounts:AccountRef[],proxyId:string):boolean{
   return accounts.some((a)=>a.data.proxyId===proxyId);
 }
 
-/** Нельзя удалить аккаунт, пока он назначен группе. */
+/** Аккаунт назначен хотя бы одной группе (при удалении группы отвязываются, не блокируют). */
 export function isAccountInUse(groups:AccountRef[],accountId:string):boolean{
   return groups.some((g)=>g.data.accountId===accountId);
 }
@@ -23,9 +23,6 @@ export function canDeleteConnection(
   refs:AccountRef[],
 ):{ok:true}|{ok:false;error:string}{
   if(kind==='proxy'&&isProxyInUse(refs,id)){
-    return {ok:false,error:'Сначала измените привязку в аккаунтах или группах'};
-  }
-  if(kind==='account'&&isAccountInUse(refs,id)){
     return {ok:false,error:'Сначала измените привязку в аккаунтах или группах'};
   }
   return {ok:true};

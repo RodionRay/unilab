@@ -5034,8 +5034,25 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
  const kind=kindSchema.parse(b.kind);
  if(b.action==='delete'){
   const id=z.string().uuid().parse(b.id);
-  const refs=await db.prepare('SELECT data FROM records WHERE owner=? AND kind=?').bind(owner,kind==='proxy'?'account':'group').all();
-  if((kind==='proxy'||kind==='account')&&refs.results.some((r:any)=>{const v=JSON.parse(r.data);return v.proxyId===id||v.accountId===id}))return reply({error:'Сначала измените привязку в аккаунтах или группах'},409);
+  if(kind==='proxy'){
+   const accounts=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='account'").bind(owner).all();
+   if(accounts.results.some(r=>JSON.parse(r.data as string).proxyId===id))return reply({error:'Сначала измените привязку в аккаунтах или группах'},409);
+  }
+  if(kind==='account'){
+   // Группы не блокируют удаление (замороженный аккаунт иначе не убрать): отвязываем,
+   // join-flow::planGroupHeal переназначит их на живой аккаунт.
+   const groups=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='group'").bind(owner).all();
+   let detached=0;
+   for(const row of groups.results){
+    let d:Record<string,unknown>;
+    try{d=JSON.parse(row.data as string)}catch{continue}
+    if(d.accountId!==id)continue;
+    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...d,accountId:''}),owner,row.id,'group').run();
+    detached++;
+   }
+   await db.prepare('DELETE FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,kind).run();
+   return reply({ok:true,groupsDetached:detached});
+  }
   if(kind==='group'){
    const leads=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='lead'").bind(owner).all();
    let removed=0;
