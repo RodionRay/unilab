@@ -2088,9 +2088,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const hide=z.boolean().parse(b.hide);
   const row=await db.prepare('SELECT secret FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'account').first<{secret:string|null}>();
   if(!row)return reply({error:'Аккаунт не найден'},404);
+  // Аренда (CAS): не два входа одной сессией на повторных «Сохранить»; 60 с > таймаута воркера 45 с
+  const now=new Date();
+  const leased=await db.prepare("UPDATE records SET data=json_set(data,'$.hideLastSeen',json(?),'$.lastSeenPrivacyLease',?) WHERE owner=? AND id=? AND kind=? AND COALESCE(json_extract(data,'$.lastSeenPrivacyLease'),'')<?")
+   .bind(JSON.stringify(hide),new Date(now.getTime()+60_000).toISOString(),owner,id,'account',now.toISOString()).run();
+  if(leased.meta.changes!==1)return reply({error:'«Был в сети» уже применяется — подождите минуту'},429);
   // Точечные json_set: тики (счётчики, статус) могли обновить запись, пока ждём воркер
   const setField=(path:string,value:unknown)=>db.prepare('UPDATE records SET data=json_set(data,?,json(?)) WHERE owner=? AND id=? AND kind=?').bind(path,JSON.stringify(value),owner,id,'account').run();
-  await setField('$.hideLastSeen',hide);
   let applied=false;
   let error='';
   if(!row.secret)error='Нет сессии';
@@ -2102,11 +2106,11 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     error=applied?'':String(wr.error||'Telegram не подтвердил настройку').slice(0,300);
     if(wr.status==='frozen')await setField('$.status','frozen');
    }catch(e){
-    error=internalError('apply_account_last_seen',e,'Не удалось изменить «был в сети» в Telegram');
+    error=e instanceof WorkerBusyError?'Воркер занят — повторите позже':internalError('apply_account_last_seen',e,'Не удалось изменить «был в сети» в Telegram');
    }
   }
   const state={hidden:hide,applied,at:new Date().toISOString(),error};
-  await setField('$.lastSeenPrivacy',state);
+  await db.prepare("UPDATE records SET data=json_remove(json_set(data,'$.lastSeenPrivacy',json(?)),'$.lastSeenPrivacyLease') WHERE owner=? AND id=? AND kind=?").bind(JSON.stringify(state),owner,id,'account').run();
   return reply({ok:true,...state});
  }
  if(b.action==='join_group'){
@@ -4981,13 +4985,17 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
  if(existing&&(kind==='lead'||kind==='group')){
   try{Object.assign(data,keepServerOwnedFields(kind,JSON.parse(existing.data),data))}catch{/* битая запись — сохраняем как пришло */}
  }
- // Состояние применения приватности пишет только apply_account_last_seen, не клиентский save
+ // Состояние применения приватности и аренду пишет только apply_account_last_seen, не клиентский save.
+ // Новая/удалённая сессия — другой вход Telegram: прежнее «применено» к ней не относится.
  if(kind==='account'){
   delete data.lastSeenPrivacy;
+  delete data.lastSeenPrivacyLease;
   if(existing){
    try{
-    const kept=lastSeenPrivacySchema.safeParse(JSON.parse(existing.data).lastSeenPrivacy);
-    if(kept.success)data.lastSeenPrivacy=kept.data;
+    const prev=JSON.parse(existing.data);
+    const kept=lastSeenPrivacySchema.safeParse(prev.lastSeenPrivacy);
+    if(kept.success&&!b.secret&&!b.clearSecret)data.lastSeenPrivacy=kept.data;
+    if(typeof prev.lastSeenPrivacyLease==='string')data.lastSeenPrivacyLease=prev.lastSeenPrivacyLease.slice(0,40);
    }catch{/* битая запись — без состояния */}
   }
  }

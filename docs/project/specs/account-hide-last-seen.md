@@ -15,8 +15,14 @@ status: implemented (branch `task/account-hide-last-seen-2026-10-01`)
   право `accounts` (`lib/security/workspace-authz.ts::ACTION_RULES`). 400 на не-boolean `hide`, 404 на чужой/нет id.
   Ответ `{ok:true, hidden, applied, at, error}`; `ok` = запрос обработан, `applied` = Telegram подтвердил.
 - Запись `account.data`: `hideLastSeen` (желаемое, пишет форма) и `lastSeenPrivacy {hidden, applied, at, error}`
-  (пишет только этот action; `save` клиентское значение отбрасывает и сохраняет серверное). Поля обновляются
+  (пишет только этот action; `save` клиентское значение отбрасывает и сохраняет серверное, а при новой или
+  удалённой сессии сбрасывает — к другому входу Telegram прежнее «применено» не относится). Поля обновляются
   точечно `json_set`, чтобы не затереть параллельные изменения тиков.
+- Аренда `lastSeenPrivacyLease` (CAS, 60 с > таймаута воркера 45 с): второй вызов во время применения → 429
+  «уже применяется», воркер не зовётся (не два входа одной сессией). Снимается вместе с записью итога.
+  Занятый воркер (429) → «Воркер занят — повторите позже».
+- Известное ограничение: `check_account` и клиентский `save` переписывают `data` целиком; если они завершатся
+  во время применения, итог может перезаписаться (UI покажет «Применится после «Сохранить»», повтор безопасен).
 - Воркер: `/set-last-seen-privacy` → `set_last_seen_privacy` (`telegram-worker/src/worker-app.mjs::ROUTES`,
   `telegram-worker/src/check_account.py::set_last_seen_privacy`): `account.SetPrivacyRequest(InputPrivacyKeyStatusTimestamp,
   [DisallowAll | AllowAll])`. Идемпотентно (правило задаётся целиком). FloodWait → текст с секундами;

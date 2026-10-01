@@ -158,6 +158,50 @@ describe('apply_account_last_seen: скрыть «был в сети»',()=>{
     expect(data.lastSeenPrivacy).toEqual({hidden:true,applied:false,at:'2026-10-01T00:00:00.000Z',error:'FloodWait'});
   });
 
+  it('пока применение идёт, второй вызов получает 429 и воркер не зовёт',async()=>{
+    await addLiveAccount({lastSeenPrivacyLease:new Date(Date.now()+30_000).toISOString()});
+    const calls=stubWorker({ok:true,hidden:true});
+
+    const res=await POST(postRequest({action:'apply_account_last_seen',id:LIVE_ID,hide:true}));
+
+    expect(res.status).toBe(429);
+    expect(calls).toHaveLength(0);
+    expect(accountData(LIVE_ID).hideLastSeen).toBeUndefined();
+  });
+
+  it('просроченная аренда не мешает, после вызова аренда снята',async()=>{
+    await addLiveAccount({lastSeenPrivacyLease:new Date(Date.now()-1_000).toISOString()});
+    stubWorker({ok:true,hidden:true});
+
+    const res=await POST(postRequest({action:'apply_account_last_seen',id:LIVE_ID,hide:true}));
+
+    expect(res.status).toBe(200);
+    expect(accountData(LIVE_ID).lastSeenPrivacyLease).toBeUndefined();
+  });
+
+  it('занятый воркер (429) — понятное «повторите позже»',async()=>{
+    await addLiveAccount();
+    vi.stubGlobal('fetch',vi.fn(async()=>Response.json({ok:false,error:'Воркер занят'},{status:429})));
+
+    const body=await (await POST(postRequest({action:'apply_account_last_seen',id:LIVE_ID,hide:true}))).json() as Applied;
+
+    expect(body.applied).toBe(false);
+    expect(body.error).toMatch(/занят/);
+    expect(accountData(LIVE_ID).lastSeenPrivacyLease).toBeUndefined();
+  });
+
+  it('новая или удалённая сессия сбрасывает состояние применения',async()=>{
+    await addLiveAccount({hideLastSeen:true,lastSeenPrivacy:{hidden:true,applied:true,at:'2026-10-01T00:00:00.000Z',error:''}});
+    const save=(extra:Record<string,unknown>)=>POST(postRequest({action:'save',kind:'account',id:LIVE_ID,data:{name:'Live',phone:'+79990002233',hideLastSeen:true},...extra}));
+
+    expect((await save({secret:JSON.stringify({kind:'session',zipBase64:'UEsDBA=='})})).status).toBe(200);
+    expect(accountData(LIVE_ID).lastSeenPrivacy).toBeUndefined();
+
+    testDb().sqlite.prepare("UPDATE records SET data=json_set(data,'$.lastSeenPrivacy',json(?)) WHERE id=?").run(JSON.stringify({hidden:true,applied:true,at:'x',error:''}),LIVE_ID);
+    expect((await save({clearSecret:true})).status).toBe(200);
+    expect(accountData(LIVE_ID).lastSeenPrivacy).toBeUndefined();
+  });
+
   it('save нового аккаунта не принимает состояние применения от клиента',async()=>{
     const res=await POST(postRequest({action:'save',kind:'account',data:{
       name:'New',phone:'+79990003344',hideLastSeen:true,
