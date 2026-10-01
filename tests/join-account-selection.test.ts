@@ -10,6 +10,7 @@ vi.mock('@/lib/auth',async(importOriginal)=>({
 import {POST} from '@/app/api/workspace/route';
 import {seal} from '@/lib/server-store';
 import {accountBlindPatch} from '@/lib/processes/join-flow';
+import {moscowDayKey} from '@/lib/telegram-accounts';
 
 const ACC_A='a0000000-0000-4000-8000-00000000000a';
 const ACC_B='b0000000-0000-4000-8000-00000000000b';
@@ -255,5 +256,174 @@ describe('выбор аккаунта для вступления',()=>{
     const res=await POST(postRequest({action:'import_catalog',accountId:ACC_A}));
 
     expect(res.status).toBe(400);
+  });
+});
+
+describe('assign_group_accounts by_limit — распределение по дневным лимитам',()=>{
+  const gid=(n:number)=>`f0000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
+  const ids=(from:number,to:number)=>Array.from({length:to-from+1},(_,i)=>gid(from+i));
+  const today=()=>moscowDayKey();
+  function addGroups(from:number,to:number,data:Record<string,unknown>={}){
+    for(const id of ids(from,to))addRecord(id,'group',{name:id.slice(-4),url:`https://t.me/chat_${id.slice(-4)}`,membership:'none',status:'setup',joinedAt:'',accountId:'',...data});
+  }
+  function age(id:string,days:number){
+    testDb().sqlite.prepare('UPDATE records SET created=? WHERE id=?').run(new Date(Date.now()-days*86_400_000).toISOString(),id);
+  }
+  const byLimit=(groupIds:string[],extra:Record<string,unknown>={})=>POST(postRequest({action:'assign_group_accounts',mode:'by_limit',groupIds,...extra}));
+  const assignedTo=(id:string)=>ids(1,60).filter(g=>{try{return rec(g).accountId===id}catch{return false}}).length;
+
+  beforeEach(()=>{
+    resetWorkspace();
+    login(OWNER);
+    vi.stubEnv('ENCRYPTION_KEY','ab'.repeat(32));
+    testDb().sqlite.prepare('DELETE FROM records WHERE id=?').run(ACCOUNT_ID);
+  });
+  afterEach(()=>{
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it('новый аккаунт получает не больше прогревочного лимита (5), остальные группы — без аккаунта',async()=>{
+    await addAccount(ACC_A,{});
+    addGroups(1,7);
+
+    const res=await byLimit(ids(1,7));
+    const body=await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({ok:true,updated:5,capacity:5,skipped:0,unassigned:ids(6,7)});
+    expect(body.assignments).toHaveLength(5);
+    expect(body.message).toBe('Назначено 5, без аккаунта 2 — лимит на сегодня исчерпан (ёмкость 5)');
+    expect(assignedTo(ACC_A)).toBe(5);
+    expect(rec(gid(6)).accountId).toBe('');
+  });
+
+  it('лимит приглашений ниже потолка вступлений побеждает, сегодняшние вступления вычитаются',async()=>{
+    await addAccount(ACC_A,{limits:{invite:3},joinsToday:1,joinsDay:today()});
+    age(ACC_A,60);
+    addGroups(1,4);
+
+    const body=await (await byLimit(ids(1,4))).json();
+
+    expect(body.capacity).toBe(2);
+    expect(body.updated).toBe(2);
+    expect(body.unassigned).toEqual(ids(3,4));
+  });
+
+  it('открытые назначения вне выборки занимают ёмкость; вступившие и с ошибкой — нет',async()=>{
+    await addAccount(ACC_A,{});
+    age(ACC_A,60);
+    addGroups(10,27,{accountId:ACC_A});
+    addGroups(28,29,{accountId:ACC_A,membership:'joined',joinedAt:'2026-09-01T00:00:00Z'});
+    addGroups(30,30,{accountId:ACC_A,status:'error',error:'приватная'});
+    addGroups(1,4);
+
+    const body=await (await byLimit(ids(1,4))).json();
+
+    expect(body.capacity).toBe(2);
+    expect(body.updated).toBe(2);
+    expect(body.unassigned).toEqual(ids(3,4));
+  });
+
+  it('переполнение не трогает прежний аккаунт группы',async()=>{
+    await addAccount(ACC_A,{});
+    await addAccount(ACC_C,{status:'frozen'});
+    addGroups(1,5);
+    addGroups(6,6,{accountId:ACC_C});
+
+    const body=await (await byLimit(ids(1,6))).json();
+
+    expect(body.unassigned).toEqual([gid(6)]);
+    expect(rec(gid(6)).accountId).toBe(ACC_C);
+  });
+
+  it('распределяет по нескольким аккаунтам и не превышает ёмкость каждого',async()=>{
+    await addAccount(ACC_A,{});
+    await addAccount(ACC_B,{limits:{invite:2}});
+    age(ACC_B,60);
+    addGroups(1,9);
+
+    const body=await (await byLimit(ids(1,9))).json();
+
+    expect(body.capacity).toBe(7);
+    expect(body.updated).toBe(7);
+    expect(assignedTo(ACC_A)).toBe(5);
+    expect(assignedTo(ACC_B)).toBe(2);
+    expect(body.unassigned).toEqual(ids(8,9));
+  });
+
+  it('нулевая ёмкость: ничего не пишется, сообщение об исчерпанном лимите',async()=>{
+    await addAccount(ACC_A,{joinsToday:5,joinsDay:today()});
+    addGroups(1,3);
+    const before=ids(1,3).map(id=>JSON.stringify(rec(id)));
+
+    const res=await byLimit(ids(1,3));
+    const body=await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({ok:true,updated:0,capacity:0,assignments:[]});
+    expect(body.message).toBe('Лимит на сегодня исчерпан у всех аккаунтов — ничего не назначено (ёмкость 0)');
+    expect(ids(1,3).map(id=>JSON.stringify(rec(id)))).toEqual(before);
+  });
+
+  it('повторный запуск на той же выборке не превышает ёмкость (идемпотентно)',async()=>{
+    await addAccount(ACC_A,{});
+    await addAccount(ACC_B,{});
+    addGroups(1,12);
+
+    const first=await (await byLimit(ids(1,12))).json();
+    const second=await (await byLimit(ids(1,12))).json();
+
+    expect(second.assignments).toEqual(first.assignments);
+    expect(second.capacity).toBe(first.capacity);
+    expect(assignedTo(ACC_A)).toBe(5);
+    expect(assignedTo(ACC_B)).toBe(5);
+  });
+
+  it('вступившие группы и заявки пропускаются и не расходуют ёмкость',async()=>{
+    await addAccount(ACC_A,{});
+    addGroups(1,1,{membership:'joined',joinedAt:'2026-09-01T00:00:00Z',accountId:ACC_C});
+    addGroups(2,2,{status:'pending',accountId:ACC_C});
+    addGroups(3,7);
+
+    const body=await (await byLimit(ids(1,7))).json();
+
+    expect(body.skipped).toBe(2);
+    expect(body.updated).toBe(5);
+    expect(rec(gid(1)).accountId).toBe(ACC_C);
+    expect(rec(gid(2)).accountId).toBe(ACC_C);
+  });
+
+  it('чужие и неизвестные группы не пишутся, чужие аккаунты не используются',async()=>{
+    await addAccount(ACC_A,{});
+    addGroups(1,1);
+    testDb().sqlite.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)')
+      .run(gid(2),'other-owner','group',JSON.stringify({name:'чужая',url:'https://t.me/foreign',membership:'none',status:'setup',accountId:''}),null,new Date().toISOString());
+    testDb().sqlite.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)')
+      .run(ACC_B,'other-owner','account',JSON.stringify({name:'чужой',status:'active',proxyId:'',limits:{invite:40}}),null,new Date().toISOString());
+
+    const body=await (await byLimit([gid(1),gid(2),gid(3)],{accountIds:[ACC_B,ACC_A]})).json();
+
+    expect(body.updated).toBe(1);
+    expect(body.assignments).toEqual([{groupId:gid(1),accountId:ACC_A}]);
+    expect(body.rejected).toBe(2);
+    expect(rec(gid(2)).accountId).toBe('');
+  });
+
+  it('только чужие аккаунты → 400, ничего не пишется',async()=>{
+    addGroups(1,1);
+    testDb().sqlite.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)')
+      .run(ACC_B,'other-owner','account',JSON.stringify({name:'чужой',status:'active',proxyId:'',limits:{invite:40}}),null,new Date().toISOString());
+
+    const res=await byLimit([gid(1)],{accountIds:[ACC_B]});
+
+    expect(res.status).toBe(400);
+    expect(rec(gid(1)).accountId).toBe('');
+  });
+
+  it('прежняя валидация: не-uuid и больше 500 групп отклоняются',async()=>{
+    await addAccount(ACC_A,{});
+    expect((await byLimit(['not-a-uuid'])).status).toBeGreaterThanOrEqual(400);
+    expect((await byLimit(Array.from({length:501},(_,i)=>gid(i+1)))).status).toBeGreaterThanOrEqual(400);
   });
 });

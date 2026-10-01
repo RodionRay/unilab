@@ -1,0 +1,5 @@
+Baseline gate on untouched tree, commit 3147a47, 2026-10-01
+eslint . --ignore-pattern dist --ignore-pattern .next : 291 errors, 19 warnings
+tsc --noEmit : 52 'error TS' lines (caller expected ~85; measured 52)
+vitest run : 1 failed / 542 passed (543), 1 failed file of 51
+  FAIL tests/join-pacing.test.ts > farm planning ... > among ready accounts prefers more joins left, then lower load
