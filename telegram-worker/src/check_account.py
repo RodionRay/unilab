@@ -14,7 +14,7 @@ import socket
 import sys
 import tempfile
 import zipfile
-from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -929,192 +929,71 @@ async def join_group(
         raise
 
 
-MIN_MINUS_TERM_LENGTH = 3
-MAX_MINUS_TERM_LENGTH = 100
-MAX_MINUS_TERMS = 120
-
-
-@dataclass(frozen=True)
-class MinusMatcher:
-    """Word-start matcher for stop terms; `combined` is one alternation so a clean message costs one scan."""
-
-    terms: tuple[tuple[str, re.Pattern[str]], ...]
-    combined: re.Pattern[str] | None
-
-
-def _normalize_minus_text(text: str) -> str:
-    return (text or "").lower().replace("ё", "е")
-
-
-def compile_minus_terms(terms: list[str]) -> MinusMatcher:
-    """Minus terms as word-start patterns (phrases as phrases).
-
-    Substring matching made "нал" kill "канал"/"анализ" and "бот" kill "работа".
-    Only the first MAX_MINUS_TERMS non-empty terms count; terms <3 or >100 chars are ignored.
-    Mirrors lib/lead-filter.ts::findMinusHit (shared fixture tests/fixtures/minus-match.json).
-    """
-    head = [t for t in (_normalize_minus_text(r).strip() for r in terms) if t][:MAX_MINUS_TERMS]
-    compiled: list[tuple[str, re.Pattern[str]]] = []
-    alternatives: list[str] = []
-    for term in head:
-        if not MIN_MINUS_TERM_LENGTH <= len(term) <= MAX_MINUS_TERM_LENGTH:
-            continue
-        phrase = r"\s+".join(re.escape(w) for w in term.split())
-        # (?<![^\W_]) = not preceded by a letter/digit (underscore does not count, as in the TS core)
-        compiled.append((term, re.compile(r"(?<![^\W_])" + phrase)))
-        alternatives.append(phrase)
-    combined = re.compile(r"(?<![^\W_])(?:" + "|".join(alternatives) + ")") if alternatives else None
-    return MinusMatcher(terms=tuple(compiled), combined=combined)
-
-
-def find_minus_hit(text: str, matcher: MinusMatcher) -> str | None:
-    if matcher.combined is None:
-        return None
-    low = _normalize_minus_text(text)
-    if not matcher.combined.search(low):
-        return None
-    for term, pattern in matcher.terms:
-        if pattern.search(low):
-            return term
-    return None
-
-
-# Чужая реклама / эзотерика / CTA @ / рассылки — не кандидат (начало слова, как минус-слова).
-AD_MARKERS = compile_minus_terms([
-    "матриц", "судьб", "таро", "гадан", "астролог", "нумеролог",
-    "эзотерик", "писать @", "пишите @", "пиши @", "писать@",
-    "передано через @", "занимаюсь разбором", "есть отзывы)",
-    "вам срочное сообщение", "каталоге решений", "нельзя пропустить",
-    "гайд для продавцов", "подписывайтесь",
-])
-
-# Ported from lib/lead-filter.ts BUYER_INTENT_RE / SOFT_ASK_RE (\p{L} → [^\W\d_], [\p{L}\p{N}] → [^\W_]);
-# shared fixture tests/fixtures/lead-match.json keeps both sides equal.
-BUYER_INTENT_RE = re.compile(
-    r"(?:^|[\W\d_])(?:(?:ищу|ищем)\s+(?:сервис|подрядчик[^\W_]*|интегратор[^\W_]*|разработчик[^\W_]*"
-    r"|агентство|инструмент[^\W_]*|программ[^\W_]*|crm|решени[^\W_]*|платформ[^\W_]*)"
-    r"|нуж(?:ен|на|но|ны)\s+(?:сервис|подрядчик[^\W_]*|интегратор[^\W_]*|разработчик[^\W_]*|агентство"
-    r"|инструмент[^\W_]*|программ[^\W_]*|crm|решени[^\W_]*)"
-    r"|требуется\s+(?:сервис|подрядчик[^\W_]*|интегратор[^\W_]*)"
-    r"|подскаж(?:ите|и)\s+(?:сервис|crm|инструмент|платформ|чем\s+вести|как\s+вести)"
-    r"|посоветуйте\s+(?:сервис|crm|инструмент|платформ)"
-    r"|у\s+кого\s+(?:брать|заказывать)\s+(?:сервис|crm)"
-    r"|кто\s+(?:пользовался|пользуется)\s+[a-z][a-z0-9]*(?![^\W_])"
-    r"|как\s+(?:настроить|подключить|внедрить|автоматизировать)\s+(?:остат|синхрон|цен|отзыв|1с|мойсклад|кабинет)"
-    r"|готовы?\s+(?:купить|оплатить|внедрить)\s+(?:сервис|решени|подписк)"
-    r"|(?:пришлите|нужно|нужен|скиньте|запросите)\s+(?:кп|коммерческ)"
-    r"|на\s+демо|нужна?\s+crm|ищу\s+crm)",
-    re.IGNORECASE,
-)
-SOFT_ASK_RE = re.compile(
-    r"(?:^|[\W\d_])(?:подскаж(?:ите|и)|посоветуйте|помогите\s+настроить|скажите\s+пожалуйста"
-    r"|кто\s+пользуется|кто\s+пользовался)",
-    re.IGNORECASE,
-)
-
-
-def has_buyer_intent(text: str) -> bool:
-    return bool(BUYER_INTENT_RE.search(text or ""))
-
-
-def has_soft_ask(text: str) -> bool:
-    return bool(SOFT_ASK_RE.search(text or ""))
-
-
-# Mirrors lib/lead-filter.ts::stemWord (same endings, same order).
-WORD_ENDINGS = (
-    "иями", "ями", "ами", "ией", "иям", "иях", "ого", "его", "ему", "ому", "ыми", "ими",
-    "ах", "ях", "ия", "ие", "ий", "ии", "ию", "ью", "ов", "ев", "ей", "ом", "ем", "ам", "ям",
-    "ой", "ый", "ая", "яя", "ое", "ее", "ые", "ую", "юю", "ых", "их",
-    "а", "я", "о", "е", "ы", "и", "у", "ю", "ь", "й",
-)
-MIN_STEM_LENGTH = 3
-_CYRILLIC_WORD_RE = re.compile(r"^[а-я]+$")
-_plus_pattern_cache: dict[str, re.Pattern[str]] = {}
-
-
-def stem_word(word: str) -> str:
-    if not _CYRILLIC_WORD_RE.match(word):
-        return word
-    for end in WORD_ENDINGS:
-        if word.endswith(end) and len(word) - len(end) >= MIN_STEM_LENGTH:
-            return word[: -len(end)]
-    return word
-
-
-def _plus_term_pattern(term: str) -> re.Pattern[str]:
-    cached = _plus_pattern_cache.get(term)
-    if cached is not None:
-        return cached
-    words = _normalize_minus_text(term).split()
-    phrase = r"[^\W_]*\s+".join(re.escape(stem_word(w)) for w in words)
-    pattern = re.compile(r"(?<![^\W_])" + phrase, re.IGNORECASE)
-    if len(_plus_pattern_cache) > 2000:
-        _plus_pattern_cache.clear()
-    _plus_pattern_cache[term] = pattern
-    return pattern
-
-
-def plus_term_hit(body: str, term: str) -> bool:
-    """Word-start stem match of a plus-word/signal, ё→е on both sides.
-
-    Mirrors lib/lead-filter.ts::plusTermHit (shared fixture tests/fixtures/lead-match.json).
-    """
-    if not (term or "").strip():
-        return False
-    return bool(_plus_term_pattern(term).search(_normalize_minus_text(body)))
-
-
-def passes_lead_prefilter(text: str, keywords: list[str]) -> bool:
-    """Worker prefilter: never drops a message the lead core could accept.
-
-    The core needs buyer intent or a soft ask to reach the warm threshold, so both always pass;
-    a settings keyword hit (word forms) passes too, as before.
-    """
-    if has_buyer_intent(text) or has_soft_ask(text):
-        return True
-    low = (text or "").lower()
-    return any(plus_term_hit(low, k) for k in keywords if len(k) >= 2)
-
-
-# Raw messages read per scan when paging forward from the cursor / depth cutoff.
+# Messages returned per scan (REQ-5): the app judges them in ≤4 batches of 20.
+SCAN_OUTPUT_CAP = 80
+# Raw messages read per feed when paging forward from the cursor / first-scan start.
 SCAN_FETCH_CAP = 1000
-# Without cursor and depth only the newest messages are read.
-SCAN_NEWEST_LIMIT = 200
+# First scan of a group (no cursor) looks back one day only, whatever the group depth (S8).
+FIRST_SCAN_DEPTH = timedelta(days=1)
+MIN_SCAN_TEXT_LENGTH = 3
+# Channel without enough discussion messages: newest posts whose comments are read.
+COMMENT_FALLBACK_POSTS = 40
+COMMENT_FALLBACK_REPLIES = 40
+COMMENT_FALLBACK_BELOW = 8
 
 
-def history_window(cursor: str, cutoff: Any) -> dict[str, Any]:
+def history_window(cursor: str, first_scan_since: datetime) -> dict[str, Any]:
     """iter_messages kwargs for scan_group: oldest-first from the per-group cursor (last seen id) or,
-    on the first scan, from the depth cutoff, so paging across scans never skips a message."""
+    on the first scan, from `first_scan_since`, so paging across scans never skips a message."""
     raw = str(cursor or "").strip()
     if raw.isdigit() and int(raw) > 0:
         return {"reverse": True, "offset_id": int(raw), "limit": SCAN_FETCH_CAP}
-    if cutoff is not None:
-        return {"reverse": True, "offset_date": cutoff, "limit": SCAN_FETCH_CAP}
-    return {"limit": SCAN_NEWEST_LIMIT}
+    return {"reverse": True, "offset_date": first_scan_since, "limit": SCAN_FETCH_CAP}
+
+
+def _sender_name(sender: Any) -> str:
+    full = " ".join(
+        x for x in [getattr(sender, "first_name", None) or "", getattr(sender, "last_name", None) or ""] if x
+    ).strip()
+    return full or getattr(sender, "username", "") or str(getattr(sender, "id", ""))
+
+
+def _peer_id_of(entity: Any) -> str:
+    from telethon.utils import get_peer_id
+
+    try:
+        return str(get_peer_id(entity))
+    except Exception:
+        return str(getattr(entity, "id", "") or "")
 
 
 async def scan_group(
     client,
     url: str,
-    keywords: list[str],
-    minus_keywords: list[str],
-    limit: int = 40,
+    *,
     days: int = 0,
     cursor: str = "",
+    now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Скан лидов в переписках: группы + обсуждения/комментарии к каналам.
+    """Сырые сообщения переписки для LLM-судьи (REQ-5): группы + обсуждения/комментарии к каналам.
 
-    Посты канала и авторы-каналы НЕ считаются лидами.
-    Лента читается вперёд от `cursor` (последний просмотренный id) или от глубины `days`;
-    в ответе `cursor` — последний обработанный id, приложение хранит его на группе.
+    Фильтров по ключам, минус-словам, рекламе и намерению нет — лид решает судья приложения.
+    Отбрасываются только: посты канала, авторы не-люди (боты/каналы), сообщения старше глубины,
+    сбой `get_sender`. Ответ ≤ SCAN_OUTPUT_CAP сообщений в порядке возрастания id ленты.
+
+    Окно: с `cursor` (последний обработанный id ленты группы/обсуждения) вперёд; первый скан
+    (нет курсора) — за FIRST_SCAN_DEPTH, независимо от `days`. Старше окна (первый скан —
+    FIRST_SCAN_DEPTH, далее `days` > 0) сообщение считается `skippedOld`. Курсор в ответе — последний обработанный id ленты
+    group/discussion; id комментариев (fallback по постам канала) курсор не двигают.
+
+    Счётчики (события за прогон): `fetched` — сообщения с текстом ≥ MIN_SCAN_TEXT_LENGTH, впервые
+    увиденные в прогоне; пустые/короткие (медиа, сервисные, «ок») в `fetched` не входят, но курсор
+    двигают. Инвариант: fetched = len(messages) + skippedNotUser + skippedOld + skippedError.
     """
-    from datetime import datetime, timedelta, timezone
     from telethon.tl.functions.messages import CheckChatInviteRequest
     from telethon.tl.functions.channels import GetFullChannelRequest
-    from telethon.tl.types import ChatInviteAlready, User, Channel
+    from telethon.tl.types import ChatInviteAlready, User
     from telethon.errors import RPCError
-    from telethon.utils import get_peer_id
 
     async def member_of(entity) -> bool:
         return await _is_member(client, entity)
@@ -1124,107 +1003,80 @@ async def scan_group(
             getattr(entity, "megagroup", False)
         )
 
-    kws = [k.strip().lower() for k in keywords if k and k.strip()]
-    minus = compile_minus_terms(minus_keywords)
-    cutoff = None
-    if days and days > 0:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, min(90, days)))
-
-    fetch_limit = max(20, min(limit * 3, 200))
+    clock = now or datetime.now(timezone.utc)
+    first_scan_since = clock - FIRST_SCAN_DEPTH
+    window = history_window(cursor, first_scan_since)
+    if "offset_date" in window:
+        cutoff: datetime | None = first_scan_since
+    elif days and days > 0:
+        cutoff = clock - timedelta(days=max(1, min(90, days)))
+    else:
+        cutoff = None
     out: list[dict[str, Any]] = []
-    fetched = 0
-    skipped_minus = 0
-    skipped_kw = 0
-    skipped_not_user = 0
+    counts = {"fetched": 0, "skippedNotUser": 0, "skippedOld": 0, "skippedError": 0}
     seen_msg: set[str] = set()
     scan_mode = "group"
     discussion_id = ""
     discussion_title = ""
-    window = history_window(cursor, cutoff)
     last_id = int(cursor) if str(cursor or "").isdigit() else 0
 
-    def passes_kw(text: str) -> bool:
-        nonlocal skipped_kw
-        if passes_lead_prefilter(text, kws):
-            return True
-        skipped_kw += 1
-        return False
+    def full() -> bool:
+        return len(out) >= SCAN_OUTPUT_CAP
 
     async def read_feed(peer, kind: str) -> None:
         """Лента чата/обсуждения по окну курсора; курсор двигается только по обработанным id."""
         nonlocal last_id
         async for m in client.iter_messages(peer, **window):
+            if full():
+                break
             await add_msg(m, kind=kind, peer_entity=peer)
             last_id = max(last_id, int(getattr(m, "id", 0) or 0))
-            if len(out) >= max(limit, 40):
-                break
+
+    def is_old(m) -> bool:
+        md = getattr(m, "date", None)
+        if cutoff is None or md is None:
+            return False
+        if md.tzinfo is None:
+            md = md.replace(tzinfo=timezone.utc)
+        return md < cutoff
 
     async def add_msg(m, *, kind: str, peer_entity) -> None:
-        nonlocal fetched, skipped_minus, skipped_not_user
         text = (getattr(m, "message", None) or "").strip()
-        if len(text) < 3:
+        if len(text) < MIN_SCAN_TEXT_LENGTH:
             return
         mid = str(getattr(m, "id", "") or "")
         if mid and mid in seen_msg:
             return
-        fetched += 1
-        if cutoff and getattr(m, "date", None):
-            md = m.date
-            if md.tzinfo is None:
-                md = md.replace(tzinfo=timezone.utc)
-            if md < cutoff:
-                return
-        if find_minus_hit(text, minus) or find_minus_hit(text, AD_MARKERS):
-            skipped_minus += 1
-            return
-        if not passes_kw(text):
+        if mid:
+            seen_msg.add(mid)
+        counts["fetched"] += 1
+        if is_old(m):
+            counts["skippedOld"] += 1
             return
         try:
             sender = await m.get_sender()
         except Exception:
+            counts["skippedError"] += 1
             return
-        if not isinstance(sender, User):
-            skipped_not_user += 1
+        if not isinstance(sender, User) or getattr(sender, "bot", False):
+            counts["skippedNotUser"] += 1
             return
-        if getattr(sender, "bot", False):
-            skipped_not_user += 1
-            return
-        sender_name = (
-            " ".join(
-                x
-                for x in [
-                    getattr(sender, "first_name", None) or "",
-                    getattr(sender, "last_name", None) or "",
-                ]
-                if x
-            ).strip()
-            or getattr(sender, "username", "")
-            or str(getattr(sender, "id", ""))
-        )
-        peer_id = ""
-        try:
-            peer_id = str(get_peer_id(peer_entity))
-        except Exception:
-            peer_id = str(getattr(peer_entity, "id", "") or "")
-        if mid:
-            seen_msg.add(mid)
         out.append(
             {
                 "tgMsgId": mid,
                 "message": text[:8000],
-                "name": sender_name or "Участник",
+                "name": _sender_name(sender) or "Участник",
                 "date": m.date.isoformat() if getattr(m, "date", None) else "",
                 "senderId": str(getattr(sender, "id", "") or ""),
                 "senderUsername": (getattr(sender, "username", None) or "") or "",
                 "senderAccessHash": str(getattr(sender, "access_hash", "") or ""),
                 "messageKind": kind,
-                "peerId": peer_id,
+                "peerId": _peer_id_of(peer_entity),
                 "replyToMsgId": str(
                     getattr(getattr(m, "reply_to", None), "reply_to_msg_id", "") or ""
                 ),
             }
         )
-
     try:
         ref = parse_group_ref(url)
         if ref["kind"] == "invite":
@@ -1316,21 +1168,22 @@ async def scan_group(
                 scan_mode = "discussion_messages"
 
             # Fallback: комментарии к постам (reply_to), сами посты не берём
-            if len(out) < 8:
+            # (курсор не трогаем: id комментариев из другой ленты)
+            if len(out) < COMMENT_FALLBACK_BELOW:
                 posts_checked = 0
-                async for post in client.iter_messages(entity, limit=min(40, fetch_limit)):
+                async for post in client.iter_messages(entity, limit=COMMENT_FALLBACK_POSTS):
+                    if full():
+                        break
                     posts_checked += 1
                     try:
                         async for reply in client.iter_messages(
-                            entity, reply_to=post.id, limit=40
+                            entity, reply_to=post.id, limit=COMMENT_FALLBACK_REPLIES
                         ):
-                            await add_msg(reply, kind="comment", peer_entity=entity)
-                            if len(out) >= max(limit, 40):
+                            if full():
                                 break
+                            await add_msg(reply, kind="comment", peer_entity=entity)
                     except Exception:
                         continue
-                    if len(out) >= max(limit, 40):
-                        break
                 if posts_checked and not linked:
                     scan_mode = "channel_comments"
                 elif linked and posts_checked:
@@ -1339,8 +1192,6 @@ async def scan_group(
             # Группа / супергруппа / чат — лента переписки
             scan_mode = "group_messages"
             await read_feed(entity, "group")
-
-        # Без keyword-less fallback: пустой out — нормально (лучше 0, чем шум)
 
     except RPCError as e:
         if is_frozen_rpc(e):
@@ -1351,13 +1202,10 @@ async def scan_group(
         "ok": True,
         "status": "active",
         "title": title,
-        "messages": out[: max(limit, 40)],
+        "messages": out,
         "error": "",
         "member": True,
-        "fetched": fetched,
-        "skippedMinus": skipped_minus,
-        "skippedKw": skipped_kw,
-        "skippedNotUser": skipped_not_user,
+        **counts,
         "scanMode": scan_mode,
         "discussionId": discussion_id,
         "discussionTitle": discussion_title,
@@ -2442,16 +2290,10 @@ async def run_action(payload: dict[str, Any]) -> dict[str, Any]:
                 res["sessionRefreshed"] = bool(getattr(client, "_uniseller_session_refreshed", False))
                 return res
             if action == "scan":
-                keywords = payload.get("keywords") or []
-                if isinstance(keywords, str):
-                    keywords = [x.strip() for x in keywords.replace(";", ",").split(",")]
-                minus = payload.get("minusKeywords") or payload.get("minus_keywords") or []
-                if isinstance(minus, str):
-                    minus = [x.strip() for x in minus.replace(";", ",").split(",")]
-                limit = int(payload.get("limit") or 40)
+                # keywords / minusKeywords / limit are still accepted from older apps and ignored (REQ-5).
                 days = int(payload.get("days") or 0)
                 cursor = str(payload.get("minId") or "")
-                return await scan_group(client, url, keywords, minus, limit, days=days, cursor=cursor)
+                return await scan_group(client, url, days=days, cursor=cursor)
             if action == "send":
                 return await send_message(
                     client,
