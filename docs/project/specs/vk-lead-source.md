@@ -166,8 +166,14 @@ Live VK (real token, ≥1 real lead from search and from a group) → stand, evi
 - 2026-10-01 separate kinds, platform-wide dedup key (D2–D4).
 - 2026-10-01 D1 revised: bulk bought accounts need per-account proxy; workerd fetch has no proxy → transport in the Python worker.
 
+- 2026-10-01 T2 choices: 29-block per method `searchBlockedUntil: Record<method,iso>`; error 9 → 30 min cooldown; worker
+  code -5 = proxy rejected → 15 min cooldown; unknown VK codes → `skip_item`; chosen-but-full proxy → `no_proxy` (no fallback);
+  `vk_api.py` allows proxy-less calls, the pool refuses proxy-less accounts.
+- 2026-10-01 T1: whole-`qualify` throw now falls back to core (was scan error); in-batch duplicate tgMsgId dropped before AI.
+
 ## Surprises
 - (S0 fills this)
 
 ## Progress
 - 2026-10-01 spec clarified; worktree `~/worktrees/wt-unilab-vk-lead-source`.
+- 2026-10-01 wave 1 merged locally (gh not authenticated → no subtask PRs): T1 0a4c414, T2 7b3b0a6; vitest 769/769, lint 258 / tsc 45 unchanged vs base.
