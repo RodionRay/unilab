@@ -17,6 +17,10 @@ describe('lastSeenNeedsApply',()=>{
  it('прошлая попытка не прошла — повторяем',()=>{
   expect(lastSeenNeedsApply(true,{hidden:true,applied:false,at,error:'FloodWait'})).toBe(true);
  });
+ it('новая/удалённая сессия: прежнее «применено» не в счёт (сервер его сбрасывает)',()=>{
+  expect(lastSeenNeedsApply(true,{hidden:true,applied:true,at,error:''},true)).toBe(true);
+  expect(lastSeenNeedsApply(false,{hidden:true,applied:true,at,error:''},true)).toBe(false);
+ });
  it('битое состояние считается отсутствующим',()=>{
   expect(lastSeenNeedsApply(true,{hidden:'yes'})).toBe(true);
   expect(lastSeenNeedsApply(false,'x')).toBe(false);

@@ -1454,7 +1454,7 @@ function WorkspaceHome(){
         const accountId=String(modal.item?.id||newAccountId||'');
         const hasSession=!!(modal.item?.hasSecret||secret)&&!clearSecret;
         const hideLastSeen=payload.hideLastSeen===true;
-        const applyPrivacy=!!accountId&&hasSession&&lastSeenNeedsApply(hideLastSeen,modal.item?.data?.lastSeenPrivacy);
+        const applyPrivacy=!!accountId&&hasSession&&lastSeenNeedsApply(hideLastSeen,modal.item?.data?.lastSeenPrivacy,!!secret||clearSecret);
         if(newAccountId&&secret){
           toast.success(desiredNick?`Аккаунт сохранён · пишем @${desiredNick} в Telegram…`:'Аккаунт сохранён · проверка сессии…');
           void (async()=>{
@@ -4294,7 +4294,7 @@ function WorkspaceHome(){
               </div>
               <p className="small-note">«Сохранить» для нового аккаунта пишет профиль и @username в Telegram (нужен воркер и сессия). Правки имени/о себе — кнопка «Записать в Telegram».</p>
               {(()=>{
-                const st=lastSeenStatus(form.hideLastSeen===true,modal.item?.data?.lastSeenPrivacy,!!(modal.item?.hasSecret||secret)&&!clearSecret);
+                const st=lastSeenStatus(form.hideLastSeen===true,secret||clearSecret?undefined:modal.item?.data?.lastSeenPrivacy,!!(modal.item?.hasSecret||secret)&&!clearSecret);
                 return <div>
                   <label className="flex items-center gap-2 text-sm font-medium">
                     <Checkbox checked={form.hideLastSeen===true} onCheckedChange={v=>setForm((f:Record<string,unknown>)=>({...f,hideLastSeen:v===true}))} aria-describedby="last-seen-hint last-seen-status"/>

@@ -11,9 +11,10 @@ function asState(raw:unknown):LastSeenPrivacy|null{
 /**
  * Звать воркер при сохранении? Да — если желаемое отличается от применённого, или прошлая
  * попытка не прошла (повтор безопасен). Никогда не применяли и «не скрывать» — Telegram не трогаем.
+ * sessionReplaced: сохраняем новую или удаляем сессию — сервер сбрасывает прежнее состояние, оно не в счёт.
  */
-export function lastSeenNeedsApply(desiredHidden:boolean,state:unknown):boolean{
- const s=asState(state);
+export function lastSeenNeedsApply(desiredHidden:boolean,state:unknown,sessionReplaced=false):boolean{
+ const s=sessionReplaced?null:asState(state);
  if(!s)return desiredHidden;
  return !s.applied||s.hidden!==desiredHidden;
 }
