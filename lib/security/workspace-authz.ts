@@ -1,4 +1,5 @@
 import type {CrmAccess,CrmAccessKey,StaffRole} from '@/lib/staff-types';
+import {TMA_ACTIONS} from '@/lib/tma/contract';
 
 /**
  * Server-side authorization for /api/workspace. The UI hides sections by CrmAccess, but the API
@@ -14,6 +15,8 @@ export type WorkspaceActor={
  isOwner:boolean;
  role:StaffRole|'owner';
  access:CrmAccess;
+ /** 'tma' = Telegram Mini App bearer: web rules ∩ TMA_ACTIONS, no full-dump reads. Absent = web cookie. */
+ channel?:'web'|'tma';
 };
 
 export type AuthzDecision={ok:true}|{ok:false;error:string};
@@ -91,6 +94,11 @@ export const ACTION_RULES:Readonly<Record<string,ActionRule>>={
 const DENY_UNKNOWN='Действие недоступно для вашей роли';
 const DENY_VIEWER='Роль «Наблюдатель» только просматривает данные';
 const DENY_SECTION='Нет доступа к этому разделу. Обратитесь к владельцу кабинета.';
+const DENY_TMA='Это действие недоступно в мини-приложении — откройте веб-версию кабинета.';
+
+function isTmaAction(action:unknown):boolean{
+ return typeof action==='string'&&(TMA_ACTIONS as readonly string[]).includes(action);
+}
 
 function isRecordKind(kind:unknown):kind is RecordKind{
  return typeof kind==='string'&&(RECORD_KINDS as readonly string[]).includes(kind);
@@ -108,6 +116,8 @@ function ruleFor(action:unknown,kind:unknown):ActionRule|null{
 }
 
 export function authorizeWorkspaceAction(actor:WorkspaceActor,action:unknown,kind:unknown):AuthzDecision{
+ // The mini app allowlist binds the owner too: no deletes, settings, staff or proxy edits from a phone session.
+ if(actor.channel==='tma'&&!isTmaAction(action))return {ok:false,error:DENY_TMA};
  if(actor.isOwner)return {ok:true};
  const r=ruleFor(action,kind);
  if(!r)return {ok:false,error:DENY_UNKNOWN};
@@ -148,7 +158,8 @@ function viewRecord<T extends WorkspaceRecordView>(actor:WorkspaceActor,rec:T):T
 
 /** GET projection: drop kinds outside the member's sections, strip owner-only secrets. */
 export function visibleRecordsFor<T extends WorkspaceRecordView>(actor:WorkspaceActor,records:readonly T[]):T[]{
- if(actor.isOwner)return [...records];
+ // A tma owner still gets owner-only secrets blanked (REQ-A7); viewRecord does that for settings.
+ if(actor.isOwner&&actor.channel!=='tma')return [...records];
  return records.flatMap(r=>{const v=viewRecord(actor,r);return v?[v]:[]});
 }
 

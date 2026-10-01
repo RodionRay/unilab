@@ -54,6 +54,8 @@ import {commitTaskEdit,startTickSession,tickLockIsLive,tickLockWaitSec,updateTas
 import {mergeTaskSave} from '@/lib/processes/task-save-merge';
 import {JOIN_GATE_ROTATE_WAIT_SEC,JOIN_PENDING_ERROR,audienceJoinGate,classifyCollectFailure,insertAudienceUsers,interpretAudienceJoin,isDeadSessionError,isSlotBlindError,listAudienceUsers,loadAudienceSeenIds,type AudienceUserData} from '@/lib/processes/audience-tick';
 import {authorizeWorkspaceAction,keepOwnerSecretsOnSave,visibleRecordsFor,type WorkspaceActor} from '@/lib/security/workspace-authz';
+import {resolveTmaActor} from '@/lib/tma/actor';
+import {readTmaBearer} from '@/lib/tma/session';
 import {ALL_CRM_ACCESS} from '@/lib/staff-types';
 import {BOT_UPDATES_LIMIT,buildConversationNotice,callBotApi,escapeHtml,explainBotError,parseBotUpdate,sendBotMessage,type BotCommand,type ReplyMarkup} from '@/lib/telegram-bot';
 import {INBOX_CURSOR_MARGIN_SEC,applySendOutcome,findSendBlock,leadReplies,markLeadOpened,mergeIncomingDm,nextInboxCursor,withPendingSend,type LeadData,type ReplyEntry,type SendOutcome} from '@/lib/lead-conversation';
@@ -385,7 +387,13 @@ function internalError(context:string,e:unknown,publicMessage:string){
  return publicMessage;
 }
 
-async function readActor():Promise<WorkspaceActor|undefined>{
+/**
+ * Cookie session, or — when `req` carries `Authorization: Bearer tma.…` — the mini app actor (REQ-A5).
+ * A present tma bearer never falls back to the cookie. GET passes no `req`: the full dump is web-only.
+ */
+async function readActor(req?:Request):Promise<WorkspaceActor|undefined>{
+  const tmaToken=req?readTmaBearer(req):null;
+  if(tmaToken!==null)return (await resolveTmaActor(database(),tmaToken))??undefined;
   const u=await getSessionUser();
   if(!u?.userId)return;
   try{
@@ -2266,7 +2274,7 @@ export async function GET(){const session=await getSessionUser();if(!session?.us
   me:{userId:session.userId,email:session.email,name:session.displayName},
  });
 }catch(e){internalError('GET',e,'');return reply({error:'Не удалось загрузить данные. Повторите попытку.'},503)}}
-export async function POST(req:Request){const actor=await readActor();if(!actor)return reply({error:'Войдите в рабочее пространство'},401);const owner=actor.ownerId;const origin=req.headers.get('origin');if(origin&&origin!==new URL(req.url).origin)return reply({error:'Недопустимый источник запроса'},403);try{const bodyText=await req.text();if(bodyText.length>250000)return reply({error:'Слишком большой запрос'},413);const b=JSON.parse(bodyText);
+export async function POST(req:Request){const actor=await readActor(req);if(!actor)return reply({error:'Войдите в рабочее пространство'},401);const owner=actor.ownerId;const origin=req.headers.get('origin');if(origin&&origin!==new URL(req.url).origin)return reply({error:'Недопустимый источник запроса'},403);try{const bodyText=await req.text();if(bodyText.length>250000)return reply({error:'Слишком большой запрос'},413);const b=JSON.parse(bodyText);
  if(!b||typeof b!=='object'||Array.isArray(b))return reply({error:'Некорректный запрос'},400);
  const authz=authorizeWorkspaceAction(actor,b.action,b.kind);
  if(!authz.ok)return reply({error:authz.error},403);
