@@ -202,7 +202,10 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * `web_app` button) or `start_param` `lead_<uuid>` / `lead-<uuid>`. Telegram adds
  * its own `tgWebApp*` params to the hash, so the hash is parsed as `&`-pairs.
  */
-export function deepLinkLeadId(hash: string, startParam: string | undefined): string | null {
+export function deepLinkLeadId(hash: string, startParam: string | undefined, search = ""): string | null {
+  // Bot notices link with ?lead=<id> (Telegram owns the URL hash for tgWebAppData); #lead= stays for old links.
+  const fromQuery = new URLSearchParams(search).get("lead") ?? "";
+  if (UUID_RE.test(fromQuery)) return fromQuery.toLowerCase();
   const pairs = hash.replace(/^#/, "").split("&");
   for (const pair of pairs) {
     const eq = pair.indexOf("=");

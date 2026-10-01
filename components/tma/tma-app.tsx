@@ -119,7 +119,7 @@ export function TmaApp({ wsKey }: { wsKey: string }) {
       const client = createTmaClient({ wsKey, initData: app.initData });
       try {
         const session = await client.openSession();
-        const initialLead = deepLinkLeadId(window.location.hash, app.initDataUnsafe?.start_param);
+        const initialLead = deepLinkLeadId(window.location.hash, app.initDataUnsafe?.start_param, window.location.search);
         if (alive) setPhase({ kind: "ready", client, session, initialLead });
       } catch (e) {
         if (alive) setPhase(phaseForError(toApiError(e)));
