@@ -1,0 +1,32 @@
+# Скрыть «был в сети» у аккаунта (quick)
+
+status: implemented (branch `task/account-hide-last-seen-2026-10-01`)
+
+## Поведение
+- Форма аккаунта: чекбокс «Скрывать, когда был в сети» + строка состояния (`lib/account-privacy.ts::lastSeenStatus`):
+  «Скрыто / Видно в Telegram», «Не применено: <причина>. «Сохранить» повторит попытку», «Применится после «Сохранить»»,
+  «Применится, когда у аккаунта будет сессия».
+- «Сохранить» → `save` (кабинет), затем при необходимости (`lib/account-privacy.ts::lastSeenNeedsApply`)
+  `apply_account_last_seen`. Новый аккаунт — после фоновой `check_account`, не параллельно (одна сессия).
+  Никогда не применяли и флаг выключен — Telegram не трогаем.
+
+## Контракт
+- `POST /api/workspace {action:'apply_account_last_seen', id:uuid, hide:boolean}` (`app/api/workspace/route.ts`),
+  право `accounts` (`lib/security/workspace-authz.ts::ACTION_RULES`). 400 на не-boolean `hide`, 404 на чужой/нет id.
+  Ответ `{ok:true, hidden, applied, at, error}`; `ok` = запрос обработан, `applied` = Telegram подтвердил.
+- Запись `account.data`: `hideLastSeen` (желаемое, пишет форма) и `lastSeenPrivacy {hidden, applied, at, error}`
+  (пишет только этот action; `save` клиентское значение отбрасывает и сохраняет серверное). Поля обновляются
+  точечно `json_set`, чтобы не затереть параллельные изменения тиков.
+- Воркер: `/set-last-seen-privacy` → `set_last_seen_privacy` (`telegram-worker/src/worker-app.mjs::ROUTES`,
+  `telegram-worker/src/check_account.py::set_last_seen_privacy`): `account.SetPrivacyRequest(InputPrivacyKeyStatusTimestamp,
+  [DisallowAll | AllowAll])`. Идемпотентно (правило задаётся целиком). FloodWait → текст с секундами;
+  заморозка → `status:'frozen'` (route помечает аккаунт frozen). Сбой воркера → общее сообщение, деталь в серверный лог.
+
+## Взаимность Telegram и влияние на функции
+- Скрыв своё время, аккаунт без Premium видит у других только «недавно / на неделе / в месяц», не «онлайн» и не точное время.
+- Затронут только сбор аудитории этим аккаунтом (`check_account.py::_user_status_bucket`): фильтр «Онлайн» почти
+  пустеет, точные «был в …» уходят в приблизительные корзины. Вступления, скан, инвайт, рассылка, ЛС статус не читают.
+
+## Тесты
+`tests/account-last-seen-route.test.ts`, `tests/account-privacy.test.ts`,
+`telegram-worker/tests/test_last_seen_privacy.py` (telethon-заглушка клиента).

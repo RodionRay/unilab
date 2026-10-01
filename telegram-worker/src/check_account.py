@@ -3053,6 +3053,36 @@ async def upload_profile_photo(client, payload: dict[str, Any]) -> dict[str, Any
         return {"ok": False, "error": str(e)[:300]}
     return {"ok": True, "hasPhoto": True}
 
+
+async def set_last_seen_privacy(client, payload: dict[str, Any]) -> dict[str, Any]:
+    """Скрыть / показать «был в сети» (privacy StatusTimestamp): DisallowAll / AllowAll.
+
+    Идемпотентно: правило задаётся целиком, повтор даёт то же состояние.
+    Взаимность Telegram: скрыв своё время, аккаунт видит у других только «недавно / на неделе».
+    """
+    from telethon.errors import FloodWaitError, RPCError
+    from telethon.tl.functions.account import SetPrivacyRequest
+    from telethon.tl.types import (
+        InputPrivacyKeyStatusTimestamp,
+        InputPrivacyValueAllowAll,
+        InputPrivacyValueDisallowAll,
+    )
+
+    hide = payload.get("hideLastSeen")
+    if not isinstance(hide, bool):
+        return {"ok": False, "error": "hideLastSeen должен быть true/false"}
+    rule = InputPrivacyValueDisallowAll() if hide else InputPrivacyValueAllowAll()
+    try:
+        await client(SetPrivacyRequest(key=InputPrivacyKeyStatusTimestamp(), rules=[rule]))
+    except FloodWaitError as e:
+        # FloodWaitError тоже code=420 — проверяем до «заморозки»
+        return {"ok": False, "error": f"Telegram просит подождать {e.seconds} с (FloodWait)"}
+    except RPCError as e:
+        if is_frozen_rpc(e):
+            return {"ok": False, "status": "frozen", "error": "Telegram ограничил смену приватности (заморозка)"}
+        return {"ok": False, "error": str(e)[:300]}
+    return {"ok": True, "hidden": hide}
+
 # Задаётся Node-воркером (--work-dir): он создаёт каталог 0700 и удаляет его сам,
 # даже если процесс Python убит по таймауту (иначе сессии остаются в /tmp открытым текстом).
 _WORK_DIR_OVERRIDE: Path | None = None
@@ -3203,6 +3233,8 @@ async def run_action(payload: dict[str, Any]) -> dict[str, Any]:
                 return await update_profile(client, payload)
             if action == "upload_photo":
                 return await upload_profile_photo(client, payload)
+            if action == "set_last_seen_privacy":
+                return await set_last_seen_privacy(client, payload)
             return {"ok": False, "error": f"Неизвестное действие: {action}"}
         except asyncio.CancelledError:
             return {

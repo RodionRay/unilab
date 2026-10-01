@@ -154,6 +154,12 @@ const mailingDeliverySchema=z.object({
  textPreview:z.string().max(200).default(''),
  mode:z.enum(['dm','chat']),
 });
+const lastSeenPrivacySchema=z.object({
+ hidden:z.boolean(),
+ applied:z.boolean(),
+ at:z.string().max(40),
+ error:z.string().max(300),
+});
 const schemas={
  account:z.object({
   name:short,
@@ -175,6 +181,10 @@ const schemas={
   about:z.string().max(500).default(''),
   hasPhoto:z.boolean().default(false),
   error:z.string().max(500).default(''),
+  /** Желаемое: скрывать «был в сети» (privacy StatusTimestamp). */
+  hideLastSeen:z.boolean().default(false),
+  /** Серверное: что реально применено в Telegram; клиентский save это поле не задаёт. */
+  lastSeenPrivacy:lastSeenPrivacySchema.optional(),
  }),
  proxy:z.object({
   name:short,
@@ -2072,6 +2082,32 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    await new Promise(r=>setTimeout(r,1500));
   }
   return reply({ok:true,updated:results.filter(r=>r.ok).length,failed:results.filter(r=>!r.ok).length,results});
+ }
+ if(b.action==='apply_account_last_seen'){
+  const id=z.string().uuid().parse(b.id);
+  const hide=z.boolean().parse(b.hide);
+  const row=await db.prepare('SELECT secret FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'account').first<{secret:string|null}>();
+  if(!row)return reply({error:'Аккаунт не найден'},404);
+  // Точечные json_set: тики (счётчики, статус) могли обновить запись, пока ждём воркер
+  const setField=(path:string,value:unknown)=>db.prepare('UPDATE records SET data=json_set(data,?,json(?)) WHERE owner=? AND id=? AND kind=?').bind(path,JSON.stringify(value),owner,id,'account').run();
+  await setField('$.hideLastSeen',hide);
+  let applied=false;
+  let error='';
+  if(!row.secret)error='Нет сессии';
+  else{
+   try{
+    const {payload}=await loadAccountSessionPayload(owner,id);
+    const wr=await workerPost('/set-last-seen-privacy',{...payload,hideLastSeen:hide},45_000);
+    applied=wr.ok===true&&wr.hidden===hide;
+    error=applied?'':String(wr.error||'Telegram не подтвердил настройку').slice(0,300);
+    if(wr.status==='frozen')await setField('$.status','frozen');
+   }catch(e){
+    error=internalError('apply_account_last_seen',e,'Не удалось изменить «был в сети» в Telegram');
+   }
+  }
+  const state={hidden:hide,applied,at:new Date().toISOString(),error};
+  await setField('$.lastSeenPrivacy',state);
+  return reply({ok:true,...state});
  }
  if(b.action==='join_group'){
   const id=z.string().uuid().parse(b.id);
@@ -4944,6 +4980,16 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
  // REQ-L10: поля, которыми владеет сервер (переписка, скан, уведомления), клиентский save не затирает
  if(existing&&(kind==='lead'||kind==='group')){
   try{Object.assign(data,keepServerOwnedFields(kind,JSON.parse(existing.data),data))}catch{/* битая запись — сохраняем как пришло */}
+ }
+ // Состояние применения приватности пишет только apply_account_last_seen, не клиентский save
+ if(kind==='account'){
+  delete data.lastSeenPrivacy;
+  if(existing){
+   try{
+    const kept=lastSeenPrivacySchema.safeParse(JSON.parse(existing.data).lastSeenPrivacy);
+    if(kept.success)data.lastSeenPrivacy=kept.data;
+   }catch{/* битая запись — без состояния */}
+  }
  }
  if(kind==='group'&&existing){
   try{

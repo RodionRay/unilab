@@ -40,6 +40,7 @@ export const ROUTES = Object.freeze({
   "/inbox-dms": "inbox",
   "/update-profile": "update_profile",
   "/upload-photo": "upload_photo",
+  "/set-last-seen-privacy": "set_last_seen_privacy",
 });
 
 const LONG_ACTIONS = new Set(["upload_photo", "collect", "invite"]);

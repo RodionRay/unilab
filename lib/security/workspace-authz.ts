@@ -55,6 +55,7 @@ export const ACTION_RULES:Readonly<Record<string,ActionRule>>={
  generate_account_about:rule(['accounts']),
  apply_account_profiles:rule(['accounts']),
  upload_account_photos:rule(['accounts']),
+ apply_account_last_seen:rule(['accounts']),
 
  join_group:rule(['groups']),
  scan_group:rule(['groups']),

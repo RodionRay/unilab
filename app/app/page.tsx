@@ -29,6 +29,7 @@ import {Empty,EmptyHeader,EmptyTitle,EmptyDescription} from '@/components/ui/emp
 import {Toaster} from 'sonner';
 import {toast} from '@/lib/workspace-notifications';
 import {markLeadOpened} from '@/lib/lead-conversation';
+import {lastSeenNeedsApply,lastSeenStatus} from '@/lib/account-privacy';
 import {SidebarProvider,Sidebar,SidebarHeader,SidebarContent,SidebarFooter,SidebarInset,SidebarTrigger} from '@/components/ui/sidebar';
 import {parseProxyLine,parseProxyLines,type ProxyProtocol} from '@/lib/proxy-line';
 import {accountPhoneKey,canonicalizeTgUrl,duplicateReason,findDuplicate,proxyIdentityKey,telegramEntityKey} from '@/lib/record-identity';
@@ -1450,6 +1451,10 @@ function WorkspaceHome(){
         toast.success(`Обход: ${r.scanned} групп, +${r.added} лидов`);
       }else if(modal.kind==='account'){
         await refresh();
+        const accountId=String(modal.item?.id||newAccountId||'');
+        const hasSession=!!(modal.item?.hasSecret||secret)&&!clearSecret;
+        const hideLastSeen=payload.hideLastSeen===true;
+        const applyPrivacy=!!accountId&&hasSession&&lastSeenNeedsApply(hideLastSeen,modal.item?.data?.lastSeenPrivacy);
         if(newAccountId&&secret){
           toast.success(desiredNick?`Аккаунт сохранён · пишем @${desiredNick} в Telegram…`:'Аккаунт сохранён · проверка сессии…');
           void (async()=>{
@@ -1460,8 +1465,13 @@ function WorkspaceHome(){
               if(r.result?.ok&&nick)toast.success(`@${nick} записан в Telegram`);
               else if(r.result?.error)toast.error(`Ник не записался: ${String(r.result.error).slice(0,160)}`);
             }catch(e){toast.error(`Ник не записался: ${(e as Error).message.slice(0,160)}`)}
+            // После проверки, не параллельно: два входа одной сессией одновременно Telegram не любит
+            if(applyPrivacy)await applyLastSeen(newAccountId,hideLastSeen);
           })();
-        }else toast.success(modal.item?.hasSecret?'Аккаунт сохранён в кабинете':'Аккаунт сохранён');
+        }else{
+          toast.success(modal.item?.hasSecret?'Аккаунт сохранён в кабинете':'Аккаунт сохранён');
+          if(applyPrivacy)void applyLastSeen(accountId,hideLastSeen);
+        }
       }else if(modal.kind==='audience_task'){
         const taskId=saved.id||modal.item?.id;
         await refresh();
@@ -1754,6 +1764,16 @@ function WorkspaceHome(){
       toast.success(`Логотип: ${r.updated} ок${r.failed?`, ошибок ${r.failed}`:''}`);
     }catch(e){toast.error((e as Error).message)}
     finally{setBusy(false)}
+  }
+
+  /** Privacy «был в сети» → Telegram; итог (применено / причина) пишет сервер в lastSeenPrivacy. */
+  async function applyLastSeen(id:string,hide:boolean){
+    try{
+      const r=await api({action:'apply_account_last_seen',id,hide});
+      await refresh();
+      if(r.applied)toast.success(hide?'«Был в сети» скрыт в Telegram':'«Был в сети» снова виден в Telegram');
+      else toast.error(`«Был в сети» не применён: ${String(r.error||'нет ответа').slice(0,160)}`);
+    }catch(e){toast.error(`«Был в сети» не применён: ${(e as Error).message.slice(0,160)}`)}
   }
 
   function toggleAccountSelected(id:string,on:boolean){
@@ -4273,6 +4293,17 @@ function WorkspaceHome(){
                 </Button>
               </div>
               <p className="small-note">«Сохранить» для нового аккаунта пишет профиль и @username в Telegram (нужен воркер и сессия). Правки имени/о себе — кнопка «Записать в Telegram».</p>
+              {(()=>{
+                const st=lastSeenStatus(form.hideLastSeen===true,modal.item?.data?.lastSeenPrivacy,!!(modal.item?.hasSecret||secret)&&!clearSecret);
+                return <div>
+                  <label className="flex items-center gap-2 text-sm font-medium">
+                    <Checkbox checked={form.hideLastSeen===true} onCheckedChange={v=>setForm((f:Record<string,unknown>)=>({...f,hideLastSeen:v===true}))} aria-describedby="last-seen-hint last-seen-status"/>
+                    Скрывать, когда был в сети
+                  </label>
+                  <p id="last-seen-hint" className="small-note mt-1">Взаимно: аккаунт тоже перестанет видеть точное «был в сети» у других — только «недавно».</p>
+                  <p id="last-seen-status" role="status" aria-live="polite" className={`small-note mt-1${st.tone==='error'?' text-destructive':''}`}>{st.text}</p>
+                </div>;
+              })()}
               <label className="field">Отлежка до (ISO или пусто)
                 <Input value={form.cooldownUntil||''} placeholder="Оставьте пустым или задайте через кнопку в таблице" onChange={e=>change('cooldownUntil',e.target.value)}/>
               </label>
