@@ -203,20 +203,20 @@ class ScanRawTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_mixed_feed_keeps_funnel_invariant_and_message_fields(self) -> None:
         client = FakeClient({GROUP.id: [
-            FakeMsg(1, "бот", sender=BOT),
-            FakeMsg(2, "ошибка отправителя", sender=SenderLookupFailed("x")),
-            FakeMsg(3, "старьё", age=timedelta(days=30)),
-            FakeMsg(4, "ответ на вопрос", reply_to=2),
+            FakeMsg(11, "бот", sender=BOT),
+            FakeMsg(12, "ошибка отправителя", sender=SenderLookupFailed("x")),
+            FakeMsg(13, "старьё", age=timedelta(days=30)),
+            FakeMsg(14, "ответ на вопрос", reply_to=12),
         ]})
 
-        res = await self.scan(client, cursor="0", days=7)
+        res = await self.scan(client, cursor="10", days=7)
 
         assert_funnel_invariant(self, res)
         self.assertEqual(res["fetched"], 4)
         msg = res["messages"][0]
         self.assertEqual(msg["messageKind"], "group")
         self.assertEqual(msg["peerId"], str(GROUP.id))
-        self.assertEqual(msg["replyToMsgId"], "2")
+        self.assertEqual(msg["replyToMsgId"], "12")
         self.assertEqual(msg["senderId"], "7")
         self.assertEqual(msg["senderUsername"], "ivan")
 

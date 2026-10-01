@@ -65,7 +65,7 @@ class ScanNoDiscussionJoinTest(unittest.IsolatedAsyncioTestCase):
     async def test_unjoined_discussion_returns_need_join_without_joining(self) -> None:
         client = FakeClient()
 
-        res = await ca.scan_group(client, "https://t.me/shop_news", ["crm"], [])
+        res = await ca.scan_group(client, "https://t.me/shop_news")
 
         joins = [r for r in client.requests if isinstance(r, JoinChannelRequest)]
         self.assertEqual(joins, [])
