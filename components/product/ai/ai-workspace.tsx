@@ -26,6 +26,8 @@ type Props = {
   loading: boolean;
   error: string;
   aiKeyReady: boolean;
+  /** `model.ts::canSeeLeadText` of the GET `workspace` viewer. */
+  leadTextVisible: boolean;
   telegramConnected: boolean;
   activeProjectId: string;
   onSelectProject: (id: string) => void;
@@ -151,6 +153,7 @@ export function AiWorkspace(props: Props) {
           projectId={project.id}
           groupCount={groupCountOf(project.id)}
           aiKeyReady={props.aiKeyReady}
+          leadTextVisible={props.leadTextVisible}
           reloadKey={reloadKey}
           onGoGroups={props.onGoGroups}
           onRescan={async () => { await props.onRescan(); await onRefresh(); }}
@@ -166,6 +169,7 @@ export function AiWorkspace(props: Props) {
         key={project.id}
         project={project}
         aiKeyReady={props.aiKeyReady}
+        leadTextVisible={props.leadTextVisible}
         onDirtyChange={setDirty}
         onSaved={refreshAll}
         onDelete={() => setDeleting(project)}

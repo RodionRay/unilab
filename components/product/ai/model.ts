@@ -297,6 +297,44 @@ export function diffProjectPatch(base: ProjectData, edited: ProjectData): Projec
 
 export const isPatchEmpty = (patch: ProjectPatch): boolean => Object.keys(patch).length === 0;
 
+// ---------- lead-text access (mirror of lib/security/workspace-authz.ts::canSeeLeadText) ----------
+
+/** GET `/api/workspace` → `workspace`: who is looking at the page. */
+export type WorkspaceViewer = { isOwner: boolean; role: string; access: Readonly<Partial<Record<string, boolean>>> };
+
+/** Project fields the server blanks (`[]`) for a viewer without lead access. */
+export const LEAD_TEXT_PROJECT_FIELDS = ['goodExamples', 'badExamples'] as const;
+
+/**
+ * Owner, admin, or a member with «Лиды» / «Переписки» sees lead and DM texts (funnel samples, project
+ * examples). No `workspace` in the GET envelope means the owner on an older server, so `null` reads as access.
+ */
+export function canSeeLeadText(viewer: WorkspaceViewer | null): boolean {
+  if (!viewer || viewer.isOwner || viewer.role === 'admin' || viewer.role === 'owner') return true;
+  return viewer.access.leads === true || viewer.access.chats === true;
+}
+
+/**
+ * The patch a viewer may send. Without lead access the examples arrive as `[]`, so a patch carrying them
+ * would wipe the owner's real examples: they are dropped whatever the editor state says.
+ */
+export function patchForViewer(patch: ProjectPatch, leadTextVisible: boolean): ProjectPatch {
+  if (leadTextVisible) return patch;
+  const next: Record<string, unknown> = { ...patch };
+  for (const key of LEAD_TEXT_PROJECT_FIELDS) delete next[key];
+  return next as ProjectPatch;
+}
+
+/** A step opens only when there is something to show: samples are absent for redacted viewers and old runs. */
+export function isRowExpandable(row: FunnelRow, samples: FunnelPart['samples']): boolean {
+  return row.tone !== 'total' && row.count > 0 && samplesFor(row, samples).length > 0;
+}
+
+/** Note under the ledger only for a viewer whose samples were redacted and who has counts to explain. */
+export function showRedactedSamplesNote(counts: FunnelCounts, leadTextVisible: boolean): boolean {
+  return !leadTextVisible && funnelRows(counts).some((r) => r.tone !== 'total' && r.count > 0);
+}
+
 export type ListAddResult = { list: string[]; error: '' | 'empty' | 'duplicate' | 'limit' | 'too_long' };
 
 /** Adds one trimmed term; case-insensitive duplicates and the limit are refused with a reason. */

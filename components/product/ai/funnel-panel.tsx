@@ -6,6 +6,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { errorMessage, workspaceAction } from './api';
 import {
   barPercent,
+  isRowExpandable,
+  showRedactedSamplesNote,
   formatCount,
   funnelHeadline,
   funnelRows,
@@ -26,12 +28,14 @@ type Props = {
   projectId: string;
   groupCount: number;
   aiKeyReady: boolean;
+  /** Viewer may read lead/DM texts; without it the server sends `samples: {}`. */
+  leadTextVisible: boolean;
   reloadKey: number;
   onGoGroups: () => void;
   onRescan: () => Promise<void>;
 };
 
-export function FunnelPanel({ projectId, groupCount, aiKeyReady, reloadKey, onGoGroups, onRescan }: Props) {
+export function FunnelPanel({ projectId, groupCount, aiKeyReady, leadTextVisible, reloadKey, onGoGroups, onRescan }: Props) {
   const [days, setDays] = useState<Days>(7);
   const [data, setData] = useState<FunnelResponse | null>(null);
   const [error, setError] = useState('');
@@ -101,7 +105,7 @@ export function FunnelPanel({ projectId, groupCount, aiKeyReady, reloadKey, onGo
           <Button variant="outline" size="sm" onClick={() => setAttempt((a) => a + 1)}>Повторить</Button>
         </div>
       ) : data && data.funnel.counts.fetched > 0 ? (
-        <FunnelLedger view={data.funnel} dm={data.dm} days={days} aiKeyReady={aiKeyReady} rescanning={rescanning} onRescan={rescan} />
+        <FunnelLedger view={data.funnel} dm={data.dm} days={days} aiKeyReady={aiKeyReady} leadTextVisible={leadTextVisible} rescanning={rescanning} onRescan={rescan} />
       ) : (
         <div className="aiw-empty">
           <p className="aiw-empty-title">{data?.funnel.runs.length ? `Сообщений ${periodLabel(days)} нет` : 'Ещё не было обхода'}</p>
@@ -134,9 +138,9 @@ function FunnelSkeleton() {
   );
 }
 
-type LedgerProps = { view: FunnelView; dm: FunnelView; days: Days; aiKeyReady: boolean; rescanning: boolean; onRescan: () => Promise<void> };
+type LedgerProps = { view: FunnelView; dm: FunnelView; days: Days; aiKeyReady: boolean; leadTextVisible: boolean; rescanning: boolean; onRescan: () => Promise<void> };
 
-function FunnelLedger({ view, dm, days, aiKeyReady, rescanning, onRescan }: LedgerProps) {
+function FunnelLedger({ view, dm, days, aiKeyReady, leadTextVisible, rescanning, onRescan }: LedgerProps) {
   const rows = funnelRows(view.counts);
   const total = rows[0]?.count ?? 0;
   const leads = view.counts.leads;
@@ -158,6 +162,9 @@ function FunnelLedger({ view, dm, days, aiKeyReady, rescanning, onRescan }: Ledg
         ))}
       </ol>
       {dm.counts.fetched > 0 && <DmRow dm={dm} />}
+      {showRedactedSamplesNote(view.counts, leadTextVisible) && (
+        <p className="aiw-meta aiw-redacted-note">Примеры сообщений видны сотрудникам с доступом к лидам</p>
+      )}
     </>
   );
 }
@@ -213,7 +220,7 @@ function FunnelRowItem({ row, total, samples }: RowProps) {
   const [open, setOpen] = useState(false);
   const panelId = useId();
   const items = samplesFor(row, samples);
-  const expandable = row.tone !== 'total' && row.count > 0;
+  const expandable = isRowExpandable(row, samples);
   const pct = row.tone === 'total' ? 100 : barPercent(row.count, total);
   const share = total && row.tone !== 'total' ? Math.round((row.count / total) * 100) : null;
   const body = (
@@ -241,12 +248,12 @@ function FunnelRowItem({ row, total, samples }: RowProps) {
       )}
       {expandable && open && (
         <div id={panelId} className="aiw-samples">
-          {items.length ? items.map((s, i) => (
+          {items.map((s, i) => (
             <figure key={i} className="aiw-sample">
               <blockquote>{s.text}</blockquote>
               {sampleCaption(s) && <figcaption>{sampleCaption(s)}</figcaption>}
             </figure>
-          )) : <p className="aiw-help">Примеры хранятся только по последним обходам — здесь их пока нет.</p>}
+          ))}
         </div>
       )}
     </li>

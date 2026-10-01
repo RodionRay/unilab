@@ -8,12 +8,14 @@ import { Switch } from '@/components/ui/switch';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { toast } from '@/lib/workspace-notifications';
 import { errorMessage, workspaceAction } from './api';
-import { diffProjectPatch, isPatchEmpty, type ProjectData, type ProjectRecord } from './model';
+import { diffProjectPatch, isPatchEmpty, patchForViewer, type ProjectData, type ProjectRecord } from './model';
 import { ExampleList, StopWordsField } from './term-fields';
 
 type Props = {
   project: ProjectRecord;
   aiKeyReady: boolean;
+  /** Without lead access the examples arrive blanked: show them read-only and never send them back. */
+  leadTextVisible: boolean;
   onDirtyChange: (dirty: boolean) => void;
   onSaved: () => Promise<void> | void;
   onDelete: () => void;
@@ -21,13 +23,16 @@ type Props = {
 
 type TextKey = 'product' | 'valueProps' | 'audience' | 'leadCriteria' | 'notLead' | 'tone' | 'cta';
 
-export function ProjectCardEditor({ project, aiKeyReady, onDirtyChange, onSaved, onDelete }: Props) {
+export function ProjectCardEditor({ project, aiKeyReady, leadTextVisible, onDirtyChange, onSaved, onDelete }: Props) {
   const [draft, setDraft] = useState<ProjectData>(project.data);
   const [saving, setSaving] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
   const [savedAt, setSavedAt] = useState(0);
   const titleId = useId();
-  const patch = useMemo(() => diffProjectPatch(project.data, draft), [project.data, draft]);
+  const patch = useMemo(
+    () => patchForViewer(diffProjectPatch(project.data, draft), leadTextVisible),
+    [project.data, draft, leadTextVisible],
+  );
   const dirty = !isPatchEmpty(patch);
 
   // Server copy changed (save, rebuild, feedback): take it unless the user has unsaved edits.
@@ -139,10 +144,14 @@ export function ProjectCardEditor({ project, aiKeyReady, onDirtyChange, onSaved,
       <fieldset className="aiw-group">
         <legend>Примеры</legend>
         <p className="aiw-help">Настоящие сообщения из чатов. Кнопки «Хороший лид» и «Не лид» в разделе «Лиды» добавляют их сюда сами.</p>
-        <div className="aiw-grid-2">
-          <ExampleList label="Это лид" tone="good" help="Так пишет человек, которому нужен ваш продукт." value={draft.goodExamples} onChange={(v) => set('goodExamples', v)} />
-          <ExampleList label="Это не лид" tone="bad" help="Похоже на запрос, но не ваш клиент." value={draft.badExamples} onChange={(v) => set('badExamples', v)} />
-        </div>
+        {leadTextVisible ? (
+          <div className="aiw-grid-2">
+            <ExampleList label="Это лид" tone="good" help="Так пишет человек, которому нужен ваш продукт." value={draft.goodExamples} onChange={(v) => set('goodExamples', v)} />
+            <ExampleList label="Это не лид" tone="bad" help="Похоже на запрос, но не ваш клиент." value={draft.badExamples} onChange={(v) => set('badExamples', v)} />
+          </div>
+        ) : (
+          <p className="aiw-locked">Примеры видны только с доступом к лидам</p>
+        )}
       </fieldset>
 
       <fieldset className="aiw-group">

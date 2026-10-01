@@ -5,7 +5,7 @@ import {Users,Radio,Shield,Sparkles,Plus,ArrowRight,Search,ChevronRight,External
 import {Button} from '@/components/ui/button';
 import {OverviewDashboard} from '@/components/product/overview-dashboard';
 import {AiWorkspace} from '@/components/product/ai/ai-workspace';
-import {isInConversations,projectIdOf,projectsFrom} from '@/components/product/ai/model';
+import {canSeeLeadText,isInConversations,projectIdOf,projectsFrom} from '@/components/product/ai/model';
 import {useActiveProject} from '@/components/product/ai/use-active-project';
 import {WorkspaceNav,parseWorkspaceView,persistWorkspaceView,readStoredWorkspaceView,WORKSPACE_VIEW_PARAM,type NavName} from '@/components/product/workspace-nav';
 import {NotificationsBell,NotificationsPanel} from '@/components/product/notifications-center';
@@ -2980,6 +2980,7 @@ function WorkspaceHome(){
               loading={loading}
               error={error}
               aiKeyReady={aiKeyReady}
+              leadTextVisible={canSeeLeadText(workspaceMeta)}
               telegramConnected={telegramConnected}
               activeProjectId={activeProjectId}
               onSelectProject={setActiveProjectId}
