@@ -545,6 +545,9 @@ function WorkspaceHome(){
   /** Задачи, которые пользователь только что поставил на паузу — poller не трогает до play */
   const pausedTasksRef=useRef(new Set<string>());
   const lastInboxPollAt=useRef(0);
+  const lastBotPollAt=useRef(0);
+  const botPollBusy=useRef(false);
+  const deepLinkLead=useRef<string|null>(searchParams.get('lead'));
   const replySendKeyRef=useRef<{leadId:string;mode:string;text:string;key:string}|null>(null);
 
   const refreshStaff=useCallback(async()=>{
@@ -590,6 +593,18 @@ function WorkspaceHome(){
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[]);
   useEffect(()=>{persistWorkspaceView(view)},[view]);
+  // Ссылка «Открыть чат» из Telegram-бота: ?view=chats&lead=<id> открывает диалог лида один раз
+  useEffect(()=>{
+    const leadId=deepLinkLead.current;
+    if(!leadId||loading)return;
+    deepLinkLead.current=null;
+    const url=new URL(window.location.href);
+    url.searchParams.delete('lead');
+    window.history.replaceState(window.history.state,'',`${url.pathname}${url.search}${url.hash}`);
+    const item=records.find(r=>r.id===leadId&&r.kind==='lead');
+    if(item)void openLead(item);
+    else toast.error('Переписка не найдена — возможно, лид удалён');
+  },[loading,records]);
   useEffect(()=>{recordsRef.current=records},[records]);
   useEffect(()=>{busyRef.current=busy},[busy]);
 
@@ -850,6 +865,27 @@ function WorkspaceHome(){
     const first=window.setTimeout(()=>{void tick()},1_000);
     return()=>{window.clearInterval(id);window.clearTimeout(first)};
   },[telegramConnected]);
+
+  /** Ответы менеджера из Telegram-бота → клиенту: свой цикл, не держит lock тиков задач (отправка до ~3 мин). */
+  const botNotifyOn=!!settings?.data?.notifyEnabled;
+  useEffect(()=>{
+    if(!botNotifyOn)return;
+    const pollBot=async()=>{
+      if(botPollBusy.current)return;
+      // Фоновая вкладка реже; параллельные опросы сервер отсекает lease, без кабинета опрашивает cron
+      const every=document.visibilityState==='visible'?5_000:30_000;
+      if(Date.now()-lastBotPollAt.current<every)return;
+      botPollBusy.current=true;
+      lastBotPollAt.current=Date.now();
+      try{
+        const bot=await api({action:'poll_bot_updates'});
+        if(bot?.sent>0)await refresh();
+      }catch{/* */}
+      finally{botPollBusy.current=false}
+    };
+    const id=window.setInterval(()=>{void pollBot()},5_000);
+    return()=>window.clearInterval(id);
+  },[botNotifyOn,refresh]);
 
   async function startAudienceTask(id:string){
     if(!telegramConnected){toast.error('Запустите: npm run dev');return}

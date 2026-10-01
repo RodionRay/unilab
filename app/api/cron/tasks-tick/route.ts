@@ -51,6 +51,38 @@ async function ownerIdentities(): Promise<Map<string, OwnerIdentity>> {
   return map;
 }
 
+/**
+ * Bot poll call: one client send through the worker (2 × 185 s with the invalid-peer retry) + Bot API calls;
+ * stays below the tg-worker fetch timeout of this route (TASKS_TICK_FETCH_MS, 480 s).
+ */
+const BOT_POLL_TIMEOUT_MS = 440_000;
+/** Bot polls in parallel per run (each is a self-fetch; one owner's slow send must not hold the rest). */
+const BOT_POLL_CONCURRENCY = 3;
+
+/** Owners whose notification bot is configured — their bot replies are polled every loop, tasks or not. */
+async function listBotOwners(): Promise<string[]> {
+  const rows = await database()
+    .prepare(
+      "SELECT DISTINCT owner FROM records WHERE kind='settings' AND json_extract(data,'$.notifyEnabled')=1 AND COALESCE(json_extract(data,'$.notifyBotToken'),'')<>'' AND COALESCE(json_extract(data,'$.notifyChatId'),'')<>''",
+    )
+    .bind()
+    .all();
+  return rows.results.map((r) => String(r.owner));
+}
+
+async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = [];
+  let next = 0;
+  const lane = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
+  return out;
+}
+
 function describeError(e: unknown): string {
   const err = e as Error | null;
   if (err?.name === "TimeoutError" || err?.name === "AbortError") return "tick call timed out";
@@ -70,11 +102,15 @@ export async function POST(req: Request) {
   const started = Date.now();
   const origin = selfOrigin(req.url, readEnv("APP_URL"));
   const listed = await listDueTasks(database());
-  if (!listed.length) return reply({ ok: true, due: 0, ticked: 0, skipped: 0, more: false, ms: Date.now() - started });
+  const botListed = await listBotOwners();
+  if (!listed.length && !botListed.length) {
+    return reply({ ok: true, due: 0, ticked: 0, skipped: 0, more: false, bots: 0, ms: Date.now() - started });
+  }
 
   // Sessions only for active users (+ admin): a task left behind by a deleted user is not ticked.
   const identities = await ownerIdentities();
   const due = listed.filter((t) => identities.has(t.owner));
+  const botOwners = botListed.filter((o) => identities.has(o));
   const cookies = new Map<string, Promise<string>>();
   const cookieFor = (owner: string) => {
     let c = cookies.get(owner);
@@ -86,18 +122,21 @@ export async function POST(req: Request) {
     return c;
   };
 
+  const callWorkspace = async (owner: string, body: Record<string, unknown>, timeoutMs: number) =>
+    fetch(`${origin}/api/workspace`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: origin,
+        Cookie: `${sessionCookieName()}=${await cookieFor(owner)}`,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+
   const tick = async (task: DueTask, timeoutMs: number): Promise<TickOutcome> => {
     try {
-      const res = await fetch(`${origin}/api/workspace`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Origin: origin,
-          Cookie: `${sessionCookieName()}=${await cookieFor(task.owner)}`,
-        },
-        body: JSON.stringify({ action: TICK_ACTIONS[task.kind], id: task.id }),
-        signal: AbortSignal.timeout(timeoutMs),
-      });
+      const res = await callWorkspace(task.owner, { action: TICK_ACTIONS[task.kind], id: task.id }, timeoutMs);
       const data = (await res.json().catch(() => ({}))) as { error?: string; task?: { status?: string } };
       return { task, ok: res.ok, note: res.ok ? String(data.task?.status || "") : String(data.error || res.status) };
     } catch (e) {
@@ -105,19 +144,32 @@ export async function POST(req: Request) {
     }
   };
 
-  const run = await runDueTicks({
-    tasks: due,
-    tick,
-    budgetMs: TASKS_TICK_RUN_BUDGET_MS,
-    callTimeoutMs: TASKS_TICK_CALL_TIMEOUT_MS,
-    concurrency: CONCURRENCY,
-  });
+  // Replies from the owner's bot (manager → client) ride the same 20 s loop, beside the task ticks.
+  const pollBot = async (owner: string) => {
+    try {
+      const res = await callWorkspace(owner, { action: "poll_bot_updates" }, BOT_POLL_TIMEOUT_MS);
+      return res.ok;
+    } catch {
+      return false;
+    }
+  };
+  const [run, bots] = await Promise.all([
+    runDueTicks({
+      tasks: due,
+      tick,
+      budgetMs: TASKS_TICK_RUN_BUDGET_MS,
+      callTimeoutMs: TASKS_TICK_CALL_TIMEOUT_MS,
+      concurrency: CONCURRENCY,
+    }),
+    mapLimit(botOwners, BOT_POLL_CONCURRENCY, pollBot),
+  ]);
   return reply({
     ok: run.outcomes.every((o) => o.ok),
     due: due.length,
     ticked: run.outcomes.length,
     skipped: listed.length - due.length,
     more: run.more,
+    bots: bots.filter(Boolean).length,
     results: run.outcomes.map((o) => ({ kind: o.task.kind, id: o.task.id, ok: o.ok, note: o.note })),
     ms: Date.now() - started,
     at: new Date().toISOString(),

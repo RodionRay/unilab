@@ -46,6 +46,7 @@ export const ACTION_RULES:Readonly<Record<string,ActionRule>>={
  mark_lead_viewed:rule(LEADS),
  send_lead_message:rule(LEADS),
  poll_dm_replies:rule(['chats','leads']),
+ poll_bot_updates:rule(['chats','leads']),
 
  check_proxy:rule(['proxies']),
  check_proxies:rule(['proxies']),
@@ -152,14 +153,25 @@ export function visibleRecordsFor<T extends WorkspaceRecordView>(actor:Workspace
 }
 
 /**
+ * Where the owner's bot delivers client messages and whose replies it sends to clients as the owner:
+ * only the owner may change it (a member repointing the chat would read every conversation and write
+ * to clients through the bot without the chats section).
+ */
+const OWNER_ONLY_NOTIFY_ROUTING={notifyEnabled:false,notifyBotToken:'',notifyChatId:''} as const;
+
+/**
  * Members receive settings with owner-only secrets blanked; when they save settings back, keep
- * the stored values instead of wiping them with the blanks.
+ * the stored values instead of wiping them with the blanks. The bot routing fields are never taken
+ * from a member: stored values win, and without stored settings they stay off.
  */
 export function keepOwnerSecretsOnSave(actor:WorkspaceActor,incoming:Record<string,unknown>,stored:Record<string,unknown>|null):Record<string,unknown>{
- if(actor.isOwner||!stored)return incoming;
+ if(actor.isOwner)return incoming;
  const next={...incoming};
  for(const f of OWNER_ONLY_SETTINGS_FIELDS){
-  if(!String(next[f]??'').trim()&&stored[f]!=null)next[f]=stored[f];
+  if(stored&&!String(next[f]??'').trim()&&stored[f]!=null)next[f]=stored[f];
+ }
+ for(const [f,off] of Object.entries(OWNER_ONLY_NOTIFY_ROUTING)){
+  next[f]=stored&&stored[f]!=null?stored[f]:off;
  }
  return next;
 }
