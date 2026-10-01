@@ -275,6 +275,32 @@ describe('маршрут: проверка, «слепой» join и чистк�
     expect(rec(GROUP).accountId).toBe(LIVE);
   });
 
+  it('чистка атомарна: сбой на середине не оставляет удалённый аккаунт с висящими ссылками',async()=>{
+    await addAccount(DEAD_A,{status:'deleted'});
+    addRecord(GROUP,'group',{name:'Г',url:'https://t.me/live_chat',membership:'joined',status:'active',accountId:DEAD_A,joinedAccountId:DEAD_A});
+    addRecord(LEAD,'lead',{name:'L',accountId:DEAD_A});
+    const {sqlite}=testDb();
+    // A crash in the middle of the reference cleanup (here: the lead UPDATE).
+    sqlite.exec("CREATE TEMP TRIGGER purge_crash BEFORE UPDATE ON records WHEN OLD.kind='lead' BEGIN SELECT RAISE(ABORT,'crash'); END;");
+    try{
+      await purge([DEAD_A]).catch(()=>null);
+    }finally{
+      sqlite.exec('DROP TRIGGER purge_crash');
+    }
+
+    expect(rec(DEAD_A)).not.toBeNull();
+    expect(rec(GROUP)).toMatchObject({accountId:DEAD_A,joinedAccountId:DEAD_A});
+    expect(rec(LEAD).accountId).toBe(DEAD_A);
+  });
+
+  it('журнал чистки называет того, кто её запустил',async()=>{
+    await addAccount(DEAD_A,{status:'deleted'});
+
+    await purge([DEAD_A]);
+
+    expect(JSON.stringify(rec(SETTINGS_ID)?.rescanLog||[])).toContain(OWNER);
+  });
+
   it('чистка без подтверждённых id ничего не трогает',async()=>{
     await addAccount(LIVE);
 

@@ -47,13 +47,15 @@ is never usable: `isAccountUsable`, `canPollDmInbox`, `join-flow.ts::evaluateAcc
   `controlBlindSince`, `resolveBlindUntil` (`telegram-accounts.ts::keepServerOwnedAccountFields`, applied in the
   `save` action); the status select has no `deleted` option.
 - Purge — action `delete_telegram_deleted_accounts` with `ids` (`route.ts::deleteTelegramDeletedAccounts`, UI
-  «Удалить удалённые Telegram (N)» whose confirm names N and sends exactly those ids): deletes only those ids whose
+  «Удалить удалённые Telegram (N)»: the id list is frozen when the confirm opens, the confirm names N and sends
+  exactly those ids): deletes only those ids whose
   status is still `deleted` inside the owner-scoped DELETE (the session lives in the record `secret`, so it goes too).
-  Side effects, each an owner-scoped conditional single-statement UPDATE (a concurrent heal / join reassignment or
+  The DELETE and every reference UPDATE run as one D1 `batch` (one transaction); refs are cleared only for
+  candidates with no account record left. Side effects, each an owner-scoped conditional single-statement UPDATE (a concurrent heal / join reassignment or
   task edit is kept): `accountId` and `joinedAccountId` cleared on groups (heal reassigns joined and owner-queued
   ones), `accountId` on leads, `sourceAccountId` on audience tasks; the ids leave `accountIds` of mailing / invite /
   audience tasks, and a running/scheduled task left with none is paused with «Все аккаунты задачи удалены Telegram …».
-  An audit line with names and counts goes to the global rescan log. Irreversible; access rule `accounts`.
+  An audit line with names, counts and the acting user id goes to the global rescan log. Irreversible; access rule `accounts`.
 
 ## 3. One join-block predicate — `lib/telegram-accounts.ts::accountTelegramBlock`
 

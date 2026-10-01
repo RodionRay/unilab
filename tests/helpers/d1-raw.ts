@@ -6,6 +6,9 @@ export function createTestD1(): D1LikeDatabase & { raw: Database.Database } {
   const raw = new Database(":memory:");
   return {
     raw,
+    async batch() {
+      throw new Error("batch is not supported by this test double");
+    },
     prepare(sql: string) {
       return {
         bind(...values: unknown[]) {

@@ -1373,43 +1373,44 @@ const PURGE_TASK_PAUSE_REASON='Все аккаунты задачи удален
 
 /**
  * Irreversible purge of accounts Telegram deleted. Deletes only ids the owner confirmed in the dialog, each re-checked
- * for status 'deleted' inside the DELETE (the session lives in the record's secret, so it goes too). References are
- * cleared by owner-scoped conditional single-statement UPDATEs, so a concurrent heal/join reassignment or task edit is
- * never overwritten: groups/leads/audience lose the id (heal moves joined and owner-queued groups to a live account),
- * tasks drop it and a running task left without accounts is paused with a reason. An audit line goes to the rescan log.
+ * for status 'deleted' inside the DELETE (the session lives in the record's secret, so it goes too). The DELETE and the
+ * reference cleanup run as one D1 batch (one transaction): a crash cannot leave a deleted account with dangling refs.
+ * References are cleared only for candidates that are really gone after the DELETE, by owner-scoped conditional
+ * UPDATEs, so a concurrent heal/join reassignment or task edit is never overwritten: groups/leads/audience lose the id
+ * (heal moves joined and owner-queued groups to a live account), tasks drop it and a running task left without accounts
+ * is paused with a reason. An audit line with the acting user goes to the rescan log.
  */
-async function deleteTelegramDeletedAccounts(owner:string,requested:readonly string[]){
+async function deleteTelegramDeletedAccounts(owner:string,actorId:string,requested:readonly string[]){
  const db=database();
  const deadSql="json_valid(data) AND json_extract(data,'$.status')='deleted'";
- const ids:string[]=[];
- const names:string[]=[];
- for(const id of new Set(requested)){
-  const row=await db.prepare(`SELECT data FROM records WHERE owner=? AND id=? AND kind='account' AND ${deadSql}`).bind(owner,id).first<{data:string}>();
-  if(!row)continue;
-  const res=await db.prepare(`DELETE FROM records WHERE owner=? AND id=? AND kind='account' AND ${deadSql}`).bind(owner,id).run();
-  if(!Number(res?.meta?.changes))continue;
-  ids.push(id);
-  let name=id.slice(0,8);
-  try{const d=JSON.parse(String(row.data));name=String(d.username||d.name||name).slice(0,40)}catch{/* битая запись — по id */}
-  names.push(name);
- }
- if(!ids.length)return {deleted:0,groupsDetached:0,tasksChanged:0};
- const idList=JSON.stringify(ids);
- let groupsDetached=0;
- for(const [kind,field] of PURGED_ACCOUNT_REFS){
-  const res=await db.prepare(`UPDATE records SET data=json_set(data,'$.${field}','') WHERE owner=? AND kind=? AND json_valid(data) AND json_extract(data,'$.${field}') IN (SELECT value FROM json_each(?))`).bind(owner,kind,idList).run();
-  if(kind==='group'&&field==='accountId')groupsDetached=Number(res?.meta?.changes)||0;
- }
- const kept="(SELECT value FROM json_each(records.data,'$.accountIds') WHERE value NOT IN (SELECT value FROM json_each(?)))";
+ const want=JSON.stringify([...new Set(requested)]);
+ const rows=(await db.prepare(`SELECT id,data FROM records WHERE owner=? AND kind='account' AND ${deadSql} AND id IN (SELECT value FROM json_each(?))`).bind(owner,want).all()).results;
+ if(!rows.length)return {deleted:0,groupsDetached:0,tasksChanged:0};
+ const candidates=JSON.stringify(rows.map(r=>String(r.id)));
+ // Candidates with no account record left after the DELETE: the ids this purge actually removed.
+ const gone="(SELECT c.value FROM json_each(?) c WHERE NOT EXISTS (SELECT 1 FROM records a WHERE a.owner=? AND a.kind='account' AND a.id=c.value))";
+ const statements=[
+  db.prepare(`DELETE FROM records WHERE owner=? AND kind='account' AND ${deadSql} AND id IN (SELECT value FROM json_each(?))`).bind(owner,candidates),
+  ...PURGED_ACCOUNT_REFS.map(([kind,field])=>db.prepare(`UPDATE records SET data=json_set(data,'$.${field}','') WHERE owner=? AND kind=? AND json_valid(data) AND json_extract(data,'$.${field}') IN ${gone}`).bind(owner,kind,candidates,owner)),
+ ];
+ const kept=`(SELECT k.value FROM json_each(records.data,'$.accountIds') k WHERE k.value NOT IN ${gone})`;
  const filtered=`json_set(data,'$.accountIds',json((SELECT json_group_array(value) FROM ${kept})))`;
  const pause=`json_extract(data,'$.status') IN ('running','scheduled') AND NOT EXISTS ${kept}`;
  const kinds=ACCOUNT_TASK_KINDS.map(()=>'?').join(',');
- const tasks=await db.prepare(`UPDATE records SET data=CASE WHEN ${pause} THEN json_set(${filtered},'$.status','paused','$.error',?) ELSE ${filtered} END
-  WHERE owner=? AND kind IN (${kinds}) AND json_valid(data) AND EXISTS (SELECT 1 FROM json_each(records.data,'$.accountIds') WHERE value IN (SELECT value FROM json_each(?)))`)
-  .bind(idList,idList,PURGE_TASK_PAUSE_REASON,idList,owner,...ACCOUNT_TASK_KINDS,idList).run();
- const tasksChanged=Number(tasks?.meta?.changes)||0;
- try{await appendGlobalRescanLog(owner,'warn',`Удалены аккаунты, удалённые Telegram (${ids.length}): ${names.join(', ')} · групп отвязано: ${groupsDetached} · задач изменено: ${tasksChanged}`)}catch{/* журнал не блокирует чистку */}
- return {deleted:ids.length,groupsDetached,tasksChanged};
+ statements.push(db.prepare(`UPDATE records SET data=CASE WHEN ${pause} THEN json_set(${filtered},'$.status','paused','$.error',?) ELSE ${filtered} END
+  WHERE owner=? AND kind IN (${kinds}) AND json_valid(data) AND EXISTS (SELECT 1 FROM json_each(records.data,'$.accountIds') t WHERE t.value IN ${gone})`)
+  .bind(candidates,owner,candidates,owner,PURGE_TASK_PAUSE_REASON,candidates,owner,owner,...ACCOUNT_TASK_KINDS,candidates,owner));
+ const results=await db.batch(statements);
+ const deleted=Number(results[0]?.meta?.changes)||0;
+ const groupsDetached=Number(results[1+PURGED_ACCOUNT_REFS.findIndex(([k,f])=>k==='group'&&f==='accountId')]?.meta?.changes)||0;
+ const tasksChanged=Number(results[results.length-1]?.meta?.changes)||0;
+ if(!deleted)return {deleted:0,groupsDetached:0,tasksChanged:0};
+ const left=new Set((await db.prepare(`SELECT id FROM records WHERE owner=? AND kind='account' AND id IN (SELECT value FROM json_each(?))`).bind(owner,candidates).all()).results.map(r=>String(r.id)));
+ const names=rows.filter(r=>!left.has(String(r.id))).map(r=>{
+  try{const d=JSON.parse(String(r.data));return String(d.username||d.name||String(r.id).slice(0,8)).slice(0,40)}catch{return String(r.id).slice(0,8)}
+ });
+ try{await appendGlobalRescanLog(owner,'warn',`Удалены аккаунты, удалённые Telegram (${deleted}): ${names.join(', ')} · групп отвязано: ${groupsDetached} · задач изменено: ${tasksChanged} · запустил: ${actorId}`)}catch{/* журнал не блокирует чистку */}
+ return {deleted,groupsDetached,tasksChanged};
 }
 
 function workerLooksFrozen(result:any,msg?:string){
@@ -2051,7 +2052,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
  }
  if(b.action==='delete_telegram_deleted_accounts'){
   const ids=z.array(z.string().uuid()).max(500).parse(b.ids??[]);
-  return reply({ok:true,...await deleteTelegramDeletedAccounts(owner,ids)});
+  return reply({ok:true,...await deleteTelegramDeletedAccounts(owner,actor.userId,ids)});
  }
  if(b.action==='reset_checking_accounts'){
   const fixedAcc=await healStuckAccountChecks(owner,0);

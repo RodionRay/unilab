@@ -515,7 +515,8 @@ function WorkspaceHome(){
   const [bulkProxyId,setBulkProxyId]=useState('');
   const [bulkProxyMix,setBulkProxyMix]=useState(false);
   const [bulkDeleteOpen,setBulkDeleteOpen]=useState(false);
-  const [purgeDeletedOpen,setPurgeDeletedOpen]=useState(false);
+  /** Ids frozen when the purge confirm opens: exactly the accounts it names are sent, later refreshes cannot add any. */
+  const [purgeIds,setPurgeIds]=useState<string[]|null>(null);
   const [bulkLimitsOpen,setBulkLimitsOpen]=useState(false);
   const [bulkLimits,setBulkLimits]=useState({
     invite:TELEGRAM_RECOMMENDED_LIMITS.invite,
@@ -2084,9 +2085,9 @@ function WorkspaceHome(){
     setBusy(true);
     try{
       // Ровно те аккаунты, что названы в подтверждении: сервер удалит только их и только со статусом deleted.
-      const r=await api({action:'delete_telegram_deleted_accounts',ids:telegramDeletedIds});
+      const r=await api({action:'delete_telegram_deleted_accounts',ids:purgeIds||[]});
       await refresh();
-      setPurgeDeletedOpen(false);
+      setPurgeIds(null);
       setAccountSelected([]);
       toast.success(`Удалено аккаунтов: ${r.deleted}${r.groupsDetached?` · групп отвязано: ${r.groupsDetached} — автопочинка переназначит их на живые аккаунты`:''}`);
     }catch(e){toast.error((e as Error).message)}
@@ -3407,7 +3408,7 @@ function WorkspaceHome(){
                   <Button variant="outline" disabled={!!accountCheckProgress||!list('account').length} onClick={()=>checkAccounts('all')}><Plug size={15}/>Проверить все</Button>
                   <Button variant="outline" disabled={!!accountCheckProgress||!list('account').some(r=>needsAccountRecheck(r.data))} onClick={()=>checkAccounts('problem')}><RefreshCw size={15}/>Перепроверить проблемные</Button>
                   {telegramDeletedCount>0&&(
-                    <Button variant="outline" disabled={busy||!!accountCheckProgress} onClick={()=>setPurgeDeletedOpen(true)} className="text-[var(--spike-danger,#fb977d)]"><Trash2 size={15}/>Удалить удалённые Telegram ({telegramDeletedCount})</Button>
+                    <Button variant="outline" disabled={busy||!!accountCheckProgress} onClick={()=>setPurgeIds([...telegramDeletedIds])} className="text-[var(--spike-danger,#fb977d)]"><Trash2 size={15}/>Удалить удалённые Telegram ({telegramDeletedCount})</Button>
                   )}
                   {list('account').some(r=>r.data.status==='checking')&&(
                     <Button variant="outline" onClick={()=>void resetStuckChecks()}><X size={15}/>Сбросить проверку</Button>
@@ -5284,10 +5285,10 @@ function WorkspaceHome(){
         </AlertDialogContent>
       </AlertDialog>
 
-      <AlertDialog open={purgeDeletedOpen} onOpenChange={o=>{if(!busy)setPurgeDeletedOpen(o)}}>
+      <AlertDialog open={purgeIds!==null} onOpenChange={o=>{if(!busy&&!o)setPurgeIds(null)}}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Удалить {telegramDeletedCount} аккаунт(ов), удалённых Telegram?</AlertDialogTitle>
+            <AlertDialogTitle>Удалить {purgeIds?.length??0} аккаунт(ов), удалённых Telegram?</AlertDialogTitle>
             <AlertDialogDescription>
               Записи и сессии этих аккаунтов будут стёрты. Их группы автопочинка переназначит на живые аккаунты, из задач они уберутся, а задача без аккаунтов встанет на паузу. Действие необратимо.
             </AlertDialogDescription>
@@ -5295,7 +5296,7 @@ function WorkspaceHome(){
           <AlertDialogFooter>
             <AlertDialogCancel disabled={busy}>Отмена</AlertDialogCancel>
             <AlertDialogAction disabled={busy} onClick={(e)=>{e.preventDefault();void purgeTelegramDeletedAccounts()}}>
-              {busy?'Удаление…':`Удалить ${telegramDeletedCount}`}
+              {busy?'Удаление…':`Удалить ${purgeIds?.length??0}`}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
