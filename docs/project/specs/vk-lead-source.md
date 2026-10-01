@@ -170,6 +170,21 @@ Live VK (real token, ≥1 real lead from search and from a group) → stand, evi
   code -5 = proxy rejected → 15 min cooldown; unknown VK codes → `skip_item`; chosen-but-full proxy → `no_proxy` (no fallback);
   `vk_api.py` allows proxy-less calls, the pool refuses proxy-less accounts.
 - 2026-10-01 T1: whole-`qualify` throw now falls back to core (was scan error); in-batch duplicate tgMsgId dropped before AI.
+- 2026-10-01 T3 choices: modules `lib/vk/{records,session,fetch}.ts` + `lib/processes/{vk-scan,vk-accounts,scan-queue}.ts`,
+  `R` only dispatches (`R::vkScanDeps`, `R::vkAccountDeps`). Import: no proxy → saved `no_proxy` WITHOUT a VK call
+  (A-7, token may be IP-bound), validated on `vk_account_set_proxy`; slots are planned before validation, so an
+  invalid token holds a slot only inside its own chunk; re-pasted unvalidated tokens found by `tokenFp`
+  (8-byte SHA-256 of owner+token, in data). Search: first 8 strong keywords (`strongPlusTerms`), one 200-post page each,
+  `start_time = max(depth, cursor − 300 s)`; daily search cap is checked at account pick, so one run may exceed it by
+  ≤7 calls. Group: wall page 100 (posts filtered by `wallMaxPostId`), comments of the 10 newest posts in depth
+  (re-read every run, dedup by key), board topics updated since `boardSince` (5 per run). Failover: ≤3 accounts per
+  run; a run sends new batches for 45 s. Lead id = SHA-256(owner+msgKey) shaped as UUID v5. Source state written
+  with `json_set` (tombstones written meanwhile survive). Deleting a source moves its tombstones to another source;
+  its leads stay. Settings gain `vkSearchDailyCap` (500) and `vkAccountsPerProxy` (3). Cron: groups and VK sources
+  alternate (`interleaveScans`); `rescan_groups` lists no VK source while no account can scan.
+
+REQ → tests (T3): REQ-1/1a/AM-10/11 `tests/vk-accounts-route.test.ts` «REQ-1 bulk import»; REQ-4 «REQ-4 group sources»;
+REQ-3/5/6/7/14/15, REQ-2/9/AM-8, REQ-1b/10/AM-9 `tests/vk-scan-route.test.ts`; REQ-8 `tests/vk-cron.test.ts` + «REQ-8 rescan_groups».
 
 ## Surprises
 - (S0 fills this)
