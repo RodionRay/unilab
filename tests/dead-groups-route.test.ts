@@ -17,8 +17,8 @@ const G_DEAD='b0000000-0000-4000-8000-000000000001';
 const G_LIVE='b0000000-0000-4000-8000-000000000002';
 const LEAD_IN_DEAD='b0000000-0000-4000-8000-000000000003';
 
-const MISSING_PAGE='<html><head><meta property="og:title" content="Telegram: Contact @x"></head><body><div class="tgme_page"><div class="tgme_page_action">Send Message</div></div></body></html>';
-const LIVE_PAGE='<html><head><meta property="og:title" content="Chat"></head><body><div class="tgme_page"><div class="tgme_page_extra">1 200 members, 30 online</div></div></body></html>';
+const MISSING_PAGE='<html><head><meta property="og:title" content="Telegram: Contact @x"></head><body><div class="tgme_page"><div class="tgme_page_action"><a class="tgme_action_button_new" href="tg://resolve?domain=x">Send Message</a></div></div></body></html>';
+const LIVE_PAGE='<html><head><meta property="og:title" content="Chat"></head><body><div class="tgme_page"><div class="tgme_page_title"><span dir="auto">Chat</span></div><div class="tgme_page_extra">1 200 members, 30 online</div></div></body></html>';
 
 type GroupData=Record<string,unknown>;
 type Answer={tme:'dead'|'live'|'offline';join?:Record<string,unknown>};
