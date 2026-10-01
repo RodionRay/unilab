@@ -1,0 +1,5 @@
+# Local-only harness state: session, credentials, logs, pids.
+storage.json
+.run/
+.env*
+.dev.vars*

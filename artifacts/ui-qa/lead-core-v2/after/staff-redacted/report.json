@@ -1,0 +1,1574 @@
+{
+  "base": "http://127.0.0.1:8011",
+  "started": "2026-10-01T12:02:55.047Z",
+  "routes": {
+    "/app?view=ai": {
+      "390x844": {
+        "screenshot": "/Users/rodiontipcov/worktrees/wt-unilab-lead-core-v2-2026-10-01-ui/artifacts/ui-qa/lead-core-v2/after/staff-redacted/app_view_ai-390x844.png",
+        "dom": {
+          "overflow": false,
+          "offenders": [],
+          "smallTargets": 1,
+          "smallPrimary": 20,
+          "smallInputs": 0,
+          "imgsNoDims": 0,
+          "imgsBroken": 0,
+          "lazyAboveFold": 0,
+          "h1": 1,
+          "skippedHeading": false,
+          "main": true,
+          "nav": true,
+          "unlabeled": 0,
+          "stickyPct": 14,
+          "bodyBg": "rgb(25, 25, 25)",
+          "bodyFont": "\"PP Mori\", \"Plus Jakarta Sans\", Helvetica, Arial, sans-serif",
+          "fontsLoaded": "loaded",
+          "smells": [],
+          "i18nKeys": []
+        },
+        "focus": [
+          {
+            "tag": "button",
+            "label": "Toggle Sidebar",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              28,
+              28
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Уведомления",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              40,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "a",
+            "label": "О сервисе",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              88,
+              21
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Фулфилмент для WB",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              164,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Карточки товаров под ключ",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              167,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Новый проект",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              157,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "24 ч",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              49,
+              28
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "7 дней",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              64,
+              28
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Обойти сейчас",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              298,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Личные сообщения6 входящих → 3 лида",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              324,
+              66
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Действия с проектом",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              32,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "input",
+            "label": "",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              324,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "input",
+            "label": "",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              324,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Пересобрать по сайту",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              324,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "textarea",
+            "label": "Фулфилмент для Wildberries и Ozon в Подо",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              324,
+              150
+            ],
+            "covered": false
+          },
+          {
+            "tag": "textarea",
+            "label": "Отгрузка на склад маркетплейса за 24 час",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              324,
+              125
+            ],
+            "covered": false
+          },
+          {
+            "tag": "textarea",
+            "label": "Селлеры WB и Ozon с 300+ отгрузками в ме",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              324,
+              125
+            ],
+            "covered": false
+          },
+          {
+            "tag": "textarea",
+            "label": "Автор сам ищет фулфилмент, склад, упаков",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              324,
+              125
+            ],
+            "covered": false
+          },
+          {
+            "tag": "textarea",
+            "label": "Сам предлагает услуги фулфилмента, ищет ",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              324,
+              100
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «вакансия»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «резюме»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «требуются сотрудники»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «предлагаем услуги фулфилмента»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «наш фулфилмент»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «курсы по вб»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «наставник»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «продам аккаунт»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «выкупы»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «самовыкупы»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «накрутка отзывов»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «казино»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "input",
+            "label": "",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              302,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "textarea",
+            "label": "Коротко и по делу, на «вы», без давления",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              324,
+              76
+            ],
+            "covered": false
+          },
+          {
+            "tag": "textarea",
+            "label": "Предложить расчёт стоимости под объём и ",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              324,
+              76
+            ],
+            "covered": false
+          },
+          {
+            "tag": "input",
+            "label": "",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              283,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              32,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "input",
+            "label": "",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              88,
+              36
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Открыть ассистента UniLab",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              52,
+              52
+            ],
+            "covered": false
+          }
+        ],
+        "axe": null,
+        "vitals": {
+          "lcp": 1044,
+          "cls": 0,
+          "inp": 24,
+          "interactions": [
+            "field"
+          ],
+          "cta": "",
+          "field": "text"
+        },
+        "states": null,
+        "consoleErrors": [],
+        "failedReq": [],
+        "ok": false,
+        "issues": [
+          "A4 1 standalone controls < 24px",
+          "A4 20 primary buttons < 44px on mobile"
+        ]
+      },
+      "768x1024": {
+        "screenshot": "/Users/rodiontipcov/worktrees/wt-unilab-lead-core-v2-2026-10-01-ui/artifacts/ui-qa/lead-core-v2/after/staff-redacted/app_view_ai-768x1024.png",
+        "dom": {
+          "overflow": false,
+          "offenders": [],
+          "smallTargets": 6,
+          "smallPrimary": 0,
+          "smallInputs": 0,
+          "imgsNoDims": 0,
+          "imgsBroken": 0,
+          "lazyAboveFold": 0,
+          "h1": 1,
+          "skippedHeading": false,
+          "main": true,
+          "nav": true,
+          "unlabeled": 0,
+          "stickyPct": 112,
+          "bodyBg": "rgb(25, 25, 25)",
+          "bodyFont": "\"PP Mori\", \"Plus Jakarta Sans\", Helvetica, Arial, sans-serif",
+          "fontsLoaded": "loaded",
+          "smells": [],
+          "i18nKeys": []
+        },
+        "focus": [
+          {
+            "tag": "button",
+            "label": "Переместить «Обзор»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Обзор",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Группы и каналы»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Группы и каналы",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «AI-ассистент»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "AI-ассистент",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Настроить аккаунты",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              153,
+              20
+            ],
+            "covered": false
+          },
+          {
+            "tag": "a",
+            "label": "Выйти",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              16,
+              16
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Toggle Sidebar",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              28,
+              28
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Уведомления",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              40,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "a",
+            "label": "О сервисе",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              88,
+              21
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Фулфилмент для WB",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              172,
+              36
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Карточки товаров под ключ",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              216,
+              36
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Новый проект",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              157,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "24 ч",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              49,
+              28
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "7 дней",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              64,
+              28
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Обойти сейчас",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              389,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Личные сообщения6 входящих → 3 лида",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              415,
+              47
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Действия с проектом",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              32,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "input",
+            "label": "",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              415,
+              36
+            ],
+            "covered": false
+          },
+          {
+            "tag": "input",
+            "label": "",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              415,
+              36
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Пересобрать по сайту",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              415,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "textarea",
+            "label": "Фулфилмент для Wildberries и Ozon в Подо",
+            "visibleRing": true,
+            "inView": false,
+            "size": [
+              415,
+              113
+            ],
+            "covered": false
+          },
+          {
+            "tag": "textarea",
+            "label": "Отгрузка на склад маркетплейса за 24 час",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              415,
+              91
+            ],
+            "covered": false
+          },
+          {
+            "tag": "textarea",
+            "label": "Селлеры WB и Ozon с 300+ отгрузками в ме",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              415,
+              69
+            ],
+            "covered": false
+          },
+          {
+            "tag": "textarea",
+            "label": "Автор сам ищет фулфилмент, склад, упаков",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              415,
+              91
+            ],
+            "covered": false
+          },
+          {
+            "tag": "textarea",
+            "label": "Сам предлагает услуги фулфилмента, ищет ",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              415,
+              69
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «вакансия»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «резюме»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «требуются сотрудники»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «предлагаем услуги фулфилмента»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «наш фулфилмент»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «курсы по вб»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «наставник»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «продам аккаунт»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «выкупы»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «самовыкупы»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «накрутка отзывов»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «казино»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "input",
+            "label": "",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              148,
+              29
+            ],
+            "covered": false
+          },
+          {
+            "tag": "textarea",
+            "label": "Коротко и по делу, на «вы», без давления",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              415,
+              69
+            ],
+            "covered": false
+          },
+          {
+            "tag": "textarea",
+            "label": "Предложить расчёт стоимости под объём и ",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              415,
+              69
+            ],
+            "covered": false
+          },
+          {
+            "tag": "input",
+            "label": "",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              180,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              32,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "input",
+            "label": "",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              88,
+              36
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Открыть ассистента UniLab",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              187,
+              52
+            ],
+            "covered": false
+          }
+        ],
+        "axe": null,
+        "vitals": {
+          "lcp": 1084,
+          "cls": 0.043,
+          "inp": 24,
+          "interactions": [
+            "field"
+          ],
+          "cta": "",
+          "field": "text"
+        },
+        "states": null,
+        "consoleErrors": [],
+        "failedReq": [],
+        "ok": false,
+        "issues": [
+          "A4 6 standalone controls < 24px"
+        ]
+      },
+      "1440x900": {
+        "screenshot": "/Users/rodiontipcov/worktrees/wt-unilab-lead-core-v2-2026-10-01-ui/artifacts/ui-qa/lead-core-v2/after/staff-redacted/app_view_ai-1440x900.png",
+        "dom": {
+          "overflow": false,
+          "offenders": [],
+          "smallTargets": 6,
+          "smallPrimary": 0,
+          "smallInputs": 0,
+          "imgsNoDims": 0,
+          "imgsBroken": 0,
+          "lazyAboveFold": 0,
+          "h1": 1,
+          "skippedHeading": false,
+          "main": true,
+          "nav": true,
+          "unlabeled": 0,
+          "stickyPct": 114,
+          "bodyBg": "rgb(25, 25, 25)",
+          "bodyFont": "\"PP Mori\", \"Plus Jakarta Sans\", Helvetica, Arial, sans-serif",
+          "fontsLoaded": "loaded",
+          "smells": [],
+          "i18nKeys": []
+        },
+        "focus": [
+          {
+            "tag": "button",
+            "label": "Переместить «Обзор»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Обзор",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «Группы и каналы»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Группы и каналы",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Переместить «AI-ассистент»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              22,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "AI-ассистент",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              219,
+              44
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Настроить аккаунты",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              153,
+              20
+            ],
+            "covered": false
+          },
+          {
+            "tag": "a",
+            "label": "Выйти",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              16,
+              16
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Toggle Sidebar",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              28,
+              28
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Уведомления",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              40,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "a",
+            "label": "О сервисе",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              88,
+              21
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Фулфилмент для WB",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              172,
+              36
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Карточки товаров под ключ",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              216,
+              36
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Новый проект",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              157,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "24 ч",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              49,
+              28
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "7 дней",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              64,
+              28
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Обойти сейчас",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              562,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Личные сообщения6 входящих → 3 лида",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              588,
+              47
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Действия с проектом",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              32,
+              32
+            ],
+            "covered": false
+          },
+          {
+            "tag": "input",
+            "label": "",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              524,
+              36
+            ],
+            "covered": false
+          },
+          {
+            "tag": "input",
+            "label": "",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              303,
+              36
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Пересобрать по сайту",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              213,
+              40
+            ],
+            "covered": false
+          },
+          {
+            "tag": "textarea",
+            "label": "Фулфилмент для Wildberries и Ozon в Подо",
+            "visibleRing": true,
+            "inView": false,
+            "size": [
+              1063,
+              69
+            ],
+            "covered": false
+          },
+          {
+            "tag": "textarea",
+            "label": "Отгрузка на склад маркетплейса за 24 час",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              1063,
+              64
+            ],
+            "covered": false
+          },
+          {
+            "tag": "textarea",
+            "label": "Селлеры WB и Ozon с 300+ отгрузками в ме",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              524,
+              69
+            ],
+            "covered": false
+          },
+          {
+            "tag": "textarea",
+            "label": "Автор сам ищет фулфилмент, склад, упаков",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              524,
+              69
+            ],
+            "covered": false
+          },
+          {
+            "tag": "textarea",
+            "label": "Сам предлагает услуги фулфилмента, ищет ",
+            "visibleRing": true,
+            "inView": false,
+            "size": [
+              1063,
+              64
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «вакансия»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «резюме»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «требуются сотрудники»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «предлагаем услуги фулфилмента»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «наш фулфилмент»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «курсы по вб»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «наставник»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «продам аккаунт»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «выкупы»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «самовыкупы»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «накрутка отзывов»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Убрать «казино»",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              24,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "input",
+            "label": "",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              438,
+              29
+            ],
+            "covered": false
+          },
+          {
+            "tag": "textarea",
+            "label": "Коротко и по делу, на «вы», без давления",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              524,
+              64
+            ],
+            "covered": false
+          },
+          {
+            "tag": "textarea",
+            "label": "Предложить расчёт стоимости под объём и ",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              524,
+              64
+            ],
+            "covered": false
+          },
+          {
+            "tag": "input",
+            "label": "",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              180,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              32,
+              24
+            ],
+            "covered": false
+          },
+          {
+            "tag": "input",
+            "label": "",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              88,
+              36
+            ],
+            "covered": false
+          },
+          {
+            "tag": "button",
+            "label": "Открыть ассистента UniLab",
+            "visibleRing": true,
+            "inView": true,
+            "size": [
+              187,
+              52
+            ],
+            "covered": false
+          }
+        ],
+        "axe": null,
+        "vitals": {
+          "lcp": 1052,
+          "cls": 0.124,
+          "inp": 32,
+          "interactions": [
+            "field"
+          ],
+          "cta": "",
+          "field": "text"
+        },
+        "states": null,
+        "consoleErrors": [],
+        "failedReq": [],
+        "ok": false,
+        "issues": [
+          "A4 6 standalone controls < 24px",
+          "E7 CLS 0.124 > 0.1"
+        ]
+      }
+    }
+  },
+  "failures": 5,
+  "visualFailures": 0
+}

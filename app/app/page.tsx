@@ -1,10 +1,12 @@
 "use client";
 import {useState,useEffect,useCallback,useRef,useMemo,Suspense} from 'react';
 import {useSearchParams} from 'next/navigation';
-import {Users,Radio,Shield,Sparkles,Plus,ArrowRight,Search,ChevronRight,ExternalLink,Pencil,Trash2,Check,Upload,Plug,Loader2,LogOut,RefreshCw,X,CloudUpload,FileArchive,Ban,ImagePlus,UserRound,UserPlus,Database,ScrollText,History,FilterX,Send,MessageSquare,Timer,Network,Gauge,AlertTriangle,BarChart3,Folder,CircleX} from 'lucide-react';
+import {Users,Radio,Shield,Sparkles,Plus,ArrowRight,Search,ChevronRight,ExternalLink,Pencil,Trash2,Check,Upload,Plug,Loader2,LogOut,RefreshCw,X,CloudUpload,FileArchive,Ban,ImagePlus,UserRound,UserPlus,Database,ScrollText,History,FilterX,Send,MessageSquare,Timer,Network,Gauge,AlertTriangle,BarChart3,Folder,CircleX,ThumbsUp,ThumbsDown} from 'lucide-react';
 import {Button} from '@/components/ui/button';
 import {OverviewDashboard} from '@/components/product/overview-dashboard';
-import {LeadCorePanel} from '@/components/product/lead-core-panel';
+import {AiWorkspace} from '@/components/product/ai/ai-workspace';
+import {canSeeGroups,canSeeLeadText,isInConversations,isWorkspaceOwner,pluralRu,projectIdOf,projectsFrom} from '@/components/product/ai/model';
+import {useActiveProject} from '@/components/product/ai/use-active-project';
 import {WorkspaceNav,parseWorkspaceView,persistWorkspaceView,readStoredWorkspaceView,WORKSPACE_VIEW_PARAM,type NavName} from '@/components/product/workspace-nav';
 import {NotificationsBell,NotificationsPanel} from '@/components/product/notifications-center';
 import {useWorkspaceNotices} from '@/hooks/useWorkspaceNotices';
@@ -70,12 +72,6 @@ import {
   type LeadTemperature,
 } from '@/lib/lead-filter';
 import {
-  SUGGESTED_MINUS,
-  SUGGESTED_PLUS,
-  mergeKeywords,
-  unusedSuggestions,
-} from '@/lib/ai-keywords';
-import {
   parseGroupUrlLines,
   telegramMessageLink,
 } from '@/lib/audience-invite';
@@ -83,7 +79,8 @@ import {useTableSort} from '@/hooks/useTableSort';
 import type {SortValueType} from '@/lib/table-sort';
 import {leadVisibleInTab} from '@/lib/lead-search';
 
-type Kind='account'|'proxy'|'group'|'lead'|'settings';
+/** `project` is read-only here: it is edited only through project_* actions, never generic save. */
+type Kind='account'|'proxy'|'group'|'lead'|'settings'|'project';
 type RecordItem={id:string;kind:Kind;data:any;hasSecret:boolean;created:string};
 type OnboardResult={
   joined:'requested'|'already'|'joined';
@@ -97,7 +94,7 @@ type OnboardResult={
 };
 
 const kinds:Record<string,Kind>={'Лиды':'lead','Переписки':'lead','Группы и каналы':'group','Аккаунты':'account','Прокси':'proxy','AI-ассистент':'settings'};
-const labels:Record<Kind,string>={account:'аккаунт',proxy:'прокси',group:'группу',lead:'лид',settings:'настройки AI'};
+const labels:Record<Kind,string>={account:'аккаунт',proxy:'прокси',group:'группу',lead:'лид',settings:'настройки AI',project:'проект'};
 const PROBLEM_ACCOUNT=new Set(['disconnected','unauthorized','frozen','spamblock','proxy_error','cooldown','inactive','setup','error']);
 /** Живые состояния ручного вступления (вкладка вступает/сканирует); у фоновой очереди производителя больше нет. */
 const JOIN_ACTIVE_STATES=new Set<string>(LIVE_JOIN_STATES);
@@ -144,7 +141,20 @@ AI будет использовать этот текст для отбора �
     notifyChatId:'',
   },
 };
-const viewCopy:Record<string,string>={'Обзор':'Лиды, чаты и статус подключений — всё важное на одном экране.','Уведомления':'Журнал событий кабинета: сканы, вступления, ошибки и сохранения.','Лиды':'Новые запросы: просмотренные скрываются из общей сетки.','Переписки':'Ответы клиентов: откройте диалог — он уйдёт в «Просмотренные». Новый ответ клиента снова в «Новые».','Группы и каналы':'Поиск тем под AI → вступление → реальные лиды из чатов.','Аккаунты':'Статусы, дневные лимиты, отлёжка, прокси и группы — всё по каждому аккаунту.','Прокси':'host:port:user:password — список или по одному.','AI-ассистент':'Ядро поиска лидов, продукт, плюс/минус слова, обучение и обход групп.','Сотрудники':'Роли, доступы к разделам CRM и приглашения коллег по ссылке.','Настройки':'Глубина скана, профиль кабинета и уведомления о лидах в Telegram-бота.'};
+const TELEGRAM_OFFLINE='Telegram не подключён — проверьте подключение в разделе «Аккаунты».';
+const viewCopy:Record<string,string>={'Обзор':'Лиды, чаты и статус подключений — всё важное на одном экране.','Уведомления':'Журнал событий кабинета: сканы, вступления, ошибки и сохранения.','Лиды':'Новые запросы: просмотренные скрываются из общей сетки.','Переписки':'Ответы клиентов: откройте диалог — он уйдёт в «Просмотренные». Новый ответ клиента снова в «Новые».','Группы и каналы':'Поиск тем под AI → вступление → реальные лиды из чатов.','Аккаунты':'Статусы, дневные лимиты, отлёжка, прокси и группы — всё по каждому аккаунту.','Прокси':'host:port:user:password — список или по одному.','AI-ассистент':'Сколько клиентов AI нашёл в ваших чатах и какие ответы ждут вашего одобрения.','Сотрудники':'Роли, доступы к разделам CRM и приглашения коллег по ссылке.','Настройки':'Глубина скана, профиль кабинета и уведомления о лидах в Telegram-бота.'};
+
+/** Дневные лимиты AI владельца (docs/leads-pipeline.md): оценки сообщений и черновики. */
+const DEFAULT_JUDGE_DAILY_CAP=3000;
+const DEFAULT_DRAFT_DAILY_CAP=200;
+const MAX_DAILY_CAP=100000;
+function clampCap(v:unknown,fallback:number):number{
+  const n=Math.round(Number(v));
+  return Number.isFinite(n)&&n>0?Math.min(MAX_DAILY_CAP,n):fallback;
+}
+
+/** Ответ POST /api/staff: ошибка или счётчики операции. */
+type StaffActionResponse={error?:string;url?:string;removed?:number;members?:number;invites?:number};
 
 async function api(body?:unknown){
   const r=await fetch('/api/workspace',body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{cache:'no-store'});
@@ -259,44 +269,6 @@ function groupRatingStars(rating:number){
   const n=Math.max(0,Math.min(5,Math.round(Number(rating)||0)));
   if(!n)return <span className="muted text-sm">Нет оценки</span>;
   return <span className="group-rating" aria-label={`Рейтинг ${n} из 5`}>{'★'.repeat(n)}{'☆'.repeat(5-n)}</span>;
-}
-
-function parseKeywordList(value:string){
-  return String(value||'').split(/[,;\n]+/).map(s=>s.trim()).filter(Boolean);
-}
-
-function KeywordChips({value,onChange,variant,placeholder}:{value:string;onChange:(v:string)=>void;variant:'plus'|'minus';placeholder?:string}){
-  const [draft,setDraft]=useState('');
-  const items=parseKeywordList(value);
-  const commit=(raw:string)=>{
-    const next=raw.split(/[,;\n]+/).map(s=>s.trim()).filter(Boolean);
-    if(!next.length)return;
-    const set=new Set(items.map(s=>s.toLowerCase()));
-    const merged=[...items];
-    for(const t of next){if(!set.has(t.toLowerCase())){set.add(t.toLowerCase());merged.push(t)}}
-    onChange(merged.join(', '));
-    setDraft('');
-  };
-  return (
-    <div className="kw-editor" onClick={e=>{(e.currentTarget.querySelector('input') as HTMLInputElement|null)?.focus()}}>
-      {items.map(t=>(
-        <span className={`kw ${variant}`} key={t}>
-          {t}
-          <button type="button" aria-label={`Удалить ${t}`} onClick={e=>{e.stopPropagation();onChange(items.filter(x=>x!==t).join(', '))}}><X size={12}/></button>
-        </span>
-      ))}
-      <input
-        value={draft}
-        placeholder={items.length?placeholder||'Enter или запятая':'Введите и Enter'}
-        onChange={e=>setDraft(e.target.value)}
-        onKeyDown={e=>{
-          if(e.key==='Enter'||e.key===','){e.preventDefault();commit(draft)}
-          if(e.key==='Backspace'&&!draft&&items.length)onChange(items.slice(0,-1).join(', '));
-        }}
-        onBlur={()=>{if(draft.trim())commit(draft)}}
-      />
-    </div>
-  );
 }
 
 function groupAlreadyIn(item:RecordItem){
@@ -448,9 +420,7 @@ function WorkspaceHome(){
   const [catalogHits,setCatalogHits]=useState<CatalogHit[]>([]);
   const [catalogSearchTick,setCatalogSearchTick]=useState(0);
   const [aiMeta,setAiMeta]=useState<{provider?:string;hasEnvKey?:boolean}|null>(null);
-  const [lastLeadFunnel,setLastLeadFunnel]=useState<{worker?:number;core?:number;matched?:number;added?:number}|null>(null);
   const [leadGroupFilter,setLeadGroupFilter]=useState('all');
-  const [leadSelected,setLeadSelected]=useState<string[]>([]);
   const [groupFilter,setGroupFilter]=useState<'all'|'need'|'joined'|'pending'|'error'>('all');
   const [groupSelected,setGroupSelected]=useState<string[]>([]);
   const [bulkAccountId,setBulkAccountId]=useState('');
@@ -461,6 +431,8 @@ function WorkspaceHome(){
     scanDepthDays:7,
     autoRescanEnabled:true,
     autoRescanMinutes:30,
+    judgeDailyCap:DEFAULT_JUDGE_DAILY_CAP,
+    draftDailyCap:DEFAULT_DRAFT_DAILY_CAP,
     profileName:'',
     profileAbout:'',
     profileContact:'',
@@ -491,6 +463,8 @@ function WorkspaceHome(){
   const [autoRescanRunning,setAutoRescanRunning]=useState(false);
   const [staffMembers,setStaffMembers]=useState<WorkspaceMember[]>([]);
   const [staffInvites,setStaffInvites]=useState<WorkspaceInvite[]>([]);
+  const [aiDirty,setAiDirty]=useState(false);
+  const [pendingLeave,setPendingLeave]=useState<(()=>void)|null>(null);
   const [workspaceMeta,setWorkspaceMeta]=useState<{isOwner:boolean;role:string;access:CrmAccess;ownerId:string}|null>(null);
   const [meInfo,setMeInfo]=useState<{userId:string;email:string;name:string}|null>(null);
   const [taskLog,setTaskLog]=useState<{title:string;log:any[]}|null>(null);
@@ -509,7 +483,7 @@ function WorkspaceHome(){
         if(r.status===403){setStaffMembers([]);setStaffInvites([]);return}
         return;
       }
-      const data=await r.json();
+      const data=(await r.json()) as {members?:WorkspaceMember[];invites?:typeof staffInvites};
       setStaffMembers(data.members||[]);
       setStaffInvites(data.invites||[]);
     }catch{/* */}
@@ -576,20 +550,25 @@ function WorkspaceHome(){
     if(bulkAccountId&&!usable.some(a=>a.id===bulkAccountId))setBulkAccountId(usable[0]?.id||'');
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[records]);
-  const navigate=(name:NavName)=>{setView(name);setQuery('');setFilter('all');setLeadGroupFilter('all');setLeadSelected([]);setAccountSelected([]);setGroupFilter('all');setGroupSelected([])};
-  const goLeads=(opts?:{groupId?:string;filter?:string})=>{
+  /** Single exit guard: an unsaved AI project card asks before any view switch. */
+  const leaveView=(target:NavName,apply:()=>void)=>{
+    if(aiDirty&&view==='AI-ассистент'&&target!==view){setPendingLeave(()=>apply);return}
+    apply();
+  };
+  useEffect(()=>{if(view!=='AI-ассистент')setAiDirty(false)},[view]);
+  const navigate=(name:NavName)=>leaveView(name,()=>{setView(name);setQuery('');setFilter('all');setLeadGroupFilter('all');setAccountSelected([]);setGroupFilter('all');setGroupSelected([])});
+  const goLeads=(opts?:{groupId?:string;filter?:string})=>leaveView('Лиды',()=>{
     setView('Лиды');
     setQuery('');
-    setLeadSelected([]);
     setLeadGroupFilter(opts?.groupId||'all');
     setFilter(opts?.filter||'all');
-  };
-  const goChats=(filter:'all'|'need'|'joined'|'pending'|'error'='all')=>{
+  });
+  const goChats=(filter:'all'|'need'|'joined'|'pending'|'error'='all')=>leaveView('Группы и каналы',()=>{
     setView('Группы и каналы');
     setQuery('');
     setGroupFilter(filter);
     setGroupSelected([]);
-  };
+  });
   const open=(kind:Kind,item?:RecordItem)=>{
     const data={...defaults[kind],...item?.data};
     if(kind==='account'&&!item){
@@ -618,11 +597,16 @@ function WorkspaceHome(){
 
   const list=(kind:Kind)=>records.filter(r=>r.kind===kind);
   const settings=list('settings')[0];
+  const projects=useMemo(()=>projectsFrom(records),[records]);
+  const [activeProjectId,setActiveProjectId]=useActiveProject(projects,!loading);
+  const [leadProjectScope,setLeadProjectScope]=useState<'active'|'all'>('active');
+  const leadInScope=(r:RecordItem)=>leadProjectScope==='all'||!projects.length||projectIdOf(r.data,projects)===activeProjectId;
   const aiKeyReady=!!(settings?.hasSecret||aiMeta?.hasEnvKey);
   const freshLeads=list('lead').filter(r=>!r.data.viewed&&!r.data.excludeFromTraining);
   const viewedLeads=list('lead').filter(r=>!!r.data.viewed&&!r.data.excludeFromTraining);
   const excludedLeads=list('lead').filter(r=>!!r.data.excludeFromTraining);
-  const chatLeads=list('lead').filter(r=>(!!r.data.draft||!!r.data.conversationOpen)&&!r.data.excludeFromTraining);
+  // Auto drafts (draftKind) wait in the AI page queue; «Переписки» = open conversations + manual drafts (REQ-20).
+  const chatLeads=list('lead').filter(r=>isInConversations(r.data));
   const freshChats=chatLeads.filter(r=>!r.data.viewed);
   const viewedChats=chatLeads.filter(r=>!!r.data.viewed);
 
@@ -677,6 +661,8 @@ function WorkspaceHome(){
       scanDepthDays:Math.max(1,Math.min(90,Number(d.scanDepthDays)||7)),
       autoRescanEnabled:d.autoRescanEnabled!==false,
       autoRescanMinutes:Math.max(5,Math.min(180,Number(d.autoRescanMinutes)||30)),
+      judgeDailyCap:clampCap(d.judgeDailyCap,DEFAULT_JUDGE_DAILY_CAP),
+      draftDailyCap:clampCap(d.draftDailyCap,DEFAULT_DRAFT_DAILY_CAP),
       profileName:String(d.profileName||''),
       profileAbout:String(d.profileAbout||''),
       profileContact:String(d.profileContact||''),
@@ -684,14 +670,16 @@ function WorkspaceHome(){
       notifyBotToken:String(d.notifyBotToken||''),
       notifyChatId:String(d.notifyChatId||''),
     });
-  },[settings?.id,settings?.data?.scanDepthDays,settings?.data?.autoRescanEnabled,settings?.data?.autoRescanMinutes,settings?.data?.profileName,settings?.data?.profileAbout,settings?.data?.profileContact,settings?.data?.notifyEnabled,settings?.data?.notifyBotToken,settings?.data?.notifyChatId]);
+  },[settings?.id,settings?.data?.scanDepthDays,settings?.data?.autoRescanEnabled,settings?.data?.autoRescanMinutes,settings?.data?.judgeDailyCap,settings?.data?.draftDailyCap,settings?.data?.profileName,settings?.data?.profileAbout,settings?.data?.profileContact,settings?.data?.notifyEnabled,settings?.data?.notifyBotToken,settings?.data?.notifyChatId]);
 
   // Автообход лидов крутит tg-worker → /api/cron/auto-rescan (24/7, без открытого кабинета).
   // Здесь только кнопка «Собрать лиды» и отображение статуса.
 
+  // Сотрудник без доступа к лидам получил бы 403 на каждый тик: опрос — только при праве видеть лиды.
+  const leadAccess=canSeeLeadText(workspaceMeta);
   /** Poller: ответы клиентов в личке, пока кабинет открыт */
   useEffect(()=>{
-    if(!telegramConnected)return;
+    if(!telegramConnected||!leadAccess)return;
     const tick=async()=>{
       if(inboxPollLock.current)return;
       // Скрытые вкладки не опрашивают входящие; параллельные опросы сервер отсекает lease
@@ -713,7 +701,7 @@ function WorkspaceHome(){
     const id=window.setInterval(()=>{void tick()},5_000);
     const first=window.setTimeout(()=>{void tick()},1_000);
     return()=>{window.clearInterval(id);window.clearTimeout(first)};
-  },[telegramConnected,refresh]);
+  },[telegramConnected,leadAccess,refresh]);
 
   /** Скан сразу после вступления: ретраи при лаге Telegram (need_join). */
   async function scanAfterJoin(id:string,name:string){
@@ -751,14 +739,7 @@ function WorkspaceHome(){
         setBusy(false);
         return;
       }
-      const rescanAfter=modal.kind==='settings'&&!!form._rescanAfterSave;
       const payload={...form};
-      if(modal.kind==='settings'){
-        delete payload._rescanAfterSave;
-        payload.provider='deepseek';
-        payload.model='deepseek-chat';
-        payload.apiBase='https://api.deepseek.com';
-      }
       // Telegram about ≤70; логин без @
       if(modal.kind==='account'){
         if(payload.about)payload.about=String(payload.about).slice(0,70);
@@ -776,7 +757,7 @@ function WorkspaceHome(){
         return;
       }
       // Аккаунт: сначала кабинет (быстро). @username в Telegram — фоном, иначе UI зависает на воркере/автообходе.
-      const saved=await api({action:'save',kind:modal.kind,id:modal.item?.id,data:payload,secret:modal.kind==='settings'?'':secret,clearSecret:modal.kind==='settings'?false:clearSecret,provisionUsername:false});
+      const saved=await api({action:'save',kind:modal.kind,id:modal.item?.id,data:payload,secret,clearSecret,provisionUsername:false,...(modal.kind==='group'&&!modal.item?.id&&activeProjectId?{projectId:activeProjectId}:{})});
       const newAccountId=!modal.item&&modal.kind==='account'?String(saved.id||''):'';
       const desiredNick=String(payload.username||saved.username||'').replace(/^@/,'');
       setModal(null);setSecret('');
@@ -785,11 +766,6 @@ function WorkspaceHome(){
         toast.success(readyToJoin&&!groupAlreadyIn({id:'',kind:'group',data:payload,hasSecret:false,created:''})
           ?'Группа сохранена — нажмите «Вступить» в строке группы'
           :'Изменения сохранены');
-      }else if(rescanAfter){
-        await refresh();
-        toast.success('Настройки сохранены — запускаем обход');
-        const r=await rescanAllGroups({force:true});
-        toast.success(`Обход: ${r.scanned} групп, +${r.added} лидов`);
       }else if(modal.kind==='account'){
         await refresh();
         if(newAccountId&&secret){
@@ -863,7 +839,7 @@ function WorkspaceHome(){
 
   async function sendLeadReply(force=false){
     if(!detail||!chatText.trim())return;
-    if(!telegramConnected){toast.error('Запустите: npm run dev');return}
+    if(!telegramConnected){toast.error(TELEGRAM_OFFLINE);return}
     const text=chatText.trim();
     const mode=chatMode;
     const clientMsgId=replySendKey(detail.id,mode,text);
@@ -947,18 +923,6 @@ function WorkspaceHome(){
     return {scanned,added,due:Number(pack.total)||ids.length};
   }
 
-  async function rebuildProduct(){
-    setBusy(true);
-    try{
-      const notes=settings?.data.productNotes||form.productNotes||'';
-      await api({action:'rebuild_product',notes});
-      toast.success('Описание продукта пересобрано');
-      const r=await rescanAllGroups({force:true});
-      toast.success(`Обход групп: ${r.scanned}, новых лидов: ${r.added}`);
-    }catch(e){toast.error((e as Error).message)}
-    finally{setBusy(false)}
-  }
-
   async function saveGeneralSettings(){
     setBusy(true);
     try{
@@ -968,6 +932,8 @@ function WorkspaceHome(){
         scanDepthDays:Math.max(1,Math.min(90,Number(genSettings.scanDepthDays)||7)),
         autoRescanEnabled:!!genSettings.autoRescanEnabled,
         autoRescanMinutes:Math.max(5,Math.min(180,Number(genSettings.autoRescanMinutes)||30)),
+        judgeDailyCap:clampCap(genSettings.judgeDailyCap,DEFAULT_JUDGE_DAILY_CAP),
+        draftDailyCap:clampCap(genSettings.draftDailyCap,DEFAULT_DRAFT_DAILY_CAP),
         profileName:String(genSettings.profileName||'').slice(0,120),
         profileAbout:String(genSettings.profileAbout||'').slice(0,500),
         profileContact:String(genSettings.profileContact||'').slice(0,200),
@@ -998,76 +964,16 @@ function WorkspaceHome(){
     finally{setBusy(false)}
   }
 
-  async function setLeadTrainingExclude(item:RecordItem,exclude:boolean){
+  /** «Хороший лид» / «Не лид»: the lead text becomes a judge example of its project (REQ-21); stop words stay untouched. */
+  async function leadFeedback(item:RecordItem,verdict:'good'|'bad'){
     setBusy(true);
     try{
-      const r=await api({action:'set_lead_training_exclude',id:item.id,exclude});
-      const next=r.lead||{...item.data,excludeFromTraining:exclude,viewed:exclude?true:item.data.viewed};
-      setRecords(prev=>prev.map(row=>row.id===item.id?{...row,data:{...row.data,...next}}:row));
-      setDetail(d=>d&&d.id===item.id?{...d,data:{...d.data,...next}}:d);
-      setLeadSelected(prev=>prev.filter(id=>id!==item.id));
-      toast.success(exclude?'Лид исключён из обучения и следующих поисков':'Лид снова учитывается');
-    }catch(e){toast.error((e as Error).message)}
-    finally{setBusy(false)}
-  }
-
-  /** Не лид → сразу стоп-слова в минус + исключить из учёта */
-  async function rejectLeadToStopwords(item:RecordItem){
-    setBusy(true);
-    try{
-      const r=await api({action:'reject_lead_stopwords',id:item.id});
-      await refresh();
-      const added=Array.isArray(r.minusAdded)?r.minusAdded.filter(Boolean):[];
-      if(added.length){
-        toast.success(`В стоп-слова AI: ${added.slice(0,6).join(', ')}${added.length>6?'…':''}`);
-      }else if(Number(r.minusSkippedAsProduct)>0){
-        toast.message('Лид скрыт. В стоп-слова ничего не добавлено — слова пересекаются с продуктом и плюс-словами.');
-      }else{
-        toast.message('Лид скрыт. Новых стоп-слов не вышло (уже были в минусе).');
+      const r=await api({action:'lead_feedback',id:item.id,verdict});
+      if(r.lead){
+        setRecords(prev=>prev.map(row=>row.id===item.id?{...row,data:{...row.data,...r.lead}}:row));
+        setDetail(d=>d&&d.id===item.id?{...d,data:{...d.data,...r.lead}}:d);
       }
-      setDetail(null);
-    }catch(e){toast.error((e as Error).message)}
-    finally{setBusy(false)}
-  }
-
-  async function bulkExcludeSelected(exclude=true){
-    if(!leadSelected.length)return;
-    setBusy(true);
-    try{
-      const r=await api({action:'bulk_set_lead_training_exclude',ids:leadSelected,exclude});
-      const selected=new Set(leadSelected);
-      const now=new Date().toISOString();
-      setRecords(prev=>prev.map(row=>{
-        if(!selected.has(row.id)||row.kind!=='lead')return row;
-        return {...row,data:{...row.data,excludeFromTraining:exclude,...(exclude&&!row.data.viewed?{viewed:true,viewedAt:now}:{})}};
-      }));
-      setDetail(d=>d&&selected.has(d.id)?{...d,data:{...d.data,excludeFromTraining:exclude,...(exclude?{viewed:true}:{})}}:d);
-      setLeadSelected([]);
-      toast.success(exclude?`Исключено из обучения: ${r.updated||leadSelected.length}`:`Снято исключение: ${r.updated||leadSelected.length}`);
-    }catch(e){toast.error((e as Error).message)}
-    finally{setBusy(false)}
-  }
-
-  function toggleLeadSelected(id:string,on:boolean){
-    setLeadSelected(prev=>on?Array.from(new Set([...prev,id])):prev.filter(x=>x!==id));
-  }
-
-  async function trainFromHot(){
-    setBusy(true);
-    try{
-      const r=await api({action:'train_from_hot'});
-      await refresh();
-      toast.success(`Обучение: +${r.plusAdded||0} плюс, +${r.minusAdded||0} минус по ${r.trainedOn} горячим`);
-    }catch(e){toast.error((e as Error).message)}
-    finally{setBusy(false)}
-  }
-
-  async function trainFromIgnored(){
-    setBusy(true);
-    try{
-      const r=await api({action:'train_from_ignored'});
-      await refresh();
-      toast.success(`Стоп-слова: +${r.minusAdded||0} из ${r.trainedOn} игнорированных`);
+      toast.success(verdict==='good'?'Добавили в примеры хороших лидов проекта':'Добавили в примеры «не лид» проекта');
     }catch(e){toast.error((e as Error).message)}
     finally{setBusy(false)}
   }
@@ -1540,7 +1446,7 @@ function WorkspaceHome(){
   async function checkAccounts(mode:'all'|'problem'){
     const targets=list('account').filter(r=>mode==='all'||r.data.status!=='active');
     if(!targets.length){toast.message(mode==='problem'?'Нет проблемных аккаунтов':'Нет аккаунтов');return}
-    if(!telegramConnected){toast.error('Сначала запустите: npm run dev');return}
+    if(!telegramConnected){toast.error(TELEGRAM_OFFLINE);return}
     const queue=targets.slice(0,40);
     let done=0,active=0,rotated=0,refreshed=0;
     setAccountCheckProgress({done:0,total:queue.length,active:0});
@@ -1652,7 +1558,7 @@ function WorkspaceHome(){
       fixGroupUrl(item);
       return;
     }
-    if(!telegramConnected){toast.error('Запустите: npm run dev');return}
+    if(!telegramConnected){toast.error(TELEGRAM_OFFLINE);return}
     // Одна группа за клик, без очереди и ожиданий в браузере: отказ сервера (темп, дневной лимит) показываем как есть.
     if(joinLock.current){toast.message('Дождитесь окончания текущего вступления');return}
     joinLock.current=true;
@@ -1703,7 +1609,7 @@ function WorkspaceHome(){
 
   /** Вступить в обсуждение уже вступленного канала: тот же гейт темпа и дневного лимита на сервере. */
   async function joinDiscussion(item:RecordItem){
-    if(!telegramConnected){toast.error('Запустите: npm run dev');return}
+    if(!telegramConnected){toast.error(TELEGRAM_OFFLINE);return}
     if(joinLock.current){toast.message('Дождитесь окончания текущего вступления');return}
     joinLock.current=true;
     setJoinInFlight(true);
@@ -1733,23 +1639,17 @@ function WorkspaceHome(){
       fixGroupUrl(item);
       return;
     }
-    if(!telegramConnected){toast.error('Запустите: npm run dev');return}
+    if(!telegramConnected){toast.error(TELEGRAM_OFFLINE);return}
     setBusy(true);
     try{
       const res=await api({action:'scan_group',id:item.id});
       await refresh();
-      if(res.funnel)setLastLeadFunnel(res.funnel);
-      else if(res.workerRaw!=null||res.prefilter!=null){
-        setLastLeadFunnel({worker:res.workerRaw,core:res.prefilter,matched:res.matched,added:res.added});
-      }
       if(res.skipped){
         toast.message(res.message||`Скан по настройкам: раз в ${settings?.data.autoRescanMinutes||30} мин`);
         return;
       }
       toast.success(
-        res.funnel
-          ?`Скан: worker ${res.funnel.worker} → ядро ${res.funnel.core} → +${res.added}${res.aiUsed?' (AI)':''}`
-          :`Скан: ${res.scanned} → +${res.added} лидов${res.aiUsed?' (AI)':''}${res.metrics?` · ★${res.metrics.rating} · горячие ${res.metrics.leadsHot||0}`:''}`,
+        `Скан: прочитано ${res.fetched??res.scanned??0}, AI оценил ${res.judged??0} → +${res.added??0} лидов${res.judgeError?` · ошибок AI ${res.judgeError}`:''}`,
       );
     }catch(e){
       const msg=(e as Error).message;
@@ -1780,7 +1680,7 @@ function WorkspaceHome(){
     setBusy(true);
     try{
       const accountId=catalogAccountId||list('account').filter(a=>isAccountWorkable(a.data))[0]?.id||'';
-      const r=await api({action:'import_catalog',accountId:accountId||undefined});
+      const r=await api({action:'import_catalog',accountId:accountId||undefined,projectId:activeProjectId||undefined});
       await refresh();
       const added=Number(r.added)||0;
       const skipped=Number(r.skipped)||0;
@@ -1827,6 +1727,7 @@ function WorkspaceHome(){
           const saved=await api({
             action:'save',
             kind:'group',
+            projectId:activeProjectId||undefined,
             data:{
               name:g.name,
               url:canonicalizeTgUrl(g.url),
@@ -1895,7 +1796,7 @@ function WorkspaceHome(){
           continue;
         }
         try{
-          const saved=await api({action:'save',kind:'group',data:cleanGroupSaveData({
+          const saved=await api({action:'save',kind:'group',projectId:activeProjectId||undefined,data:cleanGroupSaveData({
             name:g.name,
             url:canonicalizeTgUrl(g.url),
             accountId,
@@ -1946,10 +1847,11 @@ function WorkspaceHome(){
   const currentKind=kinds[view];
   const displayed=records.filter(r=>{
     if(r.kind!==(currentKind||'lead'))return false;
-    if(view==='Переписки'&&!r.data.draft&&!r.data.conversationOpen)return false;
+    if(view==='Переписки'&&!isInConversations(r.data))return false;
     const leadTabs=currentKind==='lead'&&(view==='Лиды'||view==='Переписки');
     if(leadTabs){
       if(!leadVisibleInTab(r.data,filter))return false;
+      if(view==='Лиды'&&!leadInScope(r))return false;
       if(view==='Лиды'&&leadGroupFilter!=='all'&&r.data.groupId!==leadGroupFilter)return false;
     }else if(filter!=='all'&&filter!=='viewed'&&filter!=='ignored'){
       if(currentKind==='lead'){
@@ -2133,17 +2035,10 @@ function WorkspaceHome(){
   );
 
   const renderLeads=(items:RecordItem[])=>{
-    const allOn=items.length>0&&items.every(r=>leadSelected.includes(r.id));
     return items.length?(
     <>
+      {/* Row checkboxes are gone: the header drops their 28px gutter so «Лид» lines up with the row names. */}
       <div className="leads-list-cols">
-        <label className="inline-flex items-center justify-center">
-          <Checkbox
-            checked={allOn}
-            onCheckedChange={v=>setLeadSelected(v===true?items.map(r=>r.id):[])}
-            aria-label="Выбрать все лиды"
-          />
-        </label>
         <SortHeaderButton columnKey="name" sortKey={sortKey} sortDir={sortDir} onSort={onSort}>Лид</SortHeaderButton>
         <SortHeaderButton columnKey="temperature" sortKey={sortKey} sortDir={sortDir} onSort={onSort}>Темп.</SortHeaderButton>
         <SortHeaderButton columnKey="status" sortKey={sortKey} sortDir={sortDir} onSort={onSort}>Статус</SortHeaderButton>
@@ -2151,13 +2046,7 @@ function WorkspaceHome(){
         <SortHeaderButton columnKey="created" sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="justify-self-end">Дата</SortHeaderButton>
       </div>
       {items.map(r=>(
-    <div className={`lead-row ${leadSelected.includes(r.id)?'selected':''} ${r.data.excludeFromTraining?'ignored':''}`} key={r.id}>
-      <Checkbox
-        checked={leadSelected.includes(r.id)}
-        onCheckedChange={v=>toggleLeadSelected(r.id,v===true)}
-        aria-label={`Выбрать ${r.data.name}`}
-        className="mt-1 shrink-0"
-      />
+    <div className={`lead-row ${r.data.excludeFromTraining?'ignored':''}`} key={r.id}>
       <button className="text-left flex-1 min-w-0" onClick={()=>openLead(r)}>
         <div className="flex gap-3 items-center flex-wrap">
           <span className="row-title">{r.data.name}</span>
@@ -2166,6 +2055,8 @@ function WorkspaceHome(){
           {r.data.needsManager&&<span className="badge warning">Клиент ответил</span>}
           {!r.data.needsManager&&r.data.conversationOpen&&<span className="badge success">Переписка</span>}
           {r.data.excludeFromTraining&&<span className="badge neutral">Не для обучения</span>}
+          {r.data.feedback==='good'&&<span className="badge success">Отмечен: хороший</span>}
+          {r.data.feedback==='bad'&&<span className="badge neutral">Отмечен: не лид</span>}
         </div>
         <p className="mt-2 text-[14px] leading-6 line-clamp-2 muted">
           {r.data.incomingLastText||r.data.message}
@@ -2178,28 +2069,12 @@ function WorkspaceHome(){
       </button>
       <div className="flex flex-col gap-1 shrink-0">
         <Button variant="ghost" onClick={()=>openLead(r)}>Открыть<ChevronRight size={16}/></Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={busy}
-          title={r.data.excludeFromTraining?'Вернуть в учёт':'Не учитывать в обучении'}
-          onClick={()=>setLeadTrainingExclude(r,!r.data.excludeFromTraining)}
-        >
-          <Ban size={15}/>
-          {r.data.excludeFromTraining?'Вернуть':'Не учитывать'}
+        <Button variant="ghost" size="sm" className="focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--spike-primary)]" disabled={busy} aria-pressed={r.data.feedback==='good'} title="Добавить в примеры хороших лидов проекта" onClick={()=>void leadFeedback(r,'good')}>
+          <ThumbsUp size={15}/>Хороший лид
         </Button>
-        {!r.data.excludeFromTraining&&(
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={busy}
-            title="Не лид → стоп-слова"
-            onClick={()=>rejectLeadToStopwords(r)}
-          >
-            <FilterX size={15}/>
-            Стоп
-          </Button>
-        )}
+        <Button variant="ghost" size="sm" className="focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--spike-primary)]" disabled={busy} aria-pressed={r.data.feedback==='bad'} title="Добавить в примеры «не лид» проекта" onClick={()=>void leadFeedback(r,'bad')}>
+          <ThumbsDown size={15}/>Не лид
+        </Button>
       </div>
     </div>
   ))}
@@ -2326,7 +2201,6 @@ function WorkspaceHome(){
   };
 
   const allLeads=list('lead').filter(r=>!r.data.excludeFromTraining);
-  const draftLeads=list('lead').filter(r=>(!!r.data.draft||!!r.data.conversationOpen)&&!r.data.excludeFromTraining);
   const groupsAll=list('group');
   const groupsJoined=groupsAll.filter(g=>g.data.membership==='joined'||!!g.data.joinedAt);
   const groupsNeedJoin=groupsAll.filter(groupNeedsJoin);
@@ -2372,7 +2246,7 @@ function WorkspaceHome(){
       status:String(r.data.status||'new'),
       viewed:!!r.data.viewed,
       groupId:String(r.data.groupId||''),
-                      draft:!!r.data.draft||!!r.data.conversationOpen,
+      draft:isInConversations(r.data),
     };
   });
 
@@ -2447,9 +2321,9 @@ function WorkspaceHome(){
                     disabled={busy}
                     onClick={()=>void importFullCatalogToDb()}
                   >Залить каталог ({catalogStats().uniqueUrls})</Button>
-                  <Button onClick={openCatalog}><Search size={16}/>Поиск по темам</Button>
+                  <Button onClick={()=>openCatalog()}><Search size={16}/>Поиск по темам</Button>
                 </>
-              ):view==='Настройки'||view==='Уведомления'||view==='Сотрудники'?null:(
+              ):view==='Настройки'||view==='Уведомления'||view==='Сотрудники'||view==='AI-ассистент'?null:(
                 <Button onClick={()=>open(currentKind||'group',currentKind==='settings'?settings:undefined)}>
                   {currentKind==='settings'?<><Plus size={16}/>Настроить AI</>:currentKind==='account'?<><Plus size={16}/>Добавить аккаунты</>:<><Plus size={16}/>Добавить {labels[currentKind||'group']}</>}
                 </Button>
@@ -2457,7 +2331,7 @@ function WorkspaceHome(){
             </div>
           </div>
 
-          {error&&(
+          {error&&!(view==='AI-ассистент'&&!records.length)&&(
             <div role="alert" className="error-banner">
               {error}
               <Button variant="ghost" onClick={refresh}>Повторить</Button>
@@ -2479,7 +2353,7 @@ function WorkspaceHome(){
               hotCount={hotN}
               warmCount={warmN}
               coldCount={coldN}
-              draftCount={draftLeads.length}
+              draftCount={chatLeads.length}
               joinedChats={groupsJoined.length}
               needJoin={groupsNeedJoin.length}
               farm={{
@@ -2514,7 +2388,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'create_invite',...input})});
-                    const data=await r.json();
+                    const data=(await r.json()) as StaffActionResponse;
                     if(!r.ok)throw new Error(data.error||'Не удалось создать приглашение');
                     await refreshStaff();
                     toast.success('Ссылка-приглашение создана');
@@ -2526,7 +2400,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'revoke_invite',id})});
-                    const data=await r.json();
+                    const data=(await r.json()) as StaffActionResponse;
                     if(!r.ok)throw new Error(data.error||'Не удалось отозвать');
                     await refreshStaff();
                     toast.success('Приглашение отозвано');
@@ -2537,7 +2411,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'revoke_invites',ids})});
-                    const data=await r.json();
+                    const data=(await r.json()) as StaffActionResponse;
                     if(!r.ok)throw new Error(data.error||'Не удалось отозвать');
                     await refreshStaff();
                     toast.success(`Отозвано: ${data.removed||ids.length}`);
@@ -2548,7 +2422,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'update_member',...input})});
-                    const data=await r.json();
+                    const data=(await r.json()) as StaffActionResponse;
                     if(!r.ok)throw new Error(data.error||'Не удалось сохранить');
                     await refreshStaff();
                     toast.success('Доступы обновлены');
@@ -2559,7 +2433,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'remove_member',id})});
-                    const data=await r.json();
+                    const data=(await r.json()) as StaffActionResponse;
                     if(!r.ok)throw new Error(data.error||'Не удалось удалить');
                     await refreshStaff();
                     toast.success('Сотрудник удалён');
@@ -2570,7 +2444,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'remove_members',ids})});
-                    const data=await r.json();
+                    const data=(await r.json()) as StaffActionResponse;
                     if(!r.ok)throw new Error(data.error||'Не удалось удалить');
                     await refreshStaff();
                     toast.success(`Удалено: ${data.removed||ids.length}`);
@@ -2581,7 +2455,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'clear_all'})});
-                    const data=await r.json();
+                    const data=(await r.json()) as StaffActionResponse;
                     if(!r.ok)throw new Error(data.error||'Не удалось очистить');
                     await refreshStaff();
                     toast.success(`Удалено сотрудников: ${data.members||0}, приглашений: ${data.invites||0}`);
@@ -2600,16 +2474,16 @@ function WorkspaceHome(){
               </div>
               {view==='Переписки'?(
                 <div className="flex flex-wrap items-center gap-3">
-                  <Tabs value={filter==='viewed'?'viewed':'all'} onValueChange={(v)=>{setFilter(v);setLeadSelected([])}}>
+                  <Tabs value={filter==='viewed'?'viewed':'all'} onValueChange={(v)=>setFilter(v)}>
                     <TabsList>
                       <TabsTrigger value="all">Новые{freshChats.length?` (${freshChats.length})`:''}</TabsTrigger>
                       <TabsTrigger value="viewed">Просмотренные{viewedChats.length?` (${viewedChats.length})`:''}</TabsTrigger>
                     </TabsList>
                   </Tabs>
-                  <span className="badge neutral">{chatLeads.length} диалогов</span>
+                  <span className="badge neutral">{chatLeads.length} {pluralRu(chatLeads.length,'диалог','диалога','диалогов')}</span>
                 </div>
               ):currentKind==='lead'?(
-                <div className="flex flex-wrap items-center gap-3">
+                <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
                   <Button
                     disabled={busy||!telegramConnected||autoRescanRunning}
                     onClick={async()=>{
@@ -2627,16 +2501,35 @@ function WorkspaceHome(){
                     <RefreshCw size={15} className={autoRescanRunning?'animate-spin':''}/>
                     {autoRescanRunning?'Сбор…':'Собрать лиды'}
                   </Button>
+                  {projects.length>0&&(
+                    <Select
+                      value={leadProjectScope==='all'?'all':activeProjectId}
+                      onValueChange={v=>{
+                        setLeadGroupFilter('all');
+                        if(v==='all'){setLeadProjectScope('all');return}
+                        setLeadProjectScope('active');
+                        setActiveProjectId(v);
+                      }}
+                    >
+                      <SelectTrigger className="w-[220px] max-w-full" aria-label="Проект"><SelectValue placeholder="Проект"/></SelectTrigger>
+                      <SelectContent>
+                        {projects.map(p=>(
+                          <SelectItem key={p.id} value={p.id}>{p.data.name}</SelectItem>
+                        ))}
+                        <SelectItem value="all">Все проекты</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  )}
                   <Select value={leadGroupFilter} onValueChange={setLeadGroupFilter}>
-                    <SelectTrigger className="w-[220px]"><SelectValue placeholder="Группа"/></SelectTrigger>
+                    <SelectTrigger className="w-[220px] max-w-full" aria-label="Группа"><SelectValue placeholder="Группа"/></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">Все группы</SelectItem>
-                      {list('group').map(g=>(
+                      {list('group').filter(g=>leadProjectScope==='all'||!projects.length||projectIdOf(g.data,projects)===activeProjectId).map(g=>(
                         <SelectItem key={g.id} value={g.id}>{g.data.name}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
-                  <Tabs value={filter} onValueChange={(v)=>{setFilter(v);setLeadSelected([])}}>
+                  <Tabs className="min-w-0 max-w-full overflow-x-auto" value={filter} onValueChange={(v)=>setFilter(v)}>
                     <TabsList>
                       <TabsTrigger value="all">Все</TabsTrigger>
                       <TabsTrigger value="hot">Горячие</TabsTrigger>
@@ -2697,35 +2590,9 @@ function WorkspaceHome(){
             )}
             {currentKind==='lead'&&(
               <div className="status-note">
-                «Собрать лиды» — принудительный обход. Автообход круглосуточно через Telegram-воркер из npm run dev (каждые {settings?.data.autoRescanMinutes||30} мин на группу)
+                Автообход каждые {settings?.data.autoRescanMinutes||30} мин
                 {settings?.data.lastAutoRescanAt?` · последний ${new Date(settings.data.lastAutoRescanAt).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}`:''}
-                {autoRescanRunning?' · идёт…':''}.
-              </div>
-            )}
-            {currentKind==='lead'&&leadSelected.length>0&&(
-              <div className="lead-bulk-bar">
-                <span>Выбрано: <strong>{leadSelected.length}</strong></span>
-                <div className="flex flex-wrap gap-2">
-                  <Button size="sm" disabled={busy} onClick={()=>bulkExcludeSelected(true)}>
-                    <Ban size={14}/>Не учитывать в обучении
-                  </Button>
-                  {filter==='ignored'&&(
-                    <Button size="sm" variant="outline" disabled={busy} onClick={()=>bulkExcludeSelected(false)}>
-                      Вернуть в учёт
-                    </Button>
-                  )}
-                  <Button size="sm" variant="outline" disabled={busy} onClick={()=>setLeadSelected(sortedList.map(r=>r.id))}>
-                    Выбрать все
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={()=>setLeadSelected([])}>Снять</Button>
-                </div>
-              </div>
-            )}
-            {currentKind==='lead'&&!leadSelected.length&&sortedList.length>0&&(
-              <div className="lead-bulk-hint">
-                <Button size="sm" variant="outline" onClick={()=>setLeadSelected(sortedList.map(r=>r.id))}>
-                  Выбрать все ({sortedList.length})
-                </Button>
+                {autoRescanRunning?' · идёт…':''}
               </div>
             )}
             {accountCheckProgress&&currentKind==='account'&&(
@@ -2758,7 +2625,7 @@ function WorkspaceHome(){
                 <div className="groups-page">
                   <div className="groups-top">
                     <div className="groups-top-actions">
-                      <Button onClick={openCatalog} disabled={busy}><Search size={15}/>Найти темы</Button>
+                      <Button onClick={()=>openCatalog()} disabled={busy}><Search size={15}/>Найти темы</Button>
                       <Button variant="outline" onClick={openManualGroup}><Plus size={15}/>Ссылка</Button>
                       <Button variant="outline" onClick={openMassGroups} disabled={busy}><Upload size={15}/>Массово</Button>
                       <Button
@@ -3118,169 +2985,31 @@ function WorkspaceHome(){
           </>}
 
           {view==='AI-ассистент'&&(
-            <div className="ai-layout">
-              <div className="min-w-0 space-y-5">
-                <LeadCorePanel
-                  aiQualify={(settings?.data.aiQualify??true)!==false}
-                  lastFunnel={lastLeadFunnel}
-                  settings={{
-                    keywords:settings?.data.keywords||defaults.settings.keywords,
-                    minusKeywords:settings?.data.minusKeywords||defaults.settings.minusKeywords,
-                    avoidTopics:settings?.data.avoidTopics||defaults.settings.avoidTopics,
-                    leadCriteria:settings?.data.leadCriteria||defaults.settings.leadCriteria,
-                    hotSignals:settings?.data.hotSignals||defaults.settings.hotSignals,
-                    product:settings?.data.product||defaults.settings.product,
-                  }}
-                />
-                <section className="panel">
-                  <div className="flex justify-between items-start gap-4 mb-5 flex-wrap">
-                    <div className="title-icon">
-                      <div className="icon-box"><Sparkles size={22}/></div>
-                      <div>
-                        <h2 className="m-0">{settings?.data.name||defaults.settings.name}</h2>
-                        <p className="small-note mt-1">DeepSeek встроен · контекст для лидов и черновиков</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className={`badge ${aiKeyReady?'success':'warning'}`}>{aiKeyReady?'DeepSeek подключён':'Нет AI_API_KEY в .env'}</span>
-                      <Button variant="outline" size="sm" onClick={()=>open('settings',settings)}><Pencil size={14}/>{settings?'Изменить':'Настроить'}</Button>
-                    </div>
-                  </div>
-                  {(settings?.data.projectUrl||defaults.settings.projectUrl)&&(
-                    <p className="mb-4"><a className="text-[var(--spike-primary)] font-medium" href={settings?.data.projectUrl||defaults.settings.projectUrl} target="_blank" rel="noreferrer">{settings?.data.projectUrl||defaults.settings.projectUrl}<ExternalLink className="inline ml-1" size={14}/></a></p>
-                  )}
-                  <div className="ai-block">
-                    <div className="flex justify-between gap-3 items-start flex-wrap mb-2">
-                      <h3 style={{marginBottom:0}}>Продукт и оффер</h3>
-                      <Button size="sm" variant="outline" disabled={busy||!aiKeyReady} onClick={rebuildProduct}><RefreshCw size={14}/>Пересобрать и обойти группы</Button>
-                    </div>
-                    <p className="whitespace-pre-wrap">{settings?.data.product||defaults.settings.product}</p>
-                  </div>
-                  <div className="ai-filter-grid mt-5">
-                    <div className="ai-filter-card">
-                      <h3>Аудитория</h3>
-                      <p className="text-sm leading-6">{settings?.data.audience||defaults.settings.audience}</p>
-                    </div>
-                    <div className="ai-filter-card">
-                      <h3>Критерии лида</h3>
-                      <p className="text-sm leading-6">{settings?.data.leadCriteria||defaults.settings.leadCriteria}</p>
-                    </div>
-                    <div className="ai-filter-card">
-                      <h3>Боли</h3>
-                      <p className="text-sm leading-6">{settings?.data.pains||defaults.settings.pains}</p>
-                    </div>
-                    <div className="ai-filter-card">
-                      <h3>Ценность</h3>
-                      <p className="text-sm leading-6">{settings?.data.valueProps||defaults.settings.valueProps}</p>
-                    </div>
-                  </div>
-                  <div className="ai-filter-grid mt-4">
-                    <div className="ai-filter-card">
-                      <h3>Тон</h3>
-                      <p className="text-sm leading-6">{settings?.data.tone||defaults.settings.tone}</p>
-                    </div>
-                    <div className="ai-filter-card">
-                      <h3>CTA</h3>
-                      <p className="text-sm leading-6">{settings?.data.cta||defaults.settings.cta}</p>
-                    </div>
-                  </div>
-                  <div className="ai-block mt-4">
-                    <h3>Мягкое закрытие в ЛС</h3>
-                    <p className="muted text-sm leading-6">{settings?.data.dmSoftClose||defaults.settings.dmSoftClose}</p>
-                  </div>
-                  {(settings?.data.hotSignals||defaults.settings.hotSignals)&&(
-                    <div className="ai-block">
-                      <h3>Сигналы горячего</h3>
-                      <p className="muted">{settings?.data.hotSignals||defaults.settings.hotSignals}</p>
-                    </div>
-                  )}
-                  {(settings?.data.learnExamples)&&(
-                    <div className="ai-block">
-                      <h3>Обучение (примеры)</h3>
-                      <p className="muted text-sm whitespace-pre-wrap">{settings.data.learnExamples}</p>
-                    </div>
-                  )}
-                </section>
-
-                <section className="panel">
-                  <div className="ai-filter-grid">
-                    <div className="ai-filter-card plus">
-                      <h3>Плюс-слова</h3>
-                      <div className="kw-list">
-                        {(settings?.data.keywords||defaults.settings.keywords).split(/[,;\n]+/).filter(Boolean).map((t:string)=>(
-                          <span className="kw plus" key={t}>{t.trim()}</span>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="ai-filter-card minus">
-                      <h3>Стоп / минус-слова</h3>
-                      {Array.isArray(settings?.data?.lastMinusAdded)&&settings.data.lastMinusAdded.length>0&&(
-                        <div className="ai-last-minus">
-                          <div className="ai-last-minus-title">
-                            Только что из лидов
-                            {settings.data.lastMinusAddedAt?` · ${new Date(settings.data.lastMinusAddedAt).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}`:''}
-                          </div>
-                          <div className="kw-list">
-                            {settings.data.lastMinusAdded.map((t:string)=>(
-                              <span className="kw minus is-new" key={`new-${t}`}>{t}</span>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                      <div className="kw-list">
-                        {(settings?.data.minusKeywords||defaults.settings.minusKeywords).split(/[,;\n]+/).filter(Boolean).map((t:string)=>(
-                          <span className="kw minus" key={t}>{t.trim()}</span>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="ai-block">
-                    <h3>Ниши каталога</h3>
-                    <div className="kw-list">
-                      {nichesFromProjectText(settings?.data.product,settings?.data.audience,settings?.data.keywords,settings?.data.leadCriteria).map(n=>(
-                        <span className="kw niche" key={n}>{GROUP_NICHE_LABELS[n]}</span>
-                      ))}
-                    </div>
-                  </div>
-                </section>
-              </div>
-
-              <div className="min-w-0 space-y-5">
-                <section className="panel">
-                  <h2 className="mb-3">Действия</h2>
-                  <div className="flex flex-col gap-2">
-                    <Button disabled={busy||!aiKeyReady} onClick={rebuildProduct}><RefreshCw size={15}/>Пересобрать продукт + обход</Button>
-                    <Button variant="outline" disabled={busy} onClick={trainFromHot}><Sparkles size={15}/>Обучить на горячих лидах</Button>
-                    <Button variant="outline" disabled={busy||!excludedLeads.length} onClick={trainFromIgnored}>
-                      <Ban size={15}/>Обучить на игноре → стоп-слова{excludedLeads.length?` (${excludedLeads.length})`:''}
-                    </Button>
-                    <Button variant="outline" disabled={busy} onClick={async()=>{setBusy(true);try{const r=await rescanAllGroups({force:true});toast.success(`Обход: ${r.scanned} групп, +${r.added} лидов`)}catch(e){toast.error((e as Error).message)}finally{setBusy(false)}}}><Search size={15}/>Обход групп сейчас</Button>
-                    <Button variant="outline" onClick={()=>{navigate('Группы и каналы');openCatalog()}}><Search size={15}/>Поиск тем</Button>
-                  </div>
-                  <p className="muted mt-4 text-sm">
-                    Автообход: {(settings?.data.autoRescanEnabled??true)?'вкл.':'выкл.'} каждые {settings?.data.autoRescanMinutes||30} мин
-                    {autoRescanRunning?' · идёт…':''}
-                    {settings?.data.lastAutoRescanAt?` · последний ${new Date(settings.data.lastAutoRescanAt).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'})}`:''}.
-                    Ядро score≥45 + стоп-слова до AI. AI-шлюз: {(settings?.data.aiQualify??true)?'вкл. (только подтверждение кандидатов ядра)':'выкл. (только score ядра)'}.
-                  </p>
-                </section>
-
-                <section className="panel ai-tips">
-                  <h2 className="mb-2">Конверсия AI-ассистента</h2>
-                  <ol className="ai-tips-list">
-                    <li><strong>Строгий AI-шлюз</strong> — лид показывается только если сообщение прошло все правила ассистента; лучше меньше, чем шум.</li>
-                    <li><strong>Подробный продукт</strong> — чем точнее описание и критерии, тем точнее отбор hot/warm.</li>
-                    <li><strong>Клик по подсказкам</strong> — добавляйте плюс/минус в настройках одним нажатием.</li>
-                    <li><strong>В стоп-слова</strong> — сообщение не лид: сразу в минус-фильтр + скрыть из списка.</li>
-                    <li><strong>Не учитывать</strong> — шум без новых стоп-слов; потом можно «Обучить на игноре».</li>
-                    <li><strong>Обучение на горячих</strong> — после 5–10 hot нажмите «Обучить», исключённые лиды не участвуют.</li>
-                    <li><strong>Пересборка → обход</strong> — после правок продукта сразу сканируем группы под новые правила.</li>
-                    <li><strong>Автообход</strong> — круглосуточно через tg-worker (кабинет открывать не нужно).</li>
-                    <li><strong>Стоп-слова жёстко</strong> — вакансии и накрутка отсекаются до и внутри AI.</li>
-                  </ol>
-                </section>
-              </div>
-            </div>
+            <AiWorkspace
+              records={records}
+              projects={projects}
+              loading={loading}
+              error={error}
+              aiKeyReady={aiKeyReady}
+              leadTextVisible={canSeeLeadText(workspaceMeta)}
+              groupsVisible={canSeeGroups(workspaceMeta)}
+              isOwner={isWorkspaceOwner(workspaceMeta)}
+              telegramConnected={telegramConnected}
+              activeProjectId={activeProjectId}
+              onSelectProject={setActiveProjectId}
+              onRefresh={refresh}
+              onOpenThread={(id)=>{const item=records.find(r=>r.id===id);if(item)void openLead(item)}}
+              onGoGroups={()=>goChats()}
+              onOpenSettings={()=>navigate('Настройки')}
+              onOpenLeads={canSeeLeadText(workspaceMeta)?()=>{setLeadProjectScope('active');goLeads()}:undefined}
+              onDirtyChange={setAiDirty}
+              onRescan={async()=>{
+                try{
+                  const r=await rescanAllGroups({force:true});
+                  if(!r.skipped)toast.success(`Обход: ${r.scanned} групп, +${r.added} лидов`);
+                }catch(e){toast.error((e as Error).message)}
+              }}
+            />
           )}
 
           {view==='Настройки'&&(
@@ -3320,6 +3049,30 @@ function WorkspaceHome(){
                         onChange={e=>setGenSettings(s=>({...s,autoRescanMinutes:Math.max(5,Math.min(180,Number(e.target.value)||30))}))}
                       />
                       <span className="settings-hint">Круглосуточно через tg-worker (кабинет не нужен). Интервал — минимум между сканами одной группы. Кнопка «Собрать лиды» — сразу.</span>
+                    </label>
+                  </div>
+                  <div className="settings-row">
+                    <label className="field">Лимит оценок AI в день
+                      <Input
+                        type="number"
+                        inputMode="numeric"
+                        min={1}
+                        max={MAX_DAILY_CAP}
+                        value={genSettings.judgeDailyCap}
+                        onChange={e=>setGenSettings(s=>({...s,judgeDailyCap:clampCap(e.target.value,DEFAULT_JUDGE_DAILY_CAP)}))}
+                      />
+                      <span className="settings-hint">Сколько сообщений AI прочитает за сутки по всем проектам. Остальные подождут следующего дня в шаге «Без оценки».</span>
+                    </label>
+                    <label className="field">Лимит черновиков в день
+                      <Input
+                        type="number"
+                        inputMode="numeric"
+                        min={1}
+                        max={MAX_DAILY_CAP}
+                        value={genSettings.draftDailyCap}
+                        onChange={e=>setGenSettings(s=>({...s,draftDailyCap:clampCap(e.target.value,DEFAULT_DRAFT_DAILY_CAP)}))}
+                      />
+                      <span className="settings-hint">Сколько черновиков ответа AI напишет за сутки: и сам для горячих лидов, и по кнопке.</span>
                     </label>
                   </div>
                   <label className="settings-check">
@@ -3437,14 +3190,12 @@ function WorkspaceHome(){
       </SidebarInset>
 
       <Dialog open={!!modal} onOpenChange={o=>{if(!o&&!busy){setModal(null);setSecret('')}}}>
-        <DialogContent className={`max-h-[90vh] overflow-y-auto ${modal?.kind==='settings'?'sm:max-w-3xl':''}`}>
+        <DialogContent className={`max-h-[90vh] overflow-y-auto `}>
           <DialogHeader>
             <DialogTitle>{
-              modal?.kind==='settings'?(modal?.item?'Настройки AI-ассистента':'Создать AI-ассистента'):
               `${modal?.item?'Изменить':'Добавить'} ${modal?labels[modal.kind]:''}`
             }</DialogTitle>
             <DialogDescription>{
-              modal?.kind==='settings'?'Продукт, фильтры и обучение. DeepSeek уже подключён в коде.':
               'Запись будет сохранена в вашем рабочем пространстве.'
             }</DialogDescription>
           </DialogHeader>
@@ -3569,110 +3320,6 @@ function WorkspaceHome(){
                 </label>
               </div>
               {form.draft&&<label className="field">Черновик<Textarea rows={5} value={form.draft} onChange={e=>change('draft',e.target.value)}/></label>}
-            </>}
-            {modal?.kind==='settings'&&<>
-              <div className="form-section">
-                <p className="form-section-title">DeepSeek</p>
-                <p className="form-section-hint">Провайдер и ключ заданы в коде/.env — настраивать не нужно. {aiKeyReady?'Ключ активен.':'Добавьте AI_API_KEY в .env и перезапустите сервер.'}</p>
-                <label className="flex items-center gap-2 text-sm font-medium">
-                  <Checkbox checked={form.aiQualify!==false} onCheckedChange={v=>setForm((f:any)=>({...f,aiQualify:v===true}))}/>
-                  AI подтверждает кандидатов ядра (hot/warm)
-                </label>
-                <p className="form-section-hint mt-1">Сначала ядро (score ≥ 45). AI не поднимает чат без запроса сервиса. Лучше 0 лидов, чем шум.</p>
-                <label className="flex items-center gap-2 text-sm font-medium mt-3">
-                  <Checkbox checked={form.autoRescanEnabled!==false} onCheckedChange={v=>setForm((f:any)=>({...f,autoRescanEnabled:v===true}))}/>
-                  Автообход подключённых чатов (ловить новые заявки)
-                </label>
-                <label className="field mt-2">Интервал автообхода, минут
-                  <Input type="number" min={5} max={180} value={form.autoRescanMinutes??30} onChange={e=>change('autoRescanMinutes',String(Math.max(5,Math.min(180,Number(e.target.value)||30))))}/>
-                </label>
-                <p className="form-section-hint mt-1">Круглосуточно: tg-worker дергает автообход. Кабинет открывать не обязательно (по умолчанию раз в 30 мин на группу).</p>
-              </div>
-
-              <div className="form-section">
-                <p className="form-section-title">Продукт (подробно)</p>
-                {field('name','Название ассистента / бренда')}
-                {field('projectUrl','Ссылка на сайт','url','https://example.com')}
-                <label className="field">Полное описание продукта, модулей и правил ответа
-                  <Textarea rows={10} value={form.product||''} onChange={e=>change('product',e.target.value)} placeholder="Что делает продукт, для кого, модули, интеграции, как начать…"/>
-                </label>
-                <label className="field">Заметки для пересборки (опционально)
-                  <Textarea rows={2} value={form.productNotes||''} onChange={e=>change('productNotes',e.target.value)} placeholder="Усиль акцент на боль / оффер / демо…"/>
-                </label>
-                <label className="field">Целевая аудитория
-                  <Textarea rows={3} value={form.audience||''} onChange={e=>change('audience',e.target.value)}/>
-                </label>
-                <label className="field">Критерии целевого лида
-                  <Textarea rows={3} value={form.leadCriteria||''} onChange={e=>change('leadCriteria',e.target.value)}/>
-                </label>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="field">Боли клиента
-                    <Textarea rows={3} value={form.pains||''} onChange={e=>change('pains',e.target.value)}/>
-                  </label>
-                  <label className="field">Ценность / результаты
-                    <Textarea rows={3} value={form.valueProps||''} onChange={e=>change('valueProps',e.target.value)}/>
-                  </label>
-                </div>
-                <label className="field">Сигналы горячего лида
-                  <Textarea rows={2} value={form.hotSignals||''} onChange={e=>change('hotSignals',e.target.value)} placeholder="ищу crm, нужна синхронизация…"/>
-                </label>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="field">Тон ответов
-                    <Textarea rows={2} value={form.tone||''} onChange={e=>change('tone',e.target.value)}/>
-                  </label>
-                  <label className="field">CTA
-                    <Textarea rows={2} value={form.cta||''} onChange={e=>change('cta',e.target.value)}/>
-                  </label>
-                </div>
-                <label className="field mt-3">Мягкое закрытие в ЛС (не банить / не мутить)
-                  <Textarea
-                    rows={3}
-                    value={form.dmSoftClose??DEFAULT_DM_SOFT_CLOSE}
-                    onChange={e=>change('dmSoftClose',e.target.value)}
-                    placeholder={DEFAULT_DM_SOFT_CLOSE}
-                  />
-                </label>
-                <p className="form-section-hint mt-1">Добавляется в черновики ответов лидам: если неактуально — извиниться и попросить не банить/не мутить.</p>
-              </div>
-
-              <div className="form-section">
-                <p className="form-section-title">Плюс-слова</p>
-                <p className="form-section-hint">Enter / запятая — добавить. Нажмите подсказку, чтобы вставить в юнит.</p>
-                <KeywordChips value={form.keywords||''} onChange={v=>change('keywords',v)} variant="plus" placeholder="ищу, нужен, сервис…"/>
-                <div className="kw-list mt-2">
-                  {unusedSuggestions(form.keywords||'',SUGGESTED_PLUS).slice(0,14).map(t=>(
-                    <button type="button" className="kw plus" key={t} onClick={()=>change('keywords',mergeKeywords(form.keywords||'',t))}>+ {t}</button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="form-section">
-                <p className="form-section-title">Стоп / минус-слова</p>
-                <p className="form-section-hint">Всегда исключаются при поиске в группах.</p>
-                <KeywordChips value={form.minusKeywords||''} onChange={v=>change('minusKeywords',v)} variant="minus" placeholder="вакансия, накрутка…"/>
-                <div className="kw-list mt-2">
-                  {unusedSuggestions(form.minusKeywords||'',SUGGESTED_MINUS).slice(0,14).map(t=>(
-                    <button type="button" className="kw minus" key={t} onClick={()=>change('minusKeywords',mergeKeywords(form.minusKeywords||'',t))}>+ {t}</button>
-                  ))}
-                </div>
-                <label className="field mt-3">Доп. темы, которых избегать
-                  <Textarea rows={2} value={form.avoidTopics||''} onChange={e=>change('avoidTopics',e.target.value)}/>
-                </label>
-              </div>
-
-              <div className="form-section">
-                <p className="form-section-title">Обучение</p>
-                <p className="form-section-hint">Примеры целевых формулировок из горячих лидов (обновляется кнопкой «Обучить»).</p>
-                <label className="field">Примеры
-                  <Textarea rows={3} value={form.learnExamples||''} onChange={e=>change('learnExamples',e.target.value)}/>
-                </label>
-              </div>
-
-              <label className="flex items-center gap-2 text-sm font-medium">
-                <Checkbox checked={!!form._rescanAfterSave} onCheckedChange={v=>setForm((f:any)=>({...f,_rescanAfterSave:v===true}))}/>
-                После сохранения запустить обход групп (новые лиды по правилам)
-              </label>
-              <p className="small-note">DeepSeek уже в коде. Контекст идёт в черновики, AI-отбор и стоп-фильтр скана.</p>
             </>}
             {modal?.item?.hasSecret&&['proxy'].includes(modal.kind)&&(
               <label className="flex items-center gap-2 text-sm font-medium">
@@ -4206,25 +3853,12 @@ function WorkspaceHome(){
               <Button variant="outline" disabled={busy} onClick={async()=>{if(!detail)return;await draft(detail);const updated=records.find(r=>r.id===detail.id)||detail;setChatText(prev=>prev||updated.data.draft||'')}}>
                 <Sparkles size={15}/>Черновик AI
               </Button>
-              <Button
-                variant={detail?.data.excludeFromTraining?'outline':'ghost'}
-                disabled={busy||!detail}
-                onClick={()=>detail&&setLeadTrainingExclude(detail,!detail.data.excludeFromTraining)}
-              >
-                <Ban size={15}/>
-                {detail?.data.excludeFromTraining?'Вернуть в учёт':'Не учитывать'}
+              <Button variant="ghost" className="focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--spike-primary)]" disabled={busy||!detail} onClick={()=>{if(detail)void leadFeedback(detail,'good')}}>
+                <ThumbsUp size={15}/>Хороший лид
               </Button>
-              {!detail?.data.excludeFromTraining&&(
-                <Button
-                  variant="outline"
-                  disabled={busy||!detail}
-                  title="Пометить как не лид и добавить стоп-слова из сообщения"
-                  onClick={()=>detail&&rejectLeadToStopwords(detail)}
-                >
-                  <FilterX size={15}/>
-                  В стоп-слова
-                </Button>
-              )}
+              <Button variant="ghost" className="focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--spike-primary)]" disabled={busy||!detail} onClick={()=>{if(detail)void leadFeedback(detail,'bad')}}>
+                <ThumbsDown size={15}/>Не лид
+              </Button>
               <Button variant="outline" disabled={!chatText} onClick={async()=>{try{await navigator.clipboard.writeText(chatText);toast.success('Скопировано')}catch{toast.error('Не удалось скопировать')}}}>Копировать</Button>
               <Button variant="ghost" onClick={()=>{if(detail){open('lead',detail);setDetail(null)}}}>Правки</Button>
               <Button variant="ghost" onClick={()=>{setDeleting(detail);setDetail(null)}}><Trash2 size={15}/></Button>
@@ -4447,7 +4081,7 @@ function WorkspaceHome(){
             </div>
             <p className="small-note">
               Цель: {accountSelected.length?`${accountSelected.length} выбранных`:`все ${list('account').length} аккаунтов`}.
-              Нужен запущенный Telegram-воркер (идёт вместе с npm run dev).
+              Нужно подключение к Telegram.
             </p>
             <div className="flex flex-wrap gap-2">
               <Button disabled={busy||!list('account').length} onClick={()=>applyFarmProfiles(accountSelected.length?accountSelected:list('account').map(r=>r.id),true)}>
@@ -4504,6 +4138,20 @@ function WorkspaceHome(){
         </DialogContent>
       </Dialog>
 
+      <AlertDialog open={!!pendingLeave} onOpenChange={o=>{if(!o)setPendingLeave(null)}}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Карточка проекта не сохранена</AlertDialogTitle>
+            <AlertDialogDescription>
+              Изменения в описании проекта для AI пропадут, если уйти со страницы без сохранения.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogAction variant="outline" onClick={()=>{const apply=pendingLeave;setPendingLeave(null);setAiDirty(false);apply?.()}}>Перейти без сохранения</AlertDialogAction>
+            <AlertDialogCancel variant="default">Остаться</AlertDialogCancel>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog open={!!deleting} onOpenChange={o=>{if(!o&&!busy)setDeleting(null)}}>
         <AlertDialogContent>
           <AlertDialogHeader>
