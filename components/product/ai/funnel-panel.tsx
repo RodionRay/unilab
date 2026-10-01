@@ -1,6 +1,6 @@
 'use client';
 import { useCallback, useEffect, useId, useState } from 'react';
-import { AlertTriangle, ChevronDown, FolderPlus, RefreshCw } from 'lucide-react';
+import { AlertTriangle, ChevronDown, FolderPlus, RefreshCw, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { errorMessage, workspaceAction } from './api';
@@ -11,6 +11,9 @@ import {
   formatCount,
   funnelHeadline,
   funnelRows,
+  headlineKind,
+  leadsLabel,
+  uncheckedCause,
   periodLabel,
   pluralRu,
   sampleCaption,
@@ -32,30 +35,41 @@ type Props = {
   /** Viewer may read lead/DM texts; without it the server sends `samples: {}`. */
   leadTextVisible: boolean;
   reloadKey: number;
+  /** Project history depth: names the «Старше N дней» step. */
+  scanDepthDays: number;
+  /** Owner manages the server AI key; others get no server detail in the banner. */
+  isOwner: boolean;
   onGoGroups: () => void;
   onRescan: () => Promise<void>;
+  onOpenSettings?: () => void;
+  onOpenLeads?: () => void;
 };
 
-export function FunnelPanel({ projectId, groupCount, aiKeyReady, leadTextVisible, reloadKey, onGoGroups, onRescan }: Props) {
+/** One answer of the `funnel` action, tagged with the request it belongs to. */
+type Loaded = { key: string; projectId: string; data: FunnelResponse | null; error: string };
+
+export function FunnelPanel(props: Props) {
+  const { projectId, groupCount, aiKeyReady, leadTextVisible, reloadKey, onGoGroups, onRescan } = props;
   const [days, setDays] = useState<Days>(7);
-  const [data, setData] = useState<FunnelResponse | null>(null);
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [rescanning, setRescanning] = useState(false);
   const titleId = useId();
+  const requestKey = `${projectId}|${days}|${attempt}|${reloadKey}`;
+  // loading = the newest answer belongs to an older request; the previous funnel of the same project stays visible
+  const loading = loaded?.key !== requestKey;
+  const data = loaded?.projectId === projectId ? loaded.data : null;
+  const error = loading ? '' : (loaded?.error ?? '');
 
   useEffect(() => {
     if (!projectId || groupCount === 0) return;
     let cancelled = false;
-    setLoading(true);
-    setError('');
+    const done = (next: Omit<Loaded, 'key' | 'projectId'>) => { if (!cancelled) setLoaded({ key: requestKey, projectId, ...next }); };
     workspaceAction<FunnelResponse>({ action: 'funnel', projectId, days })
-      .then((r) => { if (!cancelled) setData(r); })
-      .catch((e) => { if (!cancelled) { setData(null); setError(errorMessage(e)); } })
-      .finally(() => { if (!cancelled) setLoading(false); });
+      .then((r) => done({ data: r, error: '' }))
+      .catch((e) => done({ data: null, error: errorMessage(e) }));
     return () => { cancelled = true; };
-  }, [projectId, days, groupCount, attempt, reloadKey]);
+  }, [projectId, days, groupCount, requestKey]);
 
   const rescan = useCallback(async () => {
     setRescanning(true);
@@ -106,7 +120,19 @@ export function FunnelPanel({ projectId, groupCount, aiKeyReady, leadTextVisible
           <Button variant="outline" size="sm" onClick={() => setAttempt((a) => a + 1)}>Повторить</Button>
         </div>
       ) : data && data.funnel.counts.fetched > 0 ? (
-        <FunnelLedger view={data.funnel} dm={data.dm} days={days} aiKeyReady={aiKeyReady} leadTextVisible={leadTextVisible} rescanning={rescanning} onRescan={rescan} />
+        <FunnelLedger
+          view={data.funnel}
+          dm={data.dm}
+          days={days}
+          scanDepthDays={props.scanDepthDays}
+          aiKeyReady={aiKeyReady}
+          isOwner={props.isOwner}
+          leadTextVisible={leadTextVisible}
+          rescanning={rescanning}
+          onRescan={rescan}
+          onOpenSettings={props.onOpenSettings}
+          onOpenLeads={props.onOpenLeads}
+        />
       ) : (
         <div className="aiw-empty">
           <p className="aiw-empty-title">{data?.funnel.runs.length ? `Сообщений ${periodLabel(days)} нет` : 'Ещё не было обхода'}</p>
@@ -139,30 +165,38 @@ function FunnelSkeleton() {
   );
 }
 
-type LedgerProps = { view: FunnelView; dm: FunnelView; days: Days; aiKeyReady: boolean; leadTextVisible: boolean; rescanning: boolean; onRescan: () => Promise<void> };
+type LedgerProps = {
+  view: FunnelView;
+  dm: FunnelView;
+  days: Days;
+  scanDepthDays: number;
+  aiKeyReady: boolean;
+  isOwner: boolean;
+  leadTextVisible: boolean;
+  rescanning: boolean;
+  onRescan: () => Promise<void>;
+  onOpenSettings?: () => void;
+  onOpenLeads?: () => void;
+};
 
-function FunnelLedger({ view, dm, days, aiKeyReady, leadTextVisible, rescanning, onRescan }: LedgerProps) {
-  const rows = funnelRows(view.counts);
+const isKeyMissing = (view: FunnelPart, aiKeyReady: boolean): boolean => !aiKeyReady || skipReasons(view).has('no_ai_key');
+
+function FunnelLedger({ view, dm, days, scanDepthDays, aiKeyReady, isOwner, leadTextVisible, rescanning, onRescan, onOpenSettings, onOpenLeads }: LedgerProps) {
+  const rows = funnelRows(view.counts, scanDepthDays);
   const total = rows[0]?.count ?? 0;
-  const leads = view.counts.leads;
   return (
     <>
-      <p className="aiw-headline" aria-label={funnelHeadline(view.counts, days)}>
-        Из <strong>{formatCount(total)}</strong> {pluralRu(total, 'сообщения', 'сообщений', 'сообщений')} {periodLabel(days)}{' '}
-        {leads > 0
-          ? <>AI нашёл <strong className="is-lead">{formatCount(leads)} {pluralRu(leads, 'лид', 'лида', 'лидов')}</strong></>
-          : <>лидов <strong>не нашлось</strong></>}
-      </p>
+      <FunnelHeadline view={view} days={days} keyMissing={isKeyMissing(view, aiKeyReady)} onOpenLeads={onOpenLeads} />
       <p className="aiw-meta">
         {view.runs.length} {pluralRu(view.runs.length, 'обход', 'обхода', 'обходов')} {periodLabel(days)} · полоса показывает долю от собранного
       </p>
-      <FunnelBanners view={view} aiKeyReady={aiKeyReady} rescanning={rescanning} onRescan={onRescan} />
+      <FunnelBanners view={view} aiKeyReady={aiKeyReady} isOwner={isOwner} rescanning={rescanning} onRescan={onRescan} onOpenSettings={onOpenSettings} />
       <ol className="aiw-ledger">
         {rows.map((row) => (
           <FunnelRowItem key={row.key} row={row} total={total} samples={view.samples} />
         ))}
       </ol>
-      {dm.counts.fetched > 0 && <DmRow dm={dm} />}
+      {dm.counts.fetched > 0 && <DmRow dm={dm} scanDepthDays={scanDepthDays} />}
       {showRedactedSamplesNote(view.counts, leadTextVisible) && (
         <p className="aiw-meta aiw-redacted-note">Примеры сообщений видны сотрудникам с доступом к лидам</p>
       )}
@@ -170,13 +204,48 @@ function FunnelLedger({ view, dm, days, aiKeyReady, leadTextVisible, rescanning,
   );
 }
 
-type BannerProps = { view: FunnelView; aiKeyReady: boolean; rescanning: boolean; onRescan: () => Promise<void> };
+type HeadlineProps = { view: FunnelView; days: Days; keyMissing: boolean; onOpenLeads?: () => void };
 
-function FunnelBanners({ view, aiKeyReady, rescanning, onRescan }: BannerProps) {
+/** Numbers carry the weight (700, same colour); amber stays on the «Лиды» row, the active tab and «Отправить». */
+function FunnelHeadline({ view, days, keyMissing, onOpenLeads }: HeadlineProps) {
+  const { counts } = view;
+  const kind = headlineKind(counts);
+  const msgs = pluralRu(counts.fetched, 'сообщения', 'сообщений', 'сообщений');
+  const label = funnelHeadline(counts, days, keyMissing);
+  if (kind === 'unchecked') {
+    const k = counts.judgeSkipped;
+    return (
+      <p className="aiw-headline">
+        Из <strong>{formatCount(counts.fetched)}</strong> {msgs} <strong>{formatCount(k)}</strong> ещё не {pluralRu(k, 'проверено', 'проверены', 'проверено')} — {uncheckedCause(keyMissing)}
+      </p>
+    );
+  }
+  if (kind !== 'leads') return <p className="aiw-headline">{label}</p>;
+  const found = <strong>{leadsLabel(counts.leads)}</strong>;
+  return (
+    <p className="aiw-headline">
+      Из <strong>{formatCount(counts.fetched)}</strong> {msgs} {periodLabel(days)} AI нашёл{' '}
+      {onOpenLeads ? (
+        <button type="button" className="aiw-headline-link" onClick={onOpenLeads} aria-label={`${leadsLabel(counts.leads)}: открыть раздел «Лиды»`}>{found}</button>
+      ) : found}
+    </p>
+  );
+}
+
+type BannerProps = {
+  view: FunnelView;
+  aiKeyReady: boolean;
+  isOwner: boolean;
+  rescanning: boolean;
+  onRescan: () => Promise<void>;
+  onOpenSettings?: () => void;
+};
+
+function FunnelBanners({ view, aiKeyReady, isOwner, rescanning, onRescan, onOpenSettings }: BannerProps) {
   const reasons = skipReasons(view);
   const skipped = view.counts.judgeSkipped;
   const failed = view.counts.judgeError;
-  const keyMissing = !aiKeyReady || reasons.has('no_ai_key');
+  const keyMissing = isKeyMissing(view, aiKeyReady);
   const capHit = reasons.has('daily_cap');
   const msgs = (k: number) => `${formatCount(k)} ${pluralRu(k, 'сообщение', 'сообщения', 'сообщений')}`;
   return (
@@ -185,9 +254,13 @@ function FunnelBanners({ view, aiKeyReady, rescanning, onRescan }: BannerProps) 
         <div className="aiw-alert is-warning" role="status">
           <AlertTriangle size={18} aria-hidden />
           <div className="min-w-0">
-            <p className="aiw-alert-title">AI не подключён{skipped ? `: ${msgs(skipped)} без оценки` : ''}</p>
-            <p className="aiw-help">Пока ключа нет, лиды не создаются. Добавьте AI_API_KEY в файл .env на сервере и перезапустите его — пропущенные сообщения оценятся при следующем обходе.</p>
+            <p className="aiw-alert-title">AI не подключён — сообщения ждут проверки</p>
+            <p className="aiw-help">Подключите ключ AI в настройках или попросите администратора. Пропущенные сообщения проверятся при следующем обходе.</p>
+            {isOwner && <p className="aiw-meta aiw-owner-note">Для владельца: ключ можно задать и на сервере, переменной окружения AI_API_KEY.</p>}
           </div>
+          {onOpenSettings && (
+            <Button variant="outline" size="sm" onClick={onOpenSettings}><Settings size={14} />Открыть настройки</Button>
+          )}
         </div>
       )}
       {!keyMissing && capHit && (
@@ -261,10 +334,10 @@ function FunnelRowItem({ row, total, samples }: RowProps) {
   );
 }
 
-function DmRow({ dm }: { dm: FunnelPart }) {
+function DmRow({ dm, scanDepthDays }: { dm: FunnelPart; scanDepthDays: number }) {
   const [open, setOpen] = useState(false);
   const panelId = useId();
-  const rows = funnelRows(dm.counts).filter((r) => r.tone !== 'total' && r.count > 0);
+  const rows = funnelRows(dm.counts, scanDepthDays).filter((r) => r.tone !== 'total' && r.count > 0);
   const leadSamples = dm.samples.leads ?? [];
   const fetched = dm.counts.fetched;
   return (
@@ -272,7 +345,8 @@ function DmRow({ dm }: { dm: FunnelPart }) {
       <button type="button" className="aiw-dm-main" aria-expanded={open} aria-controls={panelId} onClick={() => setOpen((o) => !o)}>
         <span className="aiw-row-name">Личные сообщения</span>
         <span className="aiw-dm-sum">
-          {formatCount(fetched)} {pluralRu(fetched, 'входящее', 'входящих', 'входящих')} → <strong>{formatCount(dm.counts.leads)} {pluralRu(dm.counts.leads, 'лид', 'лида', 'лидов')}</strong>
+          {formatCount(fetched)} {pluralRu(fetched, 'входящее', 'входящих', 'входящих')}{' '}
+          <span className="aiw-dm-result">→ <strong>{leadsLabel(dm.counts.leads)}</strong></span>
         </span>
         <ChevronDown size={16} className="aiw-row-chevron" aria-hidden />
       </button>

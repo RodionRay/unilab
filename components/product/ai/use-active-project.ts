@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { resolveActiveProjectId, type ProjectRecord } from './model';
 
 export const PROJECT_PARAM = 'project';
@@ -32,22 +32,34 @@ function persist(id: string) {
   }
 }
 
+// URL + sessionStorage are the store; `select` and history navigation notify the subscribed hooks.
+const listeners = new Set<() => void>();
+const notify = () => listeners.forEach((l) => l());
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  window.addEventListener('popstate', listener);
+  return () => {
+    listeners.delete(listener);
+    window.removeEventListener('popstate', listener);
+  };
+}
+
+const serverSnapshot = (): string => '';
+
 /**
  * Active project shared by the AI page and the Leads filter: URL `?project=` first, then sessionStorage,
  * then the default (oldest) project. A deleted project falls back to the default.
  */
 export function useActiveProject(projects: readonly ProjectRecord[], ready: boolean) {
-  const [requested, setRequested] = useState<string>('');
-  useEffect(() => {
-    setRequested(readRequested());
-  }, []);
+  const requested = useSyncExternalStore(subscribe, readRequested, serverSnapshot);
   const activeId = resolveActiveProjectId(requested, projects);
   useEffect(() => {
     if (ready && projects.length) persist(activeId);
   }, [activeId, ready, projects.length]);
   const select = useCallback((id: string) => {
-    setRequested(id);
     persist(id);
+    notify();
   }, []);
   return [activeId, select] as const;
 }

@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -16,7 +16,7 @@ import {
 import { ApprovalQueue, type QueueItem } from './approval-queue';
 import { DeleteProjectDialog } from './delete-project-dialog';
 import { FunnelPanel } from './funnel-panel';
-import { approvalQueue, isDraftKind, projectIdOf, type ProjectRecord, type WorkspaceRecord } from './model';
+import { approvalQueue, deleteBlockedReason, isDraftKind, projectIdOf, type ProjectRecord, type WorkspaceRecord } from './model';
 import { ProjectCardEditor } from './project-card-editor';
 import { NewProjectDialog, ProjectSwitcher } from './project-switcher';
 
@@ -37,6 +37,14 @@ type Props = {
   onOpenThread: (leadId: string) => void;
   onGoGroups: () => void;
   onRescan: () => Promise<void>;
+  /** `model.ts::isWorkspaceOwner` of the viewer: only the owner sees the server-key detail. Default `false`. */
+  isOwner?: boolean;
+  /** «Открыть настройки» in the «AI не подключён» banner; without it the banner has no button. */
+  onOpenSettings?: () => void;
+  /** Makes «N лидов» in the funnel headline a link to the Leads view. */
+  onOpenLeads?: () => void;
+  /** Called whenever the project card gains or loses unsaved edits (and with `false` on unmount). */
+  onDirtyChange?: (dirty: boolean) => void;
 };
 
 const text = (v: unknown): string => (typeof v === 'string' ? v : '');
@@ -45,7 +53,17 @@ export function AiWorkspace(props: Props) {
   const { records, projects, loading, error, activeProjectId, onSelectProject, onRefresh } = props;
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState<ProjectRecord | null>(null);
-  const [dirty, setDirty] = useState(false);
+  const [dirty, setDirtyState] = useState(false);
+  const dirtyListener = useRef(props.onDirtyChange);
+  useEffect(() => { dirtyListener.current = props.onDirtyChange; }, [props.onDirtyChange]);
+  const lastDirty = useRef(false);
+  const setDirty = useCallback((next: boolean) => {
+    setDirtyState(next);
+    if (lastDirty.current === next) return;
+    lastDirty.current = next;
+    dirtyListener.current?.(next);
+  }, []);
+  useEffect(() => () => { if (lastDirty.current) dirtyListener.current?.(false); }, []);
   const [pendingSwitch, setPendingSwitch] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -96,13 +114,16 @@ export function AiWorkspace(props: Props) {
 
   if (error && !records.length) {
     return (
-      <div className="panel aiw-alert is-error aiw-page-error" role="alert">
-        <AlertTriangle size={20} aria-hidden />
-        <div className="min-w-0">
-          <p className="aiw-alert-title">Не получилось загрузить проекты</p>
-          <p className="aiw-help">{error}</p>
+      <div className="aiw">
+        <div className="panel aiw-alert is-error aiw-page-error" role="alert">
+          <AlertTriangle size={20} aria-hidden />
+          <div className="min-w-0">
+            <p className="aiw-alert-title">Не получилось загрузить проекты</p>
+            <p className="aiw-help">{error}</p>
+          </div>
+          <Button variant="outline" onClick={() => void onRefresh()}>Повторить</Button>
         </div>
-        <Button variant="outline" onClick={() => void onRefresh()}>Повторить</Button>
+        <WorkspaceFrame />
       </div>
     );
   }
@@ -126,7 +147,7 @@ export function AiWorkspace(props: Props) {
           </div>
           <figure className="aiw-first-preview" aria-label="Так будет выглядеть воронка проекта">
             <figcaption className="aiw-meta">Так выглядит воронка проекта (пример)</figcaption>
-            <p className="aiw-headline is-small">Из <strong>540</strong> сообщений за 7 дней AI нашёл <strong className="is-lead">9 лидов</strong></p>
+            <p className="aiw-headline is-small">Из <strong>540</strong> сообщений за 7 дней AI нашёл <strong>9 лидов</strong></p>
             {[['Собрано', 540, 100], ['Короткие', 196, 36], ['Стоп-слова', 142, 26], ['Не лид', 61, 11], ['Лиды', 9, 2]].map(([label, count, pct]) => (
               <div key={label} className="aiw-row-main is-static" data-tone={label === 'Лиды' ? 'lead' : label === 'Собрано' ? 'total' : 'neutral'}>
                 <span className="aiw-row-label"><span className="aiw-row-name">{label}</span></span>
@@ -157,6 +178,10 @@ export function AiWorkspace(props: Props) {
           aiKeyReady={props.aiKeyReady}
           leadTextVisible={props.leadTextVisible}
           reloadKey={reloadKey}
+          scanDepthDays={project.data.scanDepthDays}
+          isOwner={props.isOwner ?? false}
+          onOpenSettings={props.onOpenSettings}
+          onOpenLeads={props.onOpenLeads}
           onGoGroups={props.onGoGroups}
           onRescan={async () => { await props.onRescan(); await onRefresh(); }}
         />
@@ -176,6 +201,7 @@ export function AiWorkspace(props: Props) {
         onDirtyChange={setDirty}
         onSaved={refreshAll}
         onDelete={() => setDeleting(project)}
+        deleteBlockedReason={deleteBlockedReason(project.id, projects)}
       />
       {newProject}
       <DeleteProjectDialog
@@ -206,6 +232,23 @@ export function AiWorkspace(props: Props) {
 function WorkspaceSkeleton() {
   return (
     <div className="aiw" aria-busy="true" aria-label="Загружаем AI-ассистента">
+      <SkeletonBody />
+    </div>
+  );
+}
+
+/** The page frame kept under a load error: same layout, greyed and still, so the page does not collapse. */
+function WorkspaceFrame() {
+  return (
+    <div className="aiw-frame" aria-hidden>
+      <SkeletonBody />
+    </div>
+  );
+}
+
+function SkeletonBody() {
+  return (
+    <>
       <div className="aiw-switcher"><Skeleton className="h-9 w-48 rounded-full" /><Skeleton className="h-9 w-40 rounded-full" /></div>
       <div className="aiw-top">
         <div className="panel aiw-skeleton">
@@ -220,6 +263,6 @@ function WorkspaceSkeleton() {
           <Skeleton className="h-28 w-full" />
         </div>
       </div>
-    </div>
+    </>
   );
 }

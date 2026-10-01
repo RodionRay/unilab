@@ -130,7 +130,7 @@ export function ExampleList({ label, help, tone, value, onChange }: ExampleListP
           value={input}
           disabled={full}
           maxLength={MAX_EXAMPLE_LENGTH}
-          placeholder={full ? 'Список заполнен' : 'Вставьте сообщение из чата'}
+          placeholder={full ? 'Список заполнен' : 'Текст из чата'}
           onChange={(e) => { setInput(e.target.value); setError(''); }}
           onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }}
         />

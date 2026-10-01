@@ -1,12 +1,11 @@
 'use client';
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import { ExternalLink, Loader2, RotateCcw, Send } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { relativeTimeRu } from '@/lib/telegram-accounts';
 import { toast } from '@/lib/workspace-notifications';
 import { errorMessage, workspaceAction, type ActionError } from './api';
-import { sendModeFor, type DraftKind } from './model';
+import { sendModeFor, shortAgoRu, type DraftKind } from './model';
 
 export type QueueItem = {
   id: string;
@@ -23,7 +22,12 @@ export type QueueItem = {
   draftKind: DraftKind;
 };
 
-const SOURCE_LABEL: Record<string, string> = { group: 'в чате', discussion: 'в обсуждении', comment: 'в комментариях', dm: 'в личке' };
+const SOURCE_LABEL: Record<string, string> = { group: 'Чат', discussion: 'Обсуждение', comment: 'Комментарии', dm: 'Личные сообщения' };
+/** Longer source messages start clamped to 3 lines so «Отправить» stays on the first screen. */
+const CLAMP_FROM_CHARS = 180;
+const isLongMessage = (text: string): boolean => text.length > CLAMP_FROM_CHARS || text.split('\n').length > 3;
+/** A sent or dismissed draft hides until the server answers; a new draft for the same lead shows again. */
+const hideKey = (item: Pick<QueueItem, 'id' | 'draft'>): string => `${item.id}\u0000${item.draft}`;
 const KIND_LABEL: Record<DraftKind, string> = {
   group_reply: 'Ответ в чат',
   dm_first: 'Первое сообщение в личку',
@@ -41,22 +45,13 @@ type Props = {
 
 export function ApprovalQueue({ items, telegramConnected, leadTextVisible, onOpenThread, onChanged }: Props) {
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
-  const visible = useMemo(() => items.filter((i) => !hidden.has(i.id)), [items, hidden]);
+  const visible = useMemo(() => items.filter((i) => !hidden.has(hideKey(i))), [items, hidden]);
   const [selectedId, setSelectedId] = useState('');
   const selected = visible.find((i) => i.id === selectedId) ?? visible[0];
   const titleId = useId();
 
-  useEffect(() => {
-    // server state caught up: forget ids that are no longer in the queue
-    setHidden((prev) => {
-      const ids = new Set(items.map((i) => i.id));
-      const next = new Set([...prev].filter((id) => ids.has(id)));
-      return next.size === prev.size ? prev : next;
-    });
-  }, [items]);
-
-  const done = (id: string) => {
-    setHidden((prev) => new Set([...prev, id]));
+  const done = (item: QueueItem) => {
+    setHidden((prev) => new Set([...prev, hideKey(item)]));
     void onChanged();
   };
 
@@ -110,13 +105,16 @@ export function ApprovalQueue({ items, telegramConnected, leadTextVisible, onOpe
   );
 }
 
-type DetailProps = { item: QueueItem; telegramConnected: boolean; onOpenThread: (id: string) => void; onDone: (id: string) => void };
+type DetailProps = { item: QueueItem; telegramConnected: boolean; onOpenThread: (id: string) => void; onDone: (item: QueueItem) => void };
 
 function DraftDetail({ item, telegramConnected, onOpenThread, onDone }: DetailProps) {
   const [text, setText] = useState(item.draft);
   const [busy, setBusy] = useState<'' | 'send' | 'dismiss' | 'regen'>('');
   const [clientMsgId] = useState(() => crypto.randomUUID());
+  const [expanded, setExpanded] = useState(false);
   const fieldId = useId();
+  const sourceId = useId();
+  const long = isLongMessage(item.message);
   const mode = sendModeFor(item.draftKind);
 
   async function send() {
@@ -125,7 +123,7 @@ function DraftDetail({ item, telegramConnected, onOpenThread, onDone }: DetailPr
     try {
       await workspaceAction({ action: 'send_lead_message', id: item.id, mode, text: text.trim(), clientMsgId });
       toast.success(mode === 'chat' ? 'Ответ отправлен в чат' : 'Сообщение отправлено в личку');
-      onDone(item.id);
+      onDone(item);
     } catch (e) {
       const err = e as ActionError;
       toast.error(err.data?.unknown ? `${errorMessage(e)} Проверьте переписку, прежде чем отправлять снова.` : errorMessage(e));
@@ -139,7 +137,7 @@ function DraftDetail({ item, telegramConnected, onOpenThread, onDone }: DetailPr
     try {
       await workspaceAction({ action: 'dismiss_draft', id: item.id });
       toast.success('Черновик отклонён, лид остался в «Лидах»');
-      onDone(item.id);
+      onDone(item);
     } catch (e) {
       toast.error(errorMessage(e));
     } finally {
@@ -166,13 +164,23 @@ function DraftDetail({ item, telegramConnected, onOpenThread, onDone }: DetailPr
       <header className="aiw-draft-head">
         <div className="min-w-0">
           <p className="aiw-draft-name">{item.name || 'Без имени'}{item.username && <span className="aiw-muted"> @{item.username}</span>}</p>
-          <p className="aiw-meta">{item.chatName ? `${item.chatName} · ` : ''}{SOURCE_LABEL[item.sourceKind] ?? 'в Telegram'} · {relativeTimeRu(item.created)}</p>
+          <p className="aiw-meta aiw-draft-meta">
+            <span className="aiw-draft-chat">{item.chatName || SOURCE_LABEL[item.sourceKind] || 'Telegram'}</span>
+            {shortAgoRu(item.created) && <span className="aiw-draft-age"> · {shortAgoRu(item.created)}</span>}
+          </p>
         </div>
         <Button variant="ghost" size="sm" className="aiw-link-btn" onClick={() => onOpenThread(item.id)}>
           Открыть переписку<ExternalLink size={13} />
         </Button>
       </header>
-      <blockquote className="aiw-source">{item.message}</blockquote>
+      <div className="aiw-source-wrap">
+        <blockquote id={sourceId} className="aiw-source" data-clamped={long && !expanded ? true : undefined}>{item.message}</blockquote>
+        {long && (
+          <button type="button" className="aiw-more" aria-expanded={expanded} aria-controls={sourceId} onClick={() => setExpanded((v) => !v)}>
+            {expanded ? 'Свернуть' : 'Показать полностью'}
+          </button>
+        )}
+      </div>
       {item.reason && <p className="aiw-why">Почему лид: {item.reason}</p>}
       <div className="aiw-field">
         <div className="aiw-label-row">
@@ -181,7 +189,7 @@ function DraftDetail({ item, telegramConnected, onOpenThread, onDone }: DetailPr
             {busy === 'regen' ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}Заново
           </Button>
         </div>
-        <Textarea id={fieldId} rows={5} value={text} onChange={(e) => setText(e.target.value)} maxLength={4000} />
+        <Textarea id={fieldId} rows={4} value={text} onChange={(e) => setText(e.target.value)} maxLength={4000} />
       </div>
       <footer className="aiw-draft-foot">
         <div className="aiw-draft-actions">

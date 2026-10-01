@@ -5025,8 +5025,22 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
-.aiw-headline strong.is-lead {
-  color: var(--spike-primary);
+.aiw-headline-link {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-decoration-color: color-mix(in srgb, var(--spike-text) 35%, transparent);
+  text-underline-offset: 0.18em;
+  cursor: pointer;
+}
+.aiw-headline-link:hover {
+  text-decoration-color: var(--spike-text);
 }
 .aiw-headline.is-small {
   font-size: 1.125rem;
@@ -5065,6 +5079,10 @@ button[data-slot="button"][data-variant="ghost"]:hover {
 }
 .aiw-alert.is-error > svg {
   color: var(--spike-error);
+}
+.aiw-owner-note {
+  margin-top: 4px;
+  overflow-wrap: anywhere;
 }
 .aiw-alert-title {
   margin: 0 0 2px;
@@ -5157,10 +5175,11 @@ button.aiw-row-main {
 }
 .aiw-row-share {
   min-width: 4ch;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-variant-numeric: tabular-nums;
   text-align: right;
-  color: var(--spike-muted);
+  /* ≥4.5:1 on the paper and on the tinted warning/error rows */
+  color: rgba(255, 255, 255, 0.74);
 }
 .aiw-row-bar {
   grid-area: bar;
@@ -5303,6 +5322,9 @@ button.aiw-row-main {
   font-variant-numeric: tabular-nums;
   color: var(--spike-muted);
 }
+.aiw-dm-result {
+  white-space: nowrap;
+}
 .aiw-dm-sum strong {
   font-weight: 600;
   color: var(--spike-text);
@@ -5361,7 +5383,7 @@ button.aiw-row-main {
 .aiw-queue-list {
   display: grid;
   gap: 2px;
-  margin: 0 0 16px;
+  margin: 0 0 12px;
   padding: 0;
   list-style: none;
 }
@@ -5418,9 +5440,9 @@ button.aiw-row-main {
 }
 .aiw-draft {
   display: grid;
-  gap: 12px;
+  gap: 10px;
   min-width: 0;
-  padding-top: 16px;
+  padding-top: 12px;
   border-top: 1px solid var(--spike-border);
 }
 .aiw-draft-head > .min-w-0 {
@@ -5431,6 +5453,19 @@ button.aiw-row-main {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+}
+.aiw-draft-meta {
+  display: flex;
+  min-width: 0;
+  white-space: nowrap;
+}
+.aiw-draft-chat {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.aiw-draft-age {
+  flex-shrink: 0;
 }
 .aiw-draft-name {
   margin: 0;
@@ -5456,9 +5491,15 @@ button.aiw-row-main {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
+.aiw-source-wrap {
+  display: grid;
+  justify-items: start;
+  gap: 2px;
+}
 .aiw-source {
+  justify-self: stretch;
   margin: 0;
-  padding: 12px 14px;
+  padding: 10px 14px;
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.04);
   font-size: 0.875rem;
@@ -5466,6 +5507,27 @@ button.aiw-row-main {
   color: var(--spike-text);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+.aiw-source[data-clamped] {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+.aiw .aiw-more {
+  min-height: 24px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--spike-text);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--spike-text) 35%, transparent);
+  text-underline-offset: 3px;
+  cursor: pointer;
 }
 .aiw-why {
   margin: 0;
@@ -5476,7 +5538,7 @@ button.aiw-row-main {
 }
 .aiw-draft-foot {
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 .aiw-draft-actions {
   display: flex;
@@ -5696,10 +5758,12 @@ button.aiw-row-main {
   width: 88px;
   font-variant-numeric: tabular-nums;
 }
+.aiw-card-body {
+  /* containing block of the sticky savebar: it can pin over the fields, never over the card heading */
+  min-width: 0;
+}
 .aiw-savebar {
-  position: sticky;
-  bottom: 0;
-  z-index: 2;
+  position: static;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -5727,6 +5791,22 @@ button.aiw-row-main {
   .aiw-savebar {
     padding-right: calc(var(--aiw-pad) + 60px);
   }
+}
+.aiw-savebar[data-dirty] {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+}
+/* pristine: «Сохранить» is a quiet outline, amber fill only once there is something to save */
+.aiw .aiw-savebar:not([data-dirty]) .aiw-save-btn {
+  border-color: var(--spike-border);
+  background: transparent;
+  color: var(--spike-muted);
+  opacity: 1;
+}
+.aiw-menu-reason {
+  max-width: 260px;
+  padding: 2px 8px 6px 32px;
 }
 .aiw-save-state {
   display: inline-flex;
@@ -5772,6 +5852,16 @@ button.aiw-row-main {
   margin-bottom: 8px;
 }
 
+/* Load error: the page frame stays, greyed and still */
+.aiw-frame {
+  display: grid;
+  gap: 20px;
+  opacity: 0.45;
+  pointer-events: none;
+}
+.aiw-frame [data-slot="skeleton"] {
+  animation: none;
+}
 /* Loading */
 .aiw-skeleton {
   display: grid;
@@ -5878,6 +5968,20 @@ button.aiw-row-main {
   }
   .aiw-card-head {
     flex-wrap: nowrap;
+  }
+}
+
+/* narrow phones: the site action and the example «Добавить» go full-width under their input */
+@media (max-width: 479px) {
+  .aiw-site-row,
+  .aiw-example-add {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .aiw .aiw-site-row > button,
+  .aiw .aiw-example-add > button {
+    width: 100%;
+    min-height: 44px;
   }
 }
 
