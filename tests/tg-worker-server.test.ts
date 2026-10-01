@@ -226,6 +226,36 @@ describe('tg-worker HTTP guard', () => {
     expect(results.map((r) => r.status)).toEqual(Array(8).fill(200));
     expect(peak).toBe(4);
   });
+
+  it('caps VK batches at 2 Python slots so Telegram jobs still run during a VK burst', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    let vkRunning = 0;
+    let vkPeak = 0;
+    const {base} = await listen({
+      maxConcurrency: 4,
+      runPython: async (p) => {
+        if ((p as {action: string}).action !== 'vk_call') return {ok: true};
+        vkRunning += 1;
+        vkPeak = Math.max(vkPeak, vkRunning);
+        await gate;
+        vkRunning -= 1;
+        return {ok: true};
+      },
+    });
+    const vk = Array.from({length: 6}, () => post(base, '/vk-call', {token: TOKEN, contentType: 'application/json'}));
+    await new Promise((r) => setTimeout(r, 100));
+
+    const tg = await Promise.race([
+      post(base, '/check-proxy', {token: TOKEN, contentType: 'application/json'}),
+      new Promise<{status: number}>((r) => setTimeout(() => r({status: -1}), 1_000)),
+    ]);
+    release();
+
+    expect(tg.status).toBe(200);
+    expect((await Promise.all(vk)).map((r) => r.status)).toEqual(Array(6).fill(200));
+    expect(vkPeak).toBe(2);
+  });
 });
 
 describe('tg-worker queue admission and aborts', () => {
