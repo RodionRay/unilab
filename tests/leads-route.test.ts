@@ -527,6 +527,20 @@ describe('lead core v2 · workspace route',()=>{
       expect(record(LEAD_ID)).toMatchObject({draft:'Черновик 1',draftKind:'dm_first'});
     });
 
+    it('a lead whose project is gone reads as the default project in draft and feedback',async()=>{
+      const gone='a0000000-0000-4000-8000-00000000dead';
+      patchRecord(LEAD_ID,{projectId:gone});
+
+      const draft=await post({action:'draft',id:LEAD_ID,kind:'dm_first'});
+      const feedback=await post({action:'lead_feedback',id:LEAD_ID,verdict:'good'});
+
+      expect(draft.status).toBe(200);
+      expect(calls.draft).toHaveLength(1);
+      expect(feedback.status).toBe(200);
+      expect(feedback.body.projectId).toBe(DEFAULT_PROJECT);
+      expect(record(DEFAULT_PROJECT).goodExamples).toEqual(['Ищу сервис для остатков']);
+    });
+
     it('draft with an unknown kind → 400',async()=>{
       const r=await post({action:'draft',id:LEAD_ID,kind:'mass_mail'});
       expect(r.status).toBe(400);

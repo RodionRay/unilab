@@ -9,6 +9,7 @@ import type { D1LikeDatabase } from "@/lib/db";
 import { leadReplies, type LeadData } from "@/lib/lead-conversation";
 import { leadMessageFingerprint } from "@/lib/lead-filter";
 import {
+  defaultProjectId,
   generateDraft,
   HOT_SCORE,
   runDmJudge,
@@ -272,9 +273,11 @@ export async function autoDraftLeads(db: D1LikeDatabase, input: AutoDraftInput):
   const llm = input.llm ?? draftLlm(input.apiKey);
   const cap = dailyCapOf(input.settings, "draft-day");
   const byId = new Map(input.projects.map((p) => [p.id, p.project]));
+  const fallback = byId.get(defaultProjectId(input.owner));
   let drafted = 0;
   for (const { id, lead } of input.leads) {
-    const project = byId.get(lead.projectId);
+    // A lead of a missing project reads as the default project (REQ-2).
+    const project = byId.get(lead.projectId) ?? fallback;
     if (!project) continue;
     if (!(await reserveDailyCap(db, input.owner, "draft-day", cap, 1, input.nowMs))) break;
     try {

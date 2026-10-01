@@ -12,7 +12,6 @@ import {
   applyProjectPatch,
   defaultProjectId,
   MAX_PROJECTS_PER_OWNER,
-  projectIdOf,
   projectPatchSchema,
   projectSchema,
   readFunnel,
@@ -24,6 +23,7 @@ import { projectCard } from "@/lib/leads/prompt";
 import {
   dmFunnelId,
   findOwnedProject,
+  findProjectOf,
   listProjects,
   loadSettingsRow,
   mutateLead,
@@ -149,8 +149,8 @@ export async function leadFeedback(ctx: Ctx, body: Record<string, unknown>): Pro
     .first<{ data: string }>();
   if (!row) return fail(404, "Лид не найден");
   const lead = JSON.parse(String(row.data)) as Record<string, unknown>;
-  const projectId = projectIdOf(lead, ctx.owner);
-  if (!(await ownedProject(ctx, projectId))) return fail(404, "Проект лида не найден");
+  const settings = await loadSettingsRow(ctx.db, ctx.owner);
+  const { id: projectId } = await findProjectOf(ctx.db, ctx.owner, lead, settings.data, ctx.nowMs);
   const project = await mutateProject(ctx.db, ctx.owner, projectId, (p) => addFeedbackExample(p, verdict, String(lead.message ?? "")));
   const marked = await mutateLead(ctx.db, ctx.owner, id, (cur) => ({
     next: { ...cur, feedback: verdict, ...(verdict === "bad" && !cur.viewed ? { viewed: true, viewedAt: new Date(ctx.nowMs).toISOString() } : {}) },

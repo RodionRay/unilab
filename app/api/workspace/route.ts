@@ -5,8 +5,8 @@ import {database,seal,unseal} from '@/lib/server-store';
 import {envAiApiKey,resolveAiConfig} from '@/lib/ai-client';
 import {parseLeadTemperature,ratingFromTemperatures} from '@/lib/lead-filter';
 import {addLeadTombstone,evaluateScanGate,keepServerOwnedFields} from '@/lib/processes/scan-flow';
-import {DRAFT_KINDS,defaultProjectId as defaultProjectIdOf,generateDraft,normalizeDmMessage,projectIdOf,type DmMessage,type ProjectRow} from '@/lib/leads';
-import {dailyCapOf,findOwnedProject,loadSettingsRow,mutateLead,reserveDailyCap,withoutDraft} from '@/lib/processes/lead-store';
+import {DRAFT_KINDS,defaultProjectId as defaultProjectIdOf,generateDraft,normalizeDmMessage,type DmMessage,type ProjectRow} from '@/lib/leads';
+import {dailyCapOf,findOwnedProject,findProjectOf,loadSettingsRow,mutateLead,reserveDailyCap,withoutDraft} from '@/lib/processes/lead-store';
 import {autoDraftCandidates,autoDraftLeads,autoDraftKind,draftLlm,draftLeadOf,judgeInboxDms,scanGroupLeads,type InsertedLead} from '@/lib/processes/lead-scan';
 import {createProject,deleteProject,generateAccountAbout,leadFeedback,projectFunnel,rebuildProduct,requestedProject,setGroupProject,updateProject,type ActionResult} from '@/lib/processes/lead-actions';
 import {after} from 'next/server';
@@ -1369,8 +1369,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   if(!apiKey)return reply({error:'DeepSeek не настроен: добавьте AI_API_KEY в .env и перезапустите сервер'},409);
   const lead=JSON.parse(String(row.data));
   const now=new Date();
-  const project=await findOwnedProject(db,owner,projectIdOf(lead,owner),settings.data,now.getTime());
-  if(!project)return reply({error:'Проект лида не найден — перенесите лид в проект'},404);
+  const project=await findProjectOf(db,owner,lead,settings.data,now.getTime());
   const guard=await db.prepare('INSERT INTO records(id,owner,kind,data,created) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET created=excluded.created WHERE records.created < ?').bind('ai-guard:'+owner,owner,'ai_guard','{}',now.toISOString(),new Date(now.getTime()-60000).toISOString()).run();
   if(!guard.meta.changes)return reply({error:'Можно готовить один ответ в минуту. Подождите и повторите запрос.'},429);
   if(!(await reserveDailyCap(db,owner,'draft-day',dailyCapOf(settings.data,'draft-day'),1,now.getTime()))){
@@ -1753,9 +1752,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    }
   }
   // Проект группы (REQ-2/3): без projectId или с удалённым проектом группа читается как основной проект
-  const project=await findOwnedProject(db,owner,projectIdOf(gdata,owner),settings,Date.now())
-   ??await findOwnedProject(db,owner,defaultProjectIdOf(owner),settings,Date.now());
-  if(!project)return reply({error:'Проект группы не найден'},404);
+  const project=await findProjectOf(db,owner,gdata,settings,Date.now());
   if(!project.project.active){
    return reply({ok:true,skipped:true,projectInactive:true,scanned:0,matched:0,added:0,message:'Проект группы выключен — скан пропущен'});
   }

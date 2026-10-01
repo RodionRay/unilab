@@ -15,7 +15,9 @@ are no keyword / intent regexes on the lead path; project keywords are only a hi
 | `ai_guard` | `judge-day:<owner>:<day>`, `draft-day:<owner>:<day>`, `ai-guard:<owner>` (manual draft 1/min) | caps | no |
 
 - Contract and zod: `lib/leads/projects.ts::projectSchema`, `::projectPatchSchema` (strict field patch).
-- A group/lead without `projectId` reads as the default project: `lib/leads/projects.ts::projectIdOf`. The
+- A group/lead without `projectId` reads as the default project: `lib/leads/projects.ts::projectIdOf`; one whose
+  project is missing or not the owner's too (`lib/processes/lead-store.ts::findProjectOf` — scan, `draft`,
+  `lead_feedback`, auto drafts). The
   default row is created lazily from `settings` (`::ensureDefaultProject`, `INSERT OR IGNORE`) by GET
   (`app/api/workspace/route.ts::ensureOwnerProject`), the first scan or any project action.
 - Server-owned fields (a client `save` never sets them): `lib/processes/scan-flow.ts::keepServerOwnedFields`
@@ -27,7 +29,7 @@ are no keyword / intent regexes on the lead path; project keywords are only a hi
 `app/api/workspace/route.ts` action `scan_group`:
 1. Account gate, catalog placeholder, rescan interval, scan lock — unchanged
    (`lib/processes/scan-flow.ts::evaluateScanGate`, `route.ts::acquireGroupScanLock`).
-2. Project of the group: `lib/processes/lead-store.ts::findOwnedProject` (deleted project → default).
+2. Project of the group: `lib/processes/lead-store.ts::findProjectOf` (deleted project → default).
    An inactive project (`active:false`) skips the scan (`projectInactive:true`).
 3. Worker `/scan-group` with `{…session, url, days: project.scanDepthDays, minId: group.scanCursor}`
    (no keywords/limit; REQ-5 lives in `telegram-worker/src/check_account.py::scan_group`).
