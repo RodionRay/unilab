@@ -21,6 +21,7 @@ export type JoinBlockReason =
   | "cooldown"
   | "spamblock"
   | "frozen"
+  | "deleted"
   | "quota"
   | "pace"
   | "resolve_blind"
@@ -66,6 +67,9 @@ export function evaluateAccountJoinReadiness(
   }
   if (st === "frozen") {
     return { ok: false, reason: "frozen", message: "Аккаунт заморожен" };
+  }
+  if (st === "deleted") {
+    return { ok: false, reason: "deleted", message: "Аккаунт удалён Telegram" };
   }
   // Дневной лимит другого вида (ЛС, инвайты) вступлению не мешает; отлёжка без вида — мешает
   if (isDayLimitedFor(acc, "invite") || (st === "cooldown" && dayLimitCooldownKind(acc) === null)) {
@@ -198,7 +202,7 @@ export function interpretJoinWorkerResult(result: JoinWorkerResult): JoinOutcome
  * пересаживать со сбросом членства. disconnected / proxy_error / checking /
  * отлёжка — временные: группы остаются на аккаунте.
  */
-export const PERMANENT_DEAD_ACCOUNT_STATUSES = ["unauthorized", "frozen"] as const;
+export const PERMANENT_DEAD_ACCOUNT_STATUSES = ["unauthorized", "frozen", "deleted"] as const;
 
 export function isPermanentlyDeadAccount(status: string | null | undefined): boolean {
   if (status == null) return true;
@@ -254,6 +258,14 @@ export function isAccountResolveBlind(
 
 export function accountBlindPatch(now = Date.now()): { resolveBlindUntil: string } {
   return { resolveBlindUntil: new Date(now + ACCOUNT_BLIND_COOLDOWN_MS).toISOString() };
+}
+
+/**
+ * A blind answer is how an account deleted by Telegram looks, but one bad resolve window is not a verdict: the join
+ * only flags the account; the account check settles it with a group-independent control resolve.
+ */
+export function deletedSuspectPatch(now = Date.now()): { deletedSuspectAt: string } {
+  return { deletedSuspectAt: new Date(now).toISOString() };
 }
 
 /** Accounts that answered «blind» for this group (unique, newest last, capped). */

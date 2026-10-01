@@ -1476,7 +1476,7 @@ async def _resolve_username_via_search(client, want: str):
 RESOLVE_CONTROL_USERNAME = "telegram"
 
 
-async def _account_resolve_blind(client) -> bool:
+async def _account_resolve_blind(client, control: str = RESOLVE_CONTROL_USERNAME) -> bool:
     """Аккаунт не резолвит даже @telegram → ограничен сам слот, группа ни при чём.
 
     Только явный UsernameNotOccupied/Invalid считаем слепотой; сеть/прочее — «не знаем» (False).
@@ -1485,7 +1485,7 @@ async def _account_resolve_blind(client) -> bool:
     from telethon.errors import UsernameNotOccupiedError, UsernameInvalidError
 
     try:
-        await client(ResolveUsernameRequest(RESOLVE_CONTROL_USERNAME))
+        await client(ResolveUsernameRequest(control))
         return False
     except (UsernameNotOccupiedError, UsernameInvalidError):
         return True
@@ -2918,6 +2918,7 @@ async def ensure_account_username(
             "lastName": me.last_name or "",
             "phone": phone,
             "userId": me.id,
+            "deleted": bool(getattr(me, "deleted", False)),
             **extra,
         }
 
@@ -3065,62 +3066,99 @@ def acquire_work_dir() -> Path:
     return Path(tempfile.mkdtemp(prefix="uniseller-acc-"))
 
 
+# Second control for the soft «deleted» suspicion: one unresolvable @telegram may be a Telegram resolve hiccup.
+DELETED_CONFIRM_USERNAME = "durov"
+_DEACTIVATED_CLASSES = frozenset({"UserDeactivatedError", "UserDeactivatedBanError"})
+DELETED_BY_TELEGRAM_ERROR = "Аккаунт удалён Telegram (USER_DEACTIVATED) — для других он «Удалённый аккаунт»"
+DELETED_SELF_ERROR = "Telegram пометил аккаунт удалённым (deleted) — для других он «Удалённый аккаунт»"
+CONTROL_BLIND_ERROR = (
+    f"Аккаунт не резолвит даже @{RESOLVE_CONTROL_USERNAME} и @{DELETED_CONFIRM_USERNAME} — "
+    "похоже, Telegram удалил аккаунт; не используется до перепроверки"
+)
+
+
+def is_account_deactivated(exc: BaseException) -> bool:
+    """USER_DEACTIVATED(_BAN): Telegram удалил аккаунт — сессия больше ничего не сделает."""
+    return type(exc).__name__ in _DEACTIVATED_CLASSES or "USER_DEACTIVATED" in str(exc).upper()
+
+
+async def _control_blind_suspect(client, payload: dict[str, Any]) -> bool:
+    """Both group-independent controls answer «not occupied»: a soft sign of a deleted account.
+
+    A deleted account still logs in, but other users see «Удалённый аккаунт» and it resolves no @username.
+    Only explicit «not occupied» counts; FloodWait / network on either control means «unknown» → False.
+    """
+    if not payload.get("checkDeleted", True):
+        return False
+    if not await _account_resolve_blind(client):
+        return False
+    return await _account_resolve_blind(client, DELETED_CONFIRM_USERNAME)
+
+
+async def check_account(client, payload: dict[str, Any]) -> dict[str, Any]:
+    """Проверка открытой сессии: профиль, @username, признаки удаления Telegram, ограничения SpamBot."""
+    create_username = payload.get("ensureUsername", True)
+    force_username = bool(payload.get("forceUsername"))
+    desired = str(payload.get("desiredUsername") or "").strip()
+    if create_username or force_username:
+        profile = await ensure_account_username(
+            client,
+            desired=desired or None,
+            force=force_username,
+        )
+    else:
+        me = await client.get_me()
+        phone = me.phone or ""
+        if phone and not str(phone).startswith("+"):
+            phone = "+" + phone
+        profile = {
+            "firstName": me.first_name or "",
+            "lastName": me.last_name or "",
+            "username": me.username or "",
+            "usernameCreated": False,
+            "phone": phone,
+            "userId": me.id,
+            "deleted": bool(getattr(me, "deleted", False)),
+        }
+    if profile.get("deleted"):
+        return {"ok": False, "status": "deleted", "error": DELETED_SELF_ERROR, "profile": profile}
+    if await _control_blind_suspect(client, payload):
+        # Soft signal: the route excludes the account at once and confirms 'deleted' only on a later check.
+        return {"ok": False, "status": "active", "deletedSuspect": True, "error": CONTROL_BLIND_ERROR, "profile": profile}
+    restriction = None
+    if payload.get("checkRestrictions", True):
+        restriction = await check_spambot(client)
+    status = "active"
+    error = ""
+    if profile.get("frozenMethod"):
+        # UpdateUsername заморожен — часто и JoinChannel тоже; помечаем аккаунт
+        status = "frozen"
+        error = "Аккаунт заморожен Telegram (FROZEN_METHOD_INVALID). Вступление в группы недоступно — нужен другой аккаунт."
+    elif restriction == "spamblock":
+        status = "spamblock"
+        error = "Ограничения по SpamBot"
+    elif restriction == "frozen":
+        status = "frozen"
+        error = "Аккаунт заморожен"
+    elif not profile.get("username") and profile.get("usernameError"):
+        error = f"Без @username: {profile['usernameError']}"
+    return {"ok": status == "active", "status": status, "error": error, "profile": profile}
+
+
 async def run_check(payload: dict[str, Any]) -> dict[str, Any]:
     work = acquire_work_dir()
     client = None
     try:
         client = await open_client(payload, work)
-        create_username = payload.get("ensureUsername", True)
-        force_username = bool(payload.get("forceUsername"))
-        desired = str(payload.get("desiredUsername") or "").strip()
-        if create_username or force_username:
-            profile = await ensure_account_username(
-                client,
-                desired=desired or None,
-                force=force_username,
-            )
-        else:
-            me = await client.get_me()
-            phone = me.phone or ""
-            if phone and not str(phone).startswith("+"):
-                phone = "+" + phone
-            profile = {
-                "firstName": me.first_name or "",
-                "lastName": me.last_name or "",
-                "username": me.username or "",
-                "usernameCreated": False,
-                "phone": phone,
-                "userId": me.id,
-            }
-        restriction = None
-        if payload.get("checkRestrictions", True):
-            restriction = await check_spambot(client)
-        status = "active"
-        error = ""
-        if profile.get("frozenMethod"):
-            # UpdateUsername заморожен — часто и JoinChannel тоже; помечаем аккаунт
-            status = "frozen"
-            error = "Аккаунт заморожен Telegram (FROZEN_METHOD_INVALID). Вступление в группы недоступно — нужен другой аккаунт."
-        elif restriction == "spamblock":
-            status = "spamblock"
-            error = "Ограничения по SpamBot"
-        elif restriction == "frozen":
-            status = "frozen"
-            error = "Аккаунт заморожен"
-        elif not profile.get("username") and profile.get("usernameError"):
-            error = f"Без @username: {profile['usernameError']}"
-        return {
-            "ok": status == "active",
-            "status": status,
-            "error": error,
-            "profile": profile,
-            "sessionRefreshed": bool(
-                getattr(client, "_uniseller_session_refreshed", False)
-            ),
-        }
+        result = await check_account(client, payload)
+        result["sessionRefreshed"] = bool(getattr(client, "_uniseller_session_refreshed", False))
+        return result
     except asyncio.CancelledError:
         return {"ok": False, "status": "disconnected", "error": "Операция прервана (таймаут/отмена)"}
     except Exception as e:
+        if is_account_deactivated(e):
+            # Other actions keep classify_error's verdict; only the check names the real cause.
+            return {"ok": False, "status": "deleted", "error": DELETED_BY_TELEGRAM_ERROR}
         return {"ok": False, "status": classify_error(e), "error": str(e)[:400]}
     finally:
         try:

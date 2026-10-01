@@ -49,7 +49,10 @@ import {
   cooldownRemainingShort,
   generateTelegramUsername,
   isAccountUsable,
+  isDeletedSuspect,
   isOnCooldown,
+  needsAccountRecheck,
+  suspectRecheckHours,
   moscowNextMidnightIso,
   relativeTimeRu,
   type AccountStatus,
@@ -95,7 +98,7 @@ type RecordItem={id:string;kind:Kind;data:any;hasSecret:boolean;created:string};
 
 const kinds:Record<string,Kind>={'Лиды':'lead','Переписки':'lead','Группы и каналы':'group','Сбор аудитории':'audience_task','Инвайтинг':'invite_task','Рассылка':'mailing_task','Аккаунты':'account','Прокси':'proxy','AI-ассистент':'settings'};
 const labels:Record<Kind,string>={account:'аккаунт',proxy:'прокси',group:'группу',lead:'лид',settings:'настройки AI',audience_task:'задачу сбора',invite_task:'задачу инвайта',mailing_task:'задачу рассылки'};
-const PROBLEM_ACCOUNT=new Set(['disconnected','unauthorized','frozen','spamblock','proxy_error','cooldown','inactive','setup','error']);
+const PROBLEM_ACCOUNT=new Set(['disconnected','unauthorized','frozen','deleted','spamblock','proxy_error','cooldown','inactive','setup','error']);
 const JOIN_BUSY=new Set(['queued','waiting','joining','scanning']);
 const defaults:any={
   account:{name:'',phone:'',proxyId:'',status:'setup',format:'manual',sessionMode:'keep',limits:{...DEFAULT_ACCOUNT_LIMITS,memberInvite:40},cooldownUntil:'',firstName:'',lastName:'',username:'',about:'',hasPhoto:false,error:''},
@@ -398,12 +401,17 @@ function accountIdentityLine(data:any,id:string){
   return id.replace(/-/g,'').slice(0,12);
 }
 
-function AccountStatusCell({status,error,cooldownUntil}:{status:string;error?:string;cooldownUntil?:string}){
+function suspectLabel(data:Parameters<typeof suspectRecheckHours>[0]){
+  const h=suspectRecheckHours(data);
+  return h==null||h<=0?'Не видит @telegram — не используется, перепроверьте':`Не видит @telegram — не используется, перепроверка через ${h} ч`;
+}
+
+function AccountStatusCell({status,error,cooldownUntil,suspectNote}:{status:string;error?:string;cooldownUntil?:string;suspectNote?:string}){
   const tone=accountStatusTone(status);
   const label=ACCOUNT_STATUS_LABELS[status as AccountStatus]||status;
   const Icon=
     status==='active'?Check:
-    status==='spamblock'||status==='frozen'?AlertTriangle:
+    status==='spamblock'||status==='frozen'||status==='deleted'?AlertTriangle:
     status==='checking'?Loader2:
     status==='cooldown'?Timer:
     status==='disconnected'||status==='unauthorized'||status==='proxy_error'?CircleX:
@@ -415,6 +423,7 @@ function AccountStatusCell({status,error,cooldownUntil}:{status:string;error?:st
     status==='setup'?'Нужна сессия':
     status==='checking'?'Идёт проверка…':
     status==='cooldown'?cooldownRemainingShort(cooldownUntil)||cooldownLabel(cooldownUntil):
+    status==='active'&&suspectNote?suspectNote:
     error?String(error).slice(0,80):'';
   return (
     <div className={`acc-status acc-status-${tone}`}>
@@ -505,6 +514,7 @@ function WorkspaceHome(){
   const [bulkProxyId,setBulkProxyId]=useState('');
   const [bulkProxyMix,setBulkProxyMix]=useState(false);
   const [bulkDeleteOpen,setBulkDeleteOpen]=useState(false);
+  const [purgeDeletedOpen,setPurgeDeletedOpen]=useState(false);
   const [bulkLimitsOpen,setBulkLimitsOpen]=useState(false);
   const [bulkLimits,setBulkLimits]=useState({
     invite:TELEGRAM_RECOMMENDED_LIMITS.invite,
@@ -729,6 +739,9 @@ function WorkspaceHome(){
       setView(allowedNav[0]||'Обзор');
     }
   },[allowedNav,view]);
+
+  const telegramDeletedIds=list('account').filter(r=>r.data.status==='deleted').map(r=>r.id);
+  const telegramDeletedCount=telegramDeletedIds.length;
 
   const navBadges=useMemo(()=>{
     // Только непрочитанные ответы клиента — не все открытые переписки
@@ -2060,6 +2073,20 @@ function WorkspaceHome(){
     finally{setBusy(false)}
   }
 
+  /** Аккаунты, удалённые Telegram: записи и сессии стираются, группы уходят на живые аккаунты автопочинкой. */
+  async function purgeTelegramDeletedAccounts(){
+    setBusy(true);
+    try{
+      // Ровно те аккаунты, что названы в подтверждении: сервер удалит только их и только со статусом deleted.
+      const r=await api({action:'delete_telegram_deleted_accounts',ids:telegramDeletedIds});
+      await refresh();
+      setPurgeDeletedOpen(false);
+      setAccountSelected([]);
+      toast.success(`Удалено аккаунтов: ${r.deleted}${r.groupsDetached?` · групп отвязано: ${r.groupsDetached} — автопочинка переназначит их на живые аккаунты`:''}`);
+    }catch(e){toast.error((e as Error).message)}
+    finally{setBusy(false)}
+  }
+
   async function checkOneProxy(item:RecordItem,opts?:{silent?:boolean}){
     if(!opts?.silent)setBusy(true);
     setRecords(prev=>prev.map(r=>r.id===item.id?{...r,data:{...r.data,status:'checking',checkError:'',checkingAt:new Date().toISOString()}}:r));
@@ -2178,7 +2205,7 @@ function WorkspaceHome(){
   }
 
   async function checkAccounts(mode:'all'|'problem'){
-    const targets=list('account').filter(r=>mode==='all'||r.data.status!=='active');
+    const targets=list('account').filter(r=>mode==='all'||needsAccountRecheck(r.data));
     if(!targets.length){toast.message(mode==='problem'?'Нет проблемных аккаунтов':'Нет аккаунтов');return}
     if(!telegramConnected){toast.error('Сначала запустите: npm run dev');return}
     const queue=targets.slice(0,40);
@@ -3367,11 +3394,15 @@ function WorkspaceHome(){
                       <TabsTrigger value="active">Активные</TabsTrigger>
                       <TabsTrigger value="spamblock">Спамблок</TabsTrigger>
                       <TabsTrigger value="frozen">Заморозка</TabsTrigger>
+                      <TabsTrigger value="deleted">Удалён Telegram{telegramDeletedCount?` (${telegramDeletedCount})`:''}</TabsTrigger>
                       <TabsTrigger value="unauthorized">Не авторизован</TabsTrigger>
                     </TabsList>
                   </Tabs>
                   <Button variant="outline" disabled={!!accountCheckProgress||!list('account').length} onClick={()=>checkAccounts('all')}><Plug size={15}/>Проверить все</Button>
-                  <Button variant="outline" disabled={!!accountCheckProgress||!list('account').some(r=>r.data.status!=='active')} onClick={()=>checkAccounts('problem')}><RefreshCw size={15}/>Перепроверить проблемные</Button>
+                  <Button variant="outline" disabled={!!accountCheckProgress||!list('account').some(r=>needsAccountRecheck(r.data))} onClick={()=>checkAccounts('problem')}><RefreshCw size={15}/>Перепроверить проблемные</Button>
+                  {telegramDeletedCount>0&&(
+                    <Button variant="outline" disabled={busy||!!accountCheckProgress} onClick={()=>setPurgeDeletedOpen(true)} className="text-[var(--spike-danger,#fb977d)]"><Trash2 size={15}/>Удалить удалённые Telegram ({telegramDeletedCount})</Button>
+                  )}
                   {list('account').some(r=>r.data.status==='checking')&&(
                     <Button variant="outline" onClick={()=>void resetStuckChecks()}><X size={15}/>Сбросить проверку</Button>
                   )}
@@ -3737,7 +3768,7 @@ function WorkspaceHome(){
                           </TableCell>
                           <TableCell><AccountLimitsCell data={r.data}/></TableCell>
                           <TableCell className="min-w-0">
-                            <AccountStatusCell status={rowStatus} error={r.data.error} cooldownUntil={r.data.cooldownUntil}/>
+                            <AccountStatusCell status={rowStatus} error={r.data.error} cooldownUntil={r.data.cooldownUntil} suspectNote={isDeletedSuspect(r.data)?suspectLabel(r.data):''}/>
                           </TableCell>
                           <TableCell className="whitespace-nowrap">
                             {coolLeft?(
@@ -4231,7 +4262,7 @@ function WorkspaceHome(){
                 <Select value={form.status||'setup'} onValueChange={v=>change('status',v)}>
                   <SelectTrigger className="w-full"><SelectValue/></SelectTrigger>
                   <SelectContent>
-                    {ACCOUNT_STATUSES.map(s=>(
+                    {ACCOUNT_STATUSES.filter(s=>s!=='deleted').map(s=>(
                       <SelectItem key={s} value={s}>{ACCOUNT_STATUS_LABELS[s]}</SelectItem>
                     ))}
                   </SelectContent>
@@ -5242,6 +5273,23 @@ function WorkspaceHome(){
             <AlertDialogCancel disabled={busy}>Отмена</AlertDialogCancel>
             <AlertDialogAction disabled={busy} onClick={(e)=>{e.preventDefault();void bulkDeleteAccounts()}}>
               {busy?'Удаление…':'Удалить'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={purgeDeletedOpen} onOpenChange={o=>{if(!busy)setPurgeDeletedOpen(o)}}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Удалить {telegramDeletedCount} аккаунт(ов), удалённых Telegram?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Записи и сессии этих аккаунтов будут стёрты. Их группы автопочинка переназначит на живые аккаунты, из задач они уберутся, а задача без аккаунтов встанет на паузу. Действие необратимо.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={busy}>Отмена</AlertDialogCancel>
+            <AlertDialogAction disabled={busy} onClick={(e)=>{e.preventDefault();void purgeTelegramDeletedAccounts()}}>
+              {busy?'Удаление…':`Удалить ${telegramDeletedCount}`}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -15,3 +15,36 @@ blind witness, `ACCOUNT_BLIND_COOLDOWN_MS` (6 h) from the second. The reply is `
 accountBlind:true}`; the UI join queue (`app/app/page.tsx::startBackgroundJoins`) shows it as a note, not an error.
 A successful join clears `joinBlindAccounts`. Without the pause `planGroupHeal` re-enqueued the group on every heal
 tick — an endless join spinner, an account rotation and a red toast each time, one farm account burned per tick.
+
+## 2. Accounts deleted by Telegram — status `deleted`
+
+A deleted account still logs in, but other users see «Удалённый аккаунт» and it resolves no @username, so it stayed
+`active` and kept getting joins. The status `deleted` («Удалён Telegram», `lib/telegram-accounts.ts::ACCOUNT_STATUSES`)
+is never usable: `isAccountUsable`, `canPollDmInbox`, `join-flow.ts::evaluateAccountJoinReadiness` (reason
+`deleted`), `scan-flow.ts::HARD_DEAD`, the mailing/invite stop-% dead lists and
+`join-flow.ts::PERMANENT_DEAD_ACCOUNT_STATUSES` (so `planGroupHeal` reassigns its groups to live accounts).
+`applyQuotaCooldownIfExhausted`, `apply_account_profiles` and `upload_account_photos` never overwrite it.
+
+- Hard signals set `deleted` (worker `telegram-worker/src/check_account.py::check_account`): `get_me().deleted`, or a
+  check that raises `USER_DEACTIVATED(_BAN)` (`is_account_deactivated` in `run_check`; other actions keep
+  `classify_error`'s verdict).
+- Soft signal — @telegram AND @durov (`DELETED_CONFIRM_USERNAME`) both «not occupied» (`_control_blind_suspect`;
+  FloodWait / network on a control = unknown, no signal): the worker answers `status:'active', deletedSuspect:true`.
+  `route.ts::saveControlBlindVerdict` stores the first-seen time in `controlBlindSince`; the account is out of every
+  use at once (`isDeletedSuspect`), and becomes `deleted` only when a later check sees the same at least
+  `DELETED_CONFIRM_AFTER_MS` (6 h) after the first. Payload `checkDeleted:false` skips the control resolve.
+- A blind join answer does not set `deleted`: it stamps `deletedSuspectAt` (`join-flow.ts::deletedSuspectPatch`).
+  «Перепроверить проблемные» (`needsAccountRecheck`, UI and `check_accounts mode:'problem'`) includes suspects; a
+  clean check clears the soft signs (`clearedSuspectPatch`). The accounts table shows «Не видит @telegram — не
+  используется, перепроверка через N ч» (`suspectRecheckHours`).
+- An account form save never sets or clears `deleted` or the server-owned block fields `deletedSuspectAt`,
+  `controlBlindSince`, `resolveBlindUntil` (`telegram-accounts.ts::keepServerOwnedAccountFields`, applied in the
+  `save` action); the status select has no `deleted` option.
+- Purge — action `delete_telegram_deleted_accounts` with `ids` (`route.ts::deleteTelegramDeletedAccounts`, UI
+  «Удалить удалённые Telegram (N)» whose confirm names N and sends exactly those ids): deletes only those ids whose
+  status is still `deleted` inside the owner-scoped DELETE (the session lives in the record `secret`, so it goes too).
+  Side effects, each an owner-scoped conditional single-statement UPDATE (a concurrent heal / join reassignment or
+  task edit is kept): `accountId` and `joinedAccountId` cleared on groups (heal reassigns joined and owner-queued
+  ones), `accountId` on leads, `sourceAccountId` on audience tasks; the ids leave `accountIds` of mailing / invite /
+  audience tasks, and a running/scheduled task left with none is paused with «Все аккаунты задачи удалены Telegram …».
+  An audit line with names and counts goes to the global rescan log. Irreversible; access rule `accounts`.

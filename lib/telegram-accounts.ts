@@ -9,6 +9,7 @@ export const ACCOUNT_STATUSES = [
   "unauthorized",
   "spamblock",
   "frozen",
+  "deleted",
   "cooldown",
 ] as const;
 
@@ -23,6 +24,7 @@ export const ACCOUNT_STATUS_LABELS: Record<AccountStatus, string> = {
   unauthorized: "Не авторизован",
   spamblock: "Спамблок",
   frozen: "Заморожен",
+  deleted: "Удалён Telegram",
   cooldown: "Отлежка",
 };
 
@@ -70,6 +72,7 @@ export function accountStatusTone(status: string): "success" | "warning" | "dang
     status === "unauthorized" ||
     status === "spamblock" ||
     status === "frozen" ||
+    status === "deleted" ||
     status === "inactive"
   ) {
     return "danger";
@@ -125,8 +128,11 @@ export function isAccountUsable(data: {
   status?: string | null;
   cooldownUntil?: string | null;
   cooldownReason?: unknown;
+  deletedSuspectAt?: string | null;
+  controlBlindSince?: string | null;
 } | null | undefined): boolean {
   if (!data) return false;
+  if (isDeletedSuspect(data)) return false;
   const st = String(data.status || "");
   // Спамблок от PEER_FLOOD ставит таймер (withSpamblockStatus) — после него аккаунт снова пробуем.
   // Спамблок без таймера (проверка @SpamBot) снимается только новой проверкой.
@@ -137,6 +143,7 @@ export function isAccountUsable(data: {
   if (
     [
       "frozen",
+      "deleted",
       "unauthorized",
       "disconnected",
       "proxy_error",
@@ -177,6 +184,7 @@ export function canPollDmInbox(data: {
   if (
     [
       "frozen",
+      "deleted",
       "unauthorized",
       "disconnected",
       "proxy_error",
@@ -197,6 +205,66 @@ export function canPollDmInbox(data: {
     st === "cooldown" ||
     st === "spamblock"
   );
+}
+
+/** A second soft «@telegram and @durov unresolvable» check this long after the first confirms 'deleted'. */
+export const DELETED_CONFIRM_AFTER_MS = 6 * 60 * 60_000;
+
+export type DeletedSuspectState = {
+  status?: string | null;
+  deletedSuspectAt?: string | null;
+  controlBlindSince?: string | null;
+};
+
+/**
+ * Soft signs of an account deleted by Telegram: blind on @telegram at a join (deletedSuspectAt) or on @telegram
+ * and @durov at a check (controlBlindSince). Such an account is out of every use until a clean recheck; a deleted
+ * account still logs in, but for others it is «Удалённый аккаунт» and resolves no @username.
+ */
+export function isDeletedSuspect(data: DeletedSuspectState | null | undefined): boolean {
+  if (!data) return false;
+  return !!data.deletedSuspectAt || !!data.controlBlindSince;
+}
+
+/** «Перепроверить проблемные»: не активный аккаунт или активный с признаком удаления Telegram. */
+export function needsAccountRecheck(data: DeletedSuspectState | null | undefined): boolean {
+  if (!data) return false;
+  return String(data.status || "") !== "active" || isDeletedSuspect(data);
+}
+
+/** A clean check proved the account alive: drop every soft «deleted» sign. */
+export function clearedSuspectPatch(): { deletedSuspectAt: string; controlBlindSince: string } {
+  return { deletedSuspectAt: "", controlBlindSince: "" };
+}
+
+/** Telegram block verdicts only the server writes (check, join, scan); an account form save never sets or clears them. */
+const SERVER_OWNED_ACCOUNT_FIELDS = ["deletedSuspectAt", "controlBlindSince", "resolveBlindUntil"] as const;
+
+/**
+ * A stale or crafted account form must not set 'deleted' (that would reach the irreversible purge) nor clear a
+ * block signal and put a Telegram-blocked account back into work.
+ */
+export function keepServerOwnedAccountFields(
+  prev: Record<string, unknown>,
+  next: Record<string, unknown>,
+): Record<string, unknown> {
+  const out = { ...next };
+  for (const f of SERVER_OWNED_ACCOUNT_FIELDS) {
+    if (prev[f] === undefined) delete out[f];
+    else out[f] = prev[f];
+  }
+  const prevStatus = String(prev.status || "");
+  if (prevStatus === "deleted" || (out.status === "deleted" && prevStatus !== "deleted")) {
+    out.status = prevStatus || "setup";
+  }
+  return out;
+}
+
+/** Hours until a soft-suspect account may be confirmed 'deleted' by a recheck; null without a check-seen date. */
+export function suspectRecheckHours(data: DeletedSuspectState | null | undefined, now = Date.now()): number | null {
+  const since = Date.parse(String(data?.controlBlindSince || ""));
+  if (!Number.isFinite(since)) return null;
+  return Math.max(0, Math.ceil((since + DELETED_CONFIRM_AFTER_MS - now) / 3_600_000));
 }
 
 export function cooldownLabel(cooldownUntil?: string | null): string {
@@ -324,7 +392,7 @@ export function applyQuotaCooldownIfExhausted<T extends Record<string, unknown>>
   spent?: DayLimitKind,
 ): T {
   const st = String((data as { status?: string }).status || "");
-  if (st === "spamblock" || st === "frozen") return data;
+  if (st === "spamblock" || st === "frozen" || st === "deleted") return data;
   if (isDayLimitCooldown(data as { status?: string; cooldownUntil?: string })) {
     return data;
   }
