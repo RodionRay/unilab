@@ -1,5 +1,5 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
-import {OWNER,login,postRequest,resetWorkspace} from './helpers/workspace-harness';
+import {OWNER,login,postRequest,resetWorkspace,testDb} from './helpers/workspace-harness';
 import {
   ACC_A,ACC_B,API_ID,CHAT_LEAD,type WorkerCall,
   type StoredRecord,addChatLead,addSealedAccount,dropHarnessAccount,enableNotifications,readRecord,stubWorker,writeRecord,
@@ -23,6 +23,8 @@ const inbox=(messages:unknown[],extra:Record<string,unknown>={})=>({ok:true,mess
 /** Answers /inbox-dms only for one fixture account, empty inbox for the others. */
 const onlyFor=(accountId:string,answer:()=>unknown)=>(call:WorkerCall)=>
   call.body.apiId===API_ID[accountId]?answer():inbox([]);
+const leadsOf=()=>(testDb().sqlite.prepare("SELECT id,data FROM records WHERE owner=? AND kind='lead'").all(OWNER) as {id:string;data:string}[])
+ .map(r=>({id:r.id,...JSON.parse(r.data)}) as StoredRecord&{id:string});
 const clientEntries=(lead:StoredRecord)=>lead.replies.filter(x=>x.from==='client');
 
 describe('переписки · входящие ЛС (poll_dm_replies)',()=>{
@@ -144,5 +146,53 @@ describe('переписки · входящие ЛС (poll_dm_replies)',()=>{
     expect(done.inboxSinceTs).toBeGreaterThan(NOW_TS-3600);
     expect(done.inboxSinceTs).toBeLessThanOrEqual(NOW_TS);
     expect(done.inboxPageOffset||0).toBe(0);
+  });
+
+  it('REQ-D1: первое входящее от незнакомого человека создаёт лида в Переписках',async()=>{
+    stubWorker(onlyFor(ACC_A,()=>inbox([{...clientMsg('910','Здравствуйте, вопрос по CRM'),userId:'888',username:'stranger',name:'Иван'}])));
+
+    await poll();
+
+    const leads=leadsOf().filter(l=>l.senderId==='888');
+    expect(leads).toHaveLength(1);
+    expect(leads[0]).toMatchObject({
+      name:'Иван',source:'Входящее в ЛС',conversationOpen:true,needsManager:true,
+      senderUsername:'stranger',accountId:ACC_A,incomingLastText:'Здравствуйте, вопрос по CRM',
+    });
+    expect(clientEntries(leads[0]!)).toHaveLength(1);
+  });
+
+  it('REQ-D1: второе сообщение незнакомца идёт в того же лида, без дубля',async()=>{
+    const stranger=(id:string,text:string)=>({...clientMsg(id,text),userId:'888',username:'stranger'});
+    let n=0;
+    stubWorker(onlyFor(ACC_A,()=>inbox(++n===1?[stranger('911','раз')]:[stranger('911','раз'),stranger('912','два')])));
+
+    await poll();
+    await poll();
+
+    const leads=leadsOf().filter(l=>l.senderId==='888');
+    expect(leads).toHaveLength(1);
+    expect(clientEntries(leads[0]!).map(x=>x.text)).toEqual(['раз','два']);
+  });
+
+  it('REQ-D1: входящее от лида, которому мы не писали, открывает его переписку',async()=>{
+    addChatLead({conversationOpen:false,replies:[]});
+    stubWorker(onlyFor(ACC_A,()=>inbox([clientMsg('913','Пишу сам')])));
+
+    await poll();
+
+    const lead=readRecord(CHAT_LEAD);
+    expect(lead.conversationOpen).toBe(true);
+    expect(clientEntries(lead).map(x=>x.text)).toEqual(['Пишу сам']);
+    expect(leadsOf().filter(l=>l.senderId==='777')).toHaveLength(1);
+  });
+
+  it('REQ-D2: сообщение от нашего же аккаунта лида не создаёт',async()=>{
+    await addSealedAccount(ACC_B,{username:'Our_Bot_Acc'});
+    stubWorker(onlyFor(ACC_A,()=>inbox([{...clientMsg('914','прогрев'),userId:'555',username:'our_bot_acc'}])));
+
+    await poll();
+
+    expect(leadsOf().filter(l=>l.senderId==='555')).toHaveLength(0);
   });
 });

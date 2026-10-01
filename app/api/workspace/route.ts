@@ -1619,7 +1619,7 @@ const DM_POLL_LEASE_MS=11*60_000;
 
 type LiveAccount={id:string;data:Record<string,unknown>};
 type InboxMessage=Record<string,unknown>;
-type DmOutreach={taskId:string;leadId:string;userId:string;username:string;preview:string;groupId:string;accountId:string};
+type DmOutreach={taskId:string;leadId:string;userId:string;username:string;preview:string;groupId:string;accountId:string;inbound?:boolean};
 
 const dmPollLeaseId=(owner:string)=>`dm-poll-lease:${owner}`;
 
@@ -1637,7 +1637,7 @@ async function releaseDmPollLease(db:D1LikeDatabase,owner:string,stamp:string){
  await db.prepare('UPDATE records SET created=? WHERE id=? AND owner=? AND created=?').bind(new Date(0).toISOString(),dmPollLeaseId(owner),owner,stamp).run();
 }
 
-/** Outreach targets: DM deliveries of mailings plus leads we already wrote to. */
+/** Outreach targets: DM deliveries of mailings plus leads we already wrote to; any other person's DM is inbound. */
 async function loadDmOutreach(db:D1LikeDatabase,owner:string){
  const mailingRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='mailing_task'").bind(owner).all();
  const hits:DmOutreach[]=[];
@@ -1658,6 +1658,12 @@ async function loadDmOutreach(db:D1LikeDatabase,owner:string){
  const leads=leadRows.results.map(r=>{
   try{return {id:String(r.id),data:JSON.parse(String(r.data)) as LeadData}}catch{return null}
  }).filter(Boolean) as {id:string;data:LeadData}[];
+ // Наши аккаунты пишут друг другу (прогрев, тесты) — это не клиенты
+ const accountRows=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='account'").bind(owner).all();
+ const ownUsernames=new Set<string>();
+ for(const r of accountRows.results){
+  try{const u=normTgUser(JSON.parse(String(r.data)).username);if(u)ownUsernames.add(u)}catch{/* */}
+ }
  const match=(msg:InboxMessage):DmOutreach|null=>{
   const byDelivery=hits.find(h=>sameMailingPeer(h,msg));
   if(byDelivery)return byDelivery;
@@ -1667,14 +1673,17 @@ async function loadDmOutreach(db:D1LikeDatabase,owner:string){
    if(d.conversationOpen||d.mailingTaskId)return true;
    return leadReplies(d).some(x=>x.from==='us'||x.mode==='dm');
   });
-  if(!byLead)return null;
+  if(!byLead){
+   if(ownUsernames.has(normTgUser(msg.username)))return null;
+   return {taskId:'',leadId:'',userId:String(msg.userId||''),username:String(msg.username||''),preview:'',groupId:'',accountId:'',inbound:true};
+  }
   return {taskId:String(byLead.data.mailingTaskId||''),leadId:byLead.id,userId:String(byLead.data.senderId||''),username:String(byLead.data.senderUsername||''),preview:String(byLead.data.message||''),groupId:String(byLead.data.groupId||''),accountId:String(byLead.data.accountId||'')};
  };
  return {leads,match,mailingAccountIds};
 }
 
 /**
- * Records one incoming DM: merged into the freshly re-read lead (CAS) or a new «Рассылка · ответ» lead.
+ * Records one incoming DM: merged into the freshly re-read lead (CAS) or a new «Рассылка · ответ» / «Входящее в ЛС» lead.
  * Returns the client name when something new was recorded (and notified), null for an already known message.
  */
 async function recordIncomingDm(db:D1LikeDatabase,owner:string,accountId:string,msg:InboxMessage,outreach:DmOutreach,leads:{id:string;data:LeadData}[]):Promise<string|null>{
@@ -1711,13 +1720,13 @@ async function recordIncomingDm(db:D1LikeDatabase,owner:string,accountId:string,
  const data={
   name:String(msg.name||msg.username||'Клиент').slice(0,80),
   message:outreach.preview||incoming.text,
-  source:'Рассылка · ответ',
+  source:outreach.inbound?'Входящее в ЛС':'Рассылка · ответ',
   status:'working',
   temperature:'hot',
   draft:'',
   tgMsgId:'',
   groupId:outreach.groupId||'',
-  reason:'Клиент ответил на рассылку',
+  reason:outreach.inbound?'Человек написал аккаунту в личку первым':'Клиент ответил на рассылку',
   viewed:false,
   viewedAt:'',
   senderId:String(msg.userId||'').slice(0,40),
