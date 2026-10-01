@@ -33,10 +33,10 @@ describe('аккаунты',()=>{
     expect(canDeleteConnection('proxy','p2',accounts)).toEqual({ok:true});
   });
 
-  it('блокирует удаление аккаунта, назначенного группе',()=>{
+  it('не блокирует удаление аккаунта, назначенного группе (группы отвязываются)',()=>{
     const groups=[{id:'g1',data:{accountId:'acc-1'}}];
     expect(isAccountInUse(groups,'acc-1')).toBe(true);
-    expect(canDeleteConnection('account','acc-1',groups).ok).toBe(false);
+    expect(canDeleteConnection('account','acc-1',groups).ok).toBe(true);
     expect(canDeleteConnection('account','acc-2',groups).ok).toBe(true);
   });
 
