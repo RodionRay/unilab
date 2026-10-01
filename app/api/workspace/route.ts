@@ -4,6 +4,7 @@ import {JOIN_SUCCESS_PATCH,USERNAME_DEAD_AFTER_ACCOUNTS,accountSideJoinErrorPatc
 import {probeTmeUsername,probeableUsername,tmeMissingMessage,tmeProbeDue,type TmeProbeResult} from '@/lib/tme-probe';
 import {buildRelevanceProfile,compareJoinPriority,joinGateFor,rescoreGroup,seedRejoin,type JoinGateState} from '@/lib/join-relevance';
 import {JOIN_RESERVE_MS,accountJoinWaitSec,channelsTooMuchPatch,joinAttemptPatch,farmThroughput,joinErrorPatch,joinFloodPatch,joinSuccessPatch,planJoinFarm,type FarmAccount} from '@/lib/join-pacing';
+import {byLimitMessage,countOpenAssignments,planAssignmentByLimit,type CapacityGroup} from '@/lib/join-capacity';
 import {database,seal,unseal} from '@/lib/server-store';
 import {aiChatText,envAiApiKey,resolveAiConfig} from '@/lib/ai-client';
 import {buildProjectBrief,leadMessageFingerprint,normalizeLeadMessage,parseLeadTemperature,ratingFromTemperatures,strongPlusTerms,type LeadTemperature} from '@/lib/lead-filter';
@@ -1076,7 +1077,7 @@ async function listLiveAccountIds(owner:string){
  return live.map(x=>x.id);
 }
 
-type FarmJoinCandidate={id:string;data:any;wait:number;load:number};
+type FarmJoinCandidate={id:string;data:any;created:string;wait:number;load:number};
 
 async function loadProxyStates(owner:string){
  const db=database();
@@ -1101,7 +1102,7 @@ async function accountJoinGate(owner:string,adata:JoinAccountState){
 /** Аккаунты, которые могут вступать сейчас или после паузы темпа; сначала готовые, потом менее загруженные. */
 async function listJoinFarmCandidates(owner:string):Promise<FarmJoinCandidate[]>{
  const db=database();
- const accRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='account'").bind(owner).all();
+ const accRows=await db.prepare("SELECT id,data,created FROM records WHERE owner=? AND kind='account'").bind(owner).all();
  const proxies=await loadProxyStates(owner);
  const load=new Map<string,number>();
  const groups=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='group'").bind(owner).all();
@@ -1118,11 +1119,56 @@ async function listJoinFarmCandidates(owner:string):Promise<FarmJoinCandidate[]>
    const a=JSON.parse(String(r.data));
    if(!isJoinFarmCandidate(a,{proxy:proxyStateFor(a,proxies)}))continue;
    const id=String(r.id);
-   live.push({id,data:a,wait:joinWaitSec(a),load:load.get(id)||0});
+   live.push({id,data:a,created:String(r.created||''),wait:joinWaitSec(a),load:load.get(id)||0});
   }catch{/* */}
  }
  live.sort((a,b)=>a.wait-b.wait||a.load-b.load);
  return live;
+}
+
+/**
+ * «Распределить по лимитам» (assign_group_accounts mode by_limit): каждому join-кандидату — не больше его
+ * свободной ёмкости на сегодня (lib/join-capacity), группы в присланном (видимом) порядке; сверх ёмкости
+ * группа остаётся со своим прежним аккаунтом. Чужие/неизвестные id не пишутся. docs/join-pipeline.md §7.
+ */
+async function assignGroupsByLimit(owner:string,groupIds:readonly string[],accountIds:readonly string[]|null):Promise<{status:number;body:Record<string,unknown>}>{
+ const db=database();
+ const pool=(await listJoinFarmCandidates(owner)).filter(a=>!accountIds||accountIds.includes(a.id));
+ if(!pool.length)return {status:400,body:{error:'Нет рабочих аккаунтов (отлёжка/спамблок/заморозка/мёртвый прокси/лимит скрыты)'}};
+ const rows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='group'").bind(owner).all();
+ const all:CapacityGroup[]=[];
+ for(const r of rows.results){
+  try{all.push({id:String(r.id),data:JSON.parse(String(r.data))})}catch{/* битая запись не участвует */}
+ }
+ const byId=new Map(all.map(g=>[g.id,g]));
+ const unique=[...new Set(groupIds)];
+ const targets=unique.map(id=>byId.get(id)).filter((g):g is CapacityGroup=>!!g);
+ const open=countOpenAssignments(all,new Set(targets.map(g=>g.id)));
+ const plan=planAssignmentByLimit(targets,pool.map(a=>({id:a.id,data:a.data,created:a.created,assignedOpen:open.get(a.id)||0})));
+ for(const {groupId,accountId} of plan.assignments){
+  const gdata:any=byId.get(groupId)!.data;
+  const clearsAccountError=String(gdata.joinAccountErrorId||'')!==accountId&&!!String(gdata.joinAccountError||gdata.joinAccountErrorId||'');
+  if(gdata.accountId===accountId&&!clearsAccountError)continue;
+  const next={
+   ...gdata,
+   accountId,
+   error:gdata.accountId===accountId?gdata.error:'',
+   ...(clearsAccountError?{joinAccountError:'',joinAccountErrorId:''}:{}),
+  };
+  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,groupId,'group').run();
+ }
+ const summary={assigned:plan.assignments.length,unassigned:plan.unassigned.length,capacity:plan.capacity,skipped:plan.skipped.length};
+ return {status:200,body:{
+  ok:true,
+  mode:'by_limit',
+  updated:plan.assignments.length,
+  assignments:plan.assignments,
+  unassigned:plan.unassigned,
+  skipped:plan.skipped.length,
+  capacity:plan.capacity,
+  rejected:unique.length-targets.length,
+  message:byLimitMessage(summary),
+ }};
 }
 
 /** Куда пересаживать группу, которой предстоит вступление: join-кандидаты, сначала готовые, потом по нагрузке. */
@@ -3233,9 +3279,15 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   return reply({ok:true,group:next});
  }
  if(b.action==='assign_group_accounts'){
-  const mode=z.enum(['single','mix']).parse(b.mode||'single');
+  const mode=z.enum(['single','mix','by_limit']).parse(b.mode||'single');
   const groupIds=z.array(z.string().uuid()).min(1).max(500).parse(b.groupIds);
-  const accountIds=z.array(z.string().uuid()).min(1).max(200).parse(b.accountIds);
+  const accountIdList=z.array(z.string().uuid()).min(1).max(200);
+  if(mode==='by_limit'){
+   // Без accountIds — вся ферма вступлений; со списком — только его пересечение с фермой.
+   const r=await assignGroupsByLimit(owner,groupIds,b.accountIds==null?null:accountIdList.parse(b.accountIds));
+   return reply(r.body,r.status);
+  }
+  const accountIds=accountIdList.parse(b.accountIds);
   // Группам предстоит вступление — только аккаунты, которые могут вступать (пауза темпа допустима)
   const usable=new Set((await listJoinFarmCandidates(owner)).map(x=>x.id));
   const validAccounts=accountIds.filter(id=>usable.has(id));
