@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -20,9 +20,10 @@ type Props = {
 
 export function ProjectSwitcher({ projects, activeId, pendingByProject, onSelect, onCreate }: Props) {
   const full = projects.length >= MAX_PROJECTS;
+  const { ref, more } = useOverflowEdges(activeId, projects.length);
   return (
     <div className="aiw-switcher">
-      <nav className="aiw-tabs" aria-label="Проекты">
+      <nav ref={ref} className="aiw-tabs" aria-label="Проекты" data-more-start={more.start || undefined} data-more-end={more.end || undefined}>
         {projects.map((p) => {
           const pending = pendingByProject.get(p.id) ?? 0;
           const active = p.id === activeId;
@@ -55,6 +56,38 @@ export function ProjectSwitcher({ projects, activeId, pendingByProject, onSelect
       </Button>
     </div>
   );
+}
+
+type Edges = { start: boolean; end: boolean };
+
+/** Which sides of the scrolling tab strip hide tabs: drives the edge fade, so a cut-off tab reads as «scroll for more». */
+function useOverflowEdges(activeId: string, count: number) {
+  const ref = useRef<HTMLElement>(null);
+  const [more, setMore] = useState<Edges>({ start: false, end: false });
+  const measure = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    const start = el.scrollLeft > 1;
+    const end = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+    setMore((prev) => (prev.start === start && prev.end === end ? prev : { start, end }));
+  }, []);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    // bring the active tab into the strip without scrolling the page (scrollIntoView would)
+    const tab = el.querySelector<HTMLElement>('[data-active]')?.getBoundingClientRect();
+    const box = el.getBoundingClientRect();
+    if (tab && (tab.left < box.left || tab.right > box.right)) el.scrollLeft += tab.left - box.left - 24;
+    measure();
+    el.addEventListener('scroll', measure, { passive: true });
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => {
+      el.removeEventListener('scroll', measure);
+      observer.disconnect();
+    };
+  }, [activeId, count, measure]);
+  return { ref, more };
 }
 
 type DialogProps = { open: boolean; onOpenChange: (open: boolean) => void; onCreated: (id: string) => Promise<void> | void };

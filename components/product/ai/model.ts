@@ -302,7 +302,7 @@ export function headlineKind(counts: FunnelCounts): HeadlineKind {
 }
 
 /** Why the unchecked messages wait: drives the tail of the `unchecked` headline. */
-export const uncheckedCause = (keyMissing: boolean): string => (keyMissing ? 'AI не подключён' : 'AI проверит их при следующей проверке чатов');
+export const uncheckedCause = (keyMissing: boolean): string => (keyMissing ? 'AI не подключён' : 'AI оценит их при следующей проверке чатов');
 
 /** «Из 1 240 сообщений за 7 дней AI нашёл 9 лидов» / «Из 797 сообщений 91 ещё не проверено — AI не подключён». */
 export function funnelHeadline(counts: FunnelCounts, days: 1 | 7, keyMissing = false): string {

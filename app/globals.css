@@ -4863,8 +4863,6 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   display: grid;
   gap: 20px;
   min-width: 0;
-  /* the floating «Спросить UniLab» button sits over the last row: let the queue actions scroll clear of it */
-  padding-bottom: 104px;
 }
 .aiw .panel {
   min-width: 0;
@@ -4879,7 +4877,7 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   outline: 2px solid var(--spike-primary);
   outline-offset: 2px;
 }
-/* WCAG 2.5.8 floor for every standalone control; focus scrolling keeps clear of the sticky header and the floating assistant */
+/* WCAG 2.5.8 floor for every standalone control; focus scrolling keeps clear of the sticky header and the sticky save bar */
 .aiw :where(button, a[href], input:not([type="checkbox"]):not([type="radio"]), select, [role="button"], [role="tab"]) {
   min-width: 24px;
   min-height: 24px;
@@ -4927,6 +4925,23 @@ button[data-slot="button"][data-variant="ghost"]:hover {
 }
 .aiw-tabs::-webkit-scrollbar {
   display: none;
+}
+/* a tab cut by the strip edge fades out: reads as «scroll for more», not as a clipped label */
+.aiw-tabs {
+  --aiw-fade-start: 0px;
+  --aiw-fade-end: 0px;
+  scroll-snap-type: x proximity;
+  scroll-padding-inline: 4px;
+  mask-image: linear-gradient(to right, transparent 0, #000 var(--aiw-fade-start), #000 calc(100% - var(--aiw-fade-end)), transparent 100%);
+}
+.aiw-tabs[data-more-start] {
+  --aiw-fade-start: 40px;
+}
+.aiw-tabs[data-more-end] {
+  --aiw-fade-end: 56px;
+}
+.aiw-tab {
+  scroll-snap-align: start;
 }
 .aiw-tab {
   display: inline-flex;
@@ -5774,23 +5789,6 @@ button.aiw-row-main {
   border-top: 1px solid var(--spike-border);
   border-radius: 0 0 var(--spike-radius-card) var(--spike-radius-card);
   background: var(--spike-paper);
-  /* keep «Сохранить» out from under the fixed «Спросить UniLab» button (bottom-right, ~190px wide, icon-only <=700px) */
-  padding-right: calc(var(--aiw-pad) + 196px);
-}
-/* below 1024 the reserved strip would squeeze the bar into 3 rows: actions go first (left), clear of the button */
-@media (max-width: 1023px) {
-  .aiw-savebar {
-    justify-content: flex-start;
-    padding-right: var(--aiw-pad);
-  }
-  .aiw-savebar .aiw-draft-actions {
-    order: -1;
-  }
-}
-@media (max-width: 700px) {
-  .aiw-savebar {
-    padding-right: calc(var(--aiw-pad) + 60px);
-  }
 }
 .aiw-savebar[data-dirty] {
   position: sticky;
@@ -5823,17 +5821,19 @@ button.aiw-row-main {
   color: var(--spike-warning);
 }
 
-/* First run: copy + a preview of the funnel it will produce */
+/* First run: one centred column — the ask, the action, then a preview of the funnel it will produce */
 .aiw-first {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  align-items: start;
+  justify-items: center;
   gap: 32px;
+  padding-block: 56px;
 }
 .aiw-first-copy {
   display: grid;
-  justify-items: start;
+  justify-items: center;
   gap: 12px;
+  max-width: 52ch;
+  text-align: center;
 }
 .aiw-first-copy h2 {
   font-size: 1.5rem;
@@ -5842,8 +5842,12 @@ button.aiw-row-main {
 .aiw-first-preview {
   display: grid;
   gap: 4px;
+  width: min(100%, 560px);
   margin: 0;
-  padding: 0;
+  padding: 20px 24px;
+  border: 1px solid var(--spike-border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
 }
 .aiw-first-preview .aiw-headline {
   margin-bottom: 8px;
@@ -5922,11 +5926,42 @@ button.aiw-row-main {
     min-height: 44px;
   }
   .aiw-tab {
-    min-height: 40px;
+    min-height: 44px;
+  }
+  /* 44px touch floor for every control on the page (ui-engineering-qa A4); visual size kept where the hit area can grow */
+  .aiw button:not(.aiw-headline-link),
+  .aiw a[href],
+  .aiw select,
+  .aiw [role="button"],
+  .aiw [role="tab"] {
+    min-height: 44px;
+  }
+  .aiw button:not(.aiw-headline-link, .aiw-row-main, .aiw-dm-main, .aiw-queue-row, .aiw-tab) {
+    min-width: 44px;
+  }
+  .aiw .aiw-headline-link {
+    padding-block: 7px;
+  }
+  .aiw .aiw-link-btn {
+    margin-top: -10px;
+  }
+  .aiw-segment button {
+    padding: 0 16px;
+  }
+  .aiw-chips .kw {
+    min-height: 36px;
+  }
+  .aiw-chips .kw button {
+    width: 44px;
+    height: 44px;
+    margin: -4px -4px -4px -10px;
   }
   .aiw-first {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 20px;
+    gap: 24px;
+    padding-block: 32px 24px;
+  }
+  .aiw-first-preview {
+    padding: 16px;
   }
   .aiw-row-main {
     padding: 7px 4px;
