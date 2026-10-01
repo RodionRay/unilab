@@ -1,0 +1,132 @@
+/*
+ * The ONE place where Telegram theme params become app tokens (owner D5).
+ * `--tg-theme-*` are written by the SDK and re-written by TmaThemeSync on `themeChanged`;
+ * fallbacks = Telegram iOS day theme so the page is readable before the SDK reports.
+ * Accent (`--tma-accent` = UniLab `--spike-primary`) is reserved for: hot-lead mark, temperature chip,
+ * active filter count, MainButton. Everything else is Telegram-native.
+ * Font: the system stack on purpose — the host app renders with it and the mini app must read as part of
+ * Telegram (documented exception to the design-ui-ux §5 font ban, plan.md "Tokens").
+ */
+.tma-root {
+  --tma-bg: var(--tg-theme-bg-color, #ffffff);
+  --tma-page: var(--tg-theme-secondary-bg-color, #efeff4);
+  --tma-section: var(--tg-theme-section-bg-color, var(--tma-bg));
+  --tma-text: var(--tg-theme-text-color, #000000);
+  --tma-hint: var(--tg-theme-hint-color, #8e8e93);
+  --tma-subtitle: var(--tg-theme-subtitle-text-color, var(--tma-hint));
+  --tma-link: var(--tg-theme-link-color, #2481cc);
+  --tma-button: var(--tg-theme-button-color, #2481cc);
+  --tma-button-text: var(--tg-theme-button-text-color, #ffffff);
+  --tma-section-header: var(--tg-theme-section-header-text-color, #6d6d72);
+  --tma-separator: var(--tg-theme-section-separator-color, color-mix(in srgb, var(--tma-hint) 35%, transparent));
+  --tma-destructive: var(--tg-theme-destructive-text-color, #ff3b30);
+  --tma-bar: var(--tg-theme-bottom-bar-bg-color, var(--tma-section));
+  --tma-accent: var(--spike-primary, #ffa92c);
+  --tma-accent-ink: #1a1208;
+  --tma-fill: color-mix(in srgb, var(--tma-hint) 14%, transparent);
+  --tma-fill-strong: color-mix(in srgb, var(--tma-hint) 24%, transparent);
+  --tma-bubble-in: var(--tma-page);
+  --tma-bubble-out: color-mix(in srgb, var(--tma-button) 16%, var(--tma-bg));
+  --tma-radius-section: 12px;
+
+  /* shadcn tokens (components/ui/*) re-pointed at Telegram — restyle without editing components/ui. */
+  --background: var(--tma-bg);
+  --foreground: var(--tma-text);
+  --card: var(--tma-section);
+  --card-foreground: var(--tma-text);
+  --primary: var(--tma-accent);
+  --primary-foreground: var(--tma-accent-ink);
+  --secondary: var(--tma-page);
+  --secondary-foreground: var(--tma-text);
+  --muted: var(--tma-fill);
+  --muted-foreground: var(--tma-hint);
+  --accent: var(--tma-fill);
+  --accent-foreground: var(--tma-text);
+  --destructive: var(--tma-destructive);
+  --border: var(--tma-separator);
+  --input: var(--tma-separator);
+  --ring: var(--tma-link);
+
+  /* Telegram insets: device safe area + (fullscreen) content safe area; 0 when the SDK reports nothing. */
+  --tma-inset-top: calc(var(--tg-safe-area-inset-top, 0px) + var(--tg-content-safe-area-inset-top, 0px));
+  --tma-inset-bottom: max(var(--tg-safe-area-inset-bottom, 0px), env(safe-area-inset-bottom, 0px));
+  --tma-inset-left: calc(var(--tg-safe-area-inset-left, 0px) + var(--tg-content-safe-area-inset-left, 0px));
+  --tma-inset-right: calc(var(--tg-safe-area-inset-right, 0px) + var(--tg-content-safe-area-inset-right, 0px));
+
+  color-scheme: light;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  font-size: 15px;
+  line-height: 1.35;
+  color: var(--tma-text);
+  background: var(--tma-bg);
+  /* Height comes from Telegram's stable viewport (excludes the MainButton bar), never 100vh. */
+  height: var(--tg-viewport-stable-height, 100svh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: var(--tma-inset-top) var(--tma-inset-right) 0 var(--tma-inset-left);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tma-root.dark {
+  color-scheme: dark;
+}
+
+.tma-root[data-surface="grouped"] {
+  background: var(--tma-page);
+}
+
+/* globals.css paints body dark for the CRM; inside the mini app the body follows Telegram. */
+body:has(.tma-root) {
+  background: var(--tg-theme-bg-color, #ffffff);
+  overscroll-behavior: none;
+}
+
+.tma-root :focus-visible {
+  outline: 2px solid var(--tma-link);
+  outline-offset: 2px;
+}
+
+.tma-root button:disabled {
+  opacity: 0.45;
+}
+
+.tma-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.tma-num {
+  font-variant-numeric: tabular-nums;
+}
+
+.tma-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+/* Incoming-bubble tail (Telegram chat), used for the lead's own words in the inbox and the lead screen. */
+.tma-tail-in {
+  position: relative;
+  border-bottom-left-radius: 6px;
+}
+
+.tma-tail-out {
+  position: relative;
+  border-bottom-right-radius: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tma-root *,
+  .tma-root *::before,
+  .tma-root *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
