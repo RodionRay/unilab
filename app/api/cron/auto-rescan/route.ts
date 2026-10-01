@@ -7,6 +7,7 @@ import {
 } from "@/lib/auth";
 import { listUserIdsForCron } from "@/lib/users";
 import { constantTimeEqual } from "@/lib/security/secret-compare";
+import { selfOrigin } from "@/lib/security/self-origin";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -91,7 +92,7 @@ export async function POST(req: Request) {
     return reply({ error: "Unauthorized" }, 401);
   }
 
-  const origin = new URL(req.url).origin;
+  const origin = selfOrigin(req.url, readEnv("APP_URL"));
   const force =
     new URL(req.url).searchParams.get("force") === "1" ||
     (await req

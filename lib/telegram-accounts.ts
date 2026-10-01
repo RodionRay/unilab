@@ -94,16 +94,47 @@ export function isDayLimitCooldown(data: {
   return String(data.status || "") === "cooldown" && isOnCooldown(data.cooldownUntil);
 }
 
-/** Можно ли ставить в работу (вступление, скан, ответ лиду). */
+/**
+ * Вид дневного лимита отлёжки (`cooldownReason: day_<kind>`); null — отлёжка без известного
+ * лимита (старые записи, ручная), она блокирует аккаунт целиком.
+ */
+export function dayLimitCooldownKind(data: { cooldownReason?: unknown } | null | undefined): DayLimitKind | null {
+  const m = /^day_(invite|message|chat)$/.exec(String(data?.cooldownReason || ""));
+  return m ? (m[1] as DayLimitKind) : null;
+}
+
+/**
+ * Живая отлёжка закрывает этот вид действий: дневной лимит — только свой вид
+ * (ЛС на отлёжке не мешают вступлениям), отлёжка без вида — все.
+ */
+export function isDayLimitedFor(
+  data: { status?: string | null; cooldownUntil?: string | null; cooldownReason?: unknown } | null | undefined,
+  kind: DayLimitKind,
+): boolean {
+  if (!isDayLimitCooldown(data)) return false;
+  const limited = dayLimitCooldownKind(data);
+  return limited === null || limited === kind;
+}
+
+/**
+ * Можно ли ставить в работу (вступление, скан, ответ лиду). Дневной лимит одного вида
+ * аккаунт не выключает: его вид закрывает has*Quota перед действием.
+ */
 export function isAccountUsable(data: {
   status?: string | null;
   cooldownUntil?: string | null;
+  cooldownReason?: unknown;
 } | null | undefined): boolean {
   if (!data) return false;
   const st = String(data.status || "");
+  // Спамблок от PEER_FLOOD ставит таймер (withSpamblockStatus) — после него аккаунт снова пробуем.
+  // Спамблок без таймера (проверка @SpamBot) снимается только новой проверкой.
+  if (st === "spamblock") {
+    const until = Date.parse(String(data.cooldownUntil || ""));
+    return Number.isFinite(until) && until <= Date.now();
+  }
   if (
     [
-      "spamblock",
       "frozen",
       "unauthorized",
       "disconnected",
@@ -116,12 +147,21 @@ export function isAccountUsable(data: {
   ) {
     return false;
   }
-  // Отлёжка только при явном status=cooldown и живом таймере (дневной лимит).
+  // Отлёжка только при явном status=cooldown и живом таймере; дневной лимит вида — не на весь аккаунт.
   if (st === "cooldown") {
-    return !isOnCooldown(data.cooldownUntil);
+    return !isOnCooldown(data.cooldownUntil) || dayLimitCooldownKind(data) !== null;
   }
   // active / пустой / legacy — cooldownUntil без статуса cooldown игнорируем (старые фейлы коннекта).
   return !st || st === "active" || st === "ok" || st === "connected";
+}
+
+/** FloodWait аккаунта ещё идёт — не слать с него (статус не меняется, это не отлёжка). */
+export function isAccountFlooded(
+  data: { floodUntil?: unknown } | null | undefined,
+  now = Date.now(),
+): boolean {
+  const t = Date.parse(String(data?.floodUntil || ""));
+  return Number.isFinite(t) && t > now;
 }
 
 /**
@@ -265,9 +305,20 @@ export function bumpChatCounters<T extends Record<string, unknown>>(
   };
 }
 
-/** Если после операции дневной лимит кончился — увести в отлёжку до полуночи. */
+const QUOTA_CHECKS: ReadonlyArray<[DayLimitKind, (data: Record<string, unknown>) => boolean]> = [
+  ["invite", (d) => hasInviteQuota(d as Parameters<typeof hasInviteQuota>[0])],
+  ["message", (d) => hasMessageQuota(d as Parameters<typeof hasMessageQuota>[0])],
+  ["chat", (d) => hasChatQuota(d as Parameters<typeof hasChatQuota>[0])],
+];
+
+/**
+ * Если после операции дневной лимит кончился — увести в отлёжку до полуночи.
+ * `spent` — вид квоты, которую только что потратили: проверяется только он (ЛС не уводит
+ * в отлёжку из-за исчерпанных вступлений). Без него — любой исчерпанный лимит.
+ */
 export function applyQuotaCooldownIfExhausted<T extends Record<string, unknown>>(
   data: T,
+  spent?: DayLimitKind,
 ): T {
   const st = String((data as { status?: string }).status || "");
   if (st === "spamblock" || st === "frozen") return data;
@@ -275,14 +326,9 @@ export function applyQuotaCooldownIfExhausted<T extends Record<string, unknown>>
     return data;
   }
 
-  if (!hasInviteQuota(data as Parameters<typeof hasInviteQuota>[0])) {
-    return withDayLimitCooldown(data, "invite");
-  }
-  if (!hasMessageQuota(data as Parameters<typeof hasMessageQuota>[0])) {
-    return withDayLimitCooldown(data, "message");
-  }
-  if (!hasChatQuota(data as Parameters<typeof hasChatQuota>[0])) {
-    return withDayLimitCooldown(data, "chat");
+  for (const [kind, hasQuota] of QUOTA_CHECKS) {
+    if (spent && kind !== spent) continue;
+    if (!hasQuota(data)) return withDayLimitCooldown(data, kind);
   }
   // Сброс «осиротевшего» таймера от старых FloodWait/коннект-фейлов.
   if (

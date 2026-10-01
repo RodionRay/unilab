@@ -18,7 +18,8 @@ export function telegramEntityKey(raw: string): string {
     const parts = path.split("/");
     return `t.me/${parts[0]}/${parts[1]}`.toLowerCase();
   }
-  const user = path.split("/")[0] || "";
+  // t.me/s/<name> — веб-превью того же публичного канала
+  const user = path.replace(/^s\//i, "").split("/")[0] || "";
   return user ? `t.me/${user.toLowerCase()}` : "";
 }
 

@@ -5,7 +5,7 @@ vi.mock("@/lib/users", () => ({ listUserIdsForCron: async () => [] }));
 import { POST } from "@/app/api/cron/auto-rescan/route";
 
 const GOOD = "c".repeat(40);
-const ENV_KEYS = ["CRON_SECRET", "SESSION_SECRET", "TG_WORKER_TOKEN", "ADMIN_EMAIL"];
+const ENV_KEYS = ["CRON_SECRET", "SESSION_SECRET", "TG_WORKER_TOKEN", "ADMIN_EMAIL", "APP_URL"];
 const saved: Record<string, string | undefined> = {};
 
 async function misconfigured(res: Response) {
@@ -13,9 +13,9 @@ async function misconfigured(res: Response) {
   return res.status === 503 && body.error !== "Нет пользователей для обхода";
 }
 
-function call(auth?: string) {
+function call(auth?: string, url = "https://app.test/api/cron/auto-rescan") {
   return POST(
-    new Request("https://app.test/api/cron/auto-rescan", {
+    new Request(url, {
       method: "POST",
       headers: auth ? { authorization: auth } : {},
     }),
@@ -60,5 +60,24 @@ describe("cron auto-rescan auth", () => {
     const res = await call(`Bearer ${GOOD}`);
     const body = (await res.json()) as { error?: string };
     expect(body.error).toBe("Нет пользователей для обхода");
+  });
+
+  it("calls APP_URL, never the origin from the request Host header", async () => {
+    process.env.CRON_SECRET = GOOD;
+    process.env.SESSION_SECRET = "s".repeat(40);
+    process.env.ADMIN_EMAIL = "admin@example.com";
+    process.env.APP_URL = "http://127.0.0.1:5173";
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      urls.push(String(url));
+      return Response.json({ ok: true, data: [] });
+    }));
+    try {
+      await call(`Bearer ${GOOD}`, "https://evil.test/api/cron/auto-rescan");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(urls.length).toBeGreaterThan(0);
+    for (const u of urls) expect(new URL(u).origin).toBe("http://127.0.0.1:5173");
   });
 });

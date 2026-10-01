@@ -5,6 +5,7 @@
 
 import {
   WEAK_PLUS_TERMS,
+  findMinusHit,
   hasBuyerIntent,
   hasProductFit,
   hasSoftAsk,
@@ -12,6 +13,7 @@ import {
   looksLikeServiceAd,
   normalizeLeadMessage,
   parseLeadTemperature,
+  plusTermHit,
   splitTerms,
   strongPlusTerms,
   type LeadTemperature,
@@ -19,6 +21,8 @@ import {
 
 export const LEAD_SCORE_HOT = 70;
 export const LEAD_SCORE_WARM = 45;
+/** Soft ask (подскажите / кто пользуется) needs this many settings hits to be warm. */
+const SOFT_ASK_WARM_MIN_HITS = 2;
 
 export type LeadCoreSettings = {
   keywords?: string;
@@ -163,9 +167,20 @@ export function hardReject(
   const minus = splitTerms(
     [settings.minusKeywords || "", settings.avoidTopics || ""].join(", "),
   );
-  const hit = minus.find((m) => m.length >= 3 && body.includes(m));
+  const hit = findMinusHit(body, minus);
   if (hit) return `Стоп-слово: ${hit}`;
   return "";
+}
+
+/**
+ * Settings hits that name a topic: ask phrases themselves ("кто пользуется", "ищу сервис") do not
+ * count, and a hit contained in another hit ("склад" in "мойсклад") is the same evidence.
+ */
+export function distinctTopicHits(hits: readonly string[]): string[] {
+  const topical = [...new Set(hits.map((h) => h.toLowerCase().trim()))].filter(
+    (h) => h && !hasBuyerIntent(h) && !hasSoftAsk(h),
+  );
+  return topical.filter((h) => !topical.some((other) => other !== h && other.includes(h)));
 }
 
 export function scoreLead(text: string, settings: LeadCoreSettings): LeadScoreResult {
@@ -189,19 +204,19 @@ export function scoreLead(text: string, settings: LeadCoreSettings): LeadScoreRe
   const softAsk = hasSoftAsk(text);
 
   const plus = strongPlusTerms(settings.keywords || "");
-  const plusHits = plus.filter((p) => body.includes(p));
+  const plusHits = plus.filter((p) => plusTermHit(body, p));
 
   const signalHits = splitTerms(settings.hotSignals || "").filter(
     (t) =>
       t.length >= 3 &&
-      body.includes(t) &&
+      plusTermHit(body, t) &&
       !WEAK_PLUS_TERMS.has(t) &&
       !plusHits.includes(t),
   );
 
   const criteriaTerms = fitTermsFromSettings(settings);
   const criteriaHits = criteriaTerms.filter(
-    (t) => body.includes(t) && !plusHits.includes(t) && !signalHits.includes(t),
+    (t) => plusTermHit(body, t) && !plusHits.includes(t) && !signalHits.includes(t),
   );
 
   // Fit только из настроек AI-ассистента. Builtin Uniseller-fit — запасной, если настроек мало.
@@ -243,6 +258,12 @@ export function scoreLead(text: string, settings: LeadCoreSettings): LeadScoreRe
   if (!buyer && !softAsk) {
     score = Math.min(score, LEAD_SCORE_WARM - 1);
     if (score > 0) reasons.push("Нет запроса услуги — только тема чата");
+  }
+
+  // Soft + ≥2 совпадений с настройками AI — это вопрос по теме продукта, минимум warm
+  const topicHitCount = distinctTopicHits([...plusHits, ...signalHits, ...criteriaHits]).length;
+  if (softAsk && !buyer && topicHitCount >= SOFT_ASK_WARM_MIN_HITS) {
+    score = Math.max(score, LEAD_SCORE_WARM);
   }
 
   // Soft без привязки к настройкам ассистента — слабо

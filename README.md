@@ -41,6 +41,7 @@ Telegram authorization / tdata import, joining groups, proxy connectivity checks
 - Limits: `TG_WORKER_MAX_CONCURRENCY` (default 4, excess → 429), `TG_WORKER_MAX_BODY_BYTES` (default 6000000 → 413), Python stdout 2 MB, account archives ≤5000 files / ≤200 MB unpacked. Proxy hosts resolving to loopback/private/link-local/CGNAT/multicast addresses are rejected.
 - Session archives are unpacked into a `0700` temp dir `uniseller-acc-*` created and always removed by Node (timeout → SIGTERM, SIGKILL after 5 s); stale dirs older than 10 minutes are purged on start.
 - Auto-rescan cron: the worker calls `APP_URL/api/cron/auto-rescan` with `Authorization: Bearer $CRON_SECRET` only if `APP_URL` is https or loopback. `CRON_SECRET` (≥32 chars, same value in the web app and the worker) is **required** for auto-rescan: without it the worker logs one warning at startup and skips every tick.
+- The auto-rescan cron route calls `/api/workspace` on `APP_URL` (set it in the web app env too), else on `127.0.0.1:<request port>` — never on the request Host header (`lib/security/self-origin.ts::selfOrigin`).
 - `npm run dev`: if `TG_WORKER_TOKEN` / `CRON_SECRET` are absent from env and `.env`, random per-run values are generated and passed to both processes (not written to `.env`).
 - Tests: `npx vitest run tests/tg-worker-server.test.ts`; Python guards: `telegram-worker/.venv/bin/python -m unittest discover -s telegram-worker/tests`.
 

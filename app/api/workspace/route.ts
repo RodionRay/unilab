@@ -3,25 +3,38 @@ import {GROUP_CATALOG,isCatalogPlaceholderUrl} from '@/lib/group-catalog';
 import {JOIN_SUCCESS_PATCH,JOIN_WORKER_ERROR_RETRY_MS,LIVE_JOIN_STATES,accountBlindPatch,clearStaleJoinState,type JoinAccountState,type JoinGateResult,type JoinProxyState,evaluateAccountJoinReadiness,isAccountBlindResult,isJoinFarmCandidate,joinFailurePatch,sanitizeJoinStateError} from '@/lib/processes/join-flow';
 import {database,seal,unseal} from '@/lib/server-store';
 import {aiChatText,envAiApiKey,resolveAiConfig} from '@/lib/ai-client';
-import {buildProjectBrief,leadMessageFingerprint,normalizeLeadMessage,parseLeadTemperature,ratingFromTemperatures,strongPlusTerms,type LeadTemperature} from '@/lib/lead-filter';
+import {buildProjectBrief,leadMessageFingerprint,normalizeLeadMessage,parseLeadTemperature,ratingFromTemperatures,strongPlusTerms} from '@/lib/lead-filter';
 import {
- classifyWithLeadCore,
  explainLeadDecision,
- LEAD_SCORE_WARM,
- reasonFromCore,
- scoreLead,
  workerKeywordsFromSettings,
  type LeadCoreSettings,
+ type LeadScoreResult,
 } from '@/lib/lead-core';
-import {appendLearnExamples,extractTermsFromHotMessages,extractStopTermsFromMessage,mergeKeywords,mergeKeywordsPreferNew} from '@/lib/ai-keywords';
-import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,generateTelegramUsername,hasMessageQuota,isAccountUsable,isDayLimitCooldown,isOnCooldown,withFrozenStatus} from '@/lib/telegram-accounts';
+import {
+ activeAiRejects,
+ addLeadTombstone,
+ aiSettingsSignature,
+ applyAiVerdicts,
+ decideScanLead,
+ evaluateScanGate,
+ keepServerOwnedFields,
+ rememberAiRejects,
+ type AiBatchOutcome,
+ type AiPick,
+} from '@/lib/processes/scan-flow';
+import {appendLearnExamples,extractTermsFromHotMessages,extractStopTermsFromMessage,mergeKeywords,mergeKeywordsPreferNew,parseKeywordCsv} from '@/lib/ai-keywords';
+import {sanitizeMinusTerms,scanStopTerms} from '@/lib/lead-stopwords';
+import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,generateTelegramUsername,hasMessageQuota,isAccountUsable,isOnCooldown,withFrozenStatus} from '@/lib/telegram-accounts';
 import {pushTaskLog} from '@/lib/audience-invite';
 import {canonicalizeTgUrl,duplicateReason,isDuplicateKind,telegramEntityKey} from '@/lib/record-identity';
 import {DEFAULT_DM_SOFT_CLOSE} from '@/lib/mailing';
 import {checkProxyTarget} from '@/lib/security/net-guard';
 import {proxyCheckTimeoutMs,workerSlots} from '@/lib/worker-timeouts';
+import {WorkerBusyError} from '@/lib/worker-busy';
 import {RECORD_KINDS,authorizeWorkspaceAction,keepOwnerSecretsOnSave,visibleRecordsFor,type WorkspaceActor} from '@/lib/security/workspace-authz';
 import {ALL_CRM_ACCESS} from '@/lib/staff-types';
+import {INBOX_CURSOR_MARGIN_SEC,applySendOutcome,findSendBlock,leadReplies,markLeadOpened,mergeIncomingDm,nextInboxCursor,withPendingSend,type LeadData,type ReplyEntry,type SendOutcome} from '@/lib/lead-conversation';
+import type {D1LikeDatabase} from '@/lib/db';
 import {env} from 'cloudflare:workers';
 import {z} from 'zod';
 export const dynamic='force-dynamic';
@@ -362,9 +375,6 @@ async function loadAccountSessionPayload(owner:string,accountId:string){
  };
 }
 
-/** Worker answered 429: every slot and queue place is taken; nothing is wrong with the target. */
-class WorkerBusyError extends Error{}
-
 async function workerPost(path:string,body:unknown,timeoutMs=120_000){
  const headers:Record<string,string>={'Content-Type':'application/json'};
  const token=workerToken();
@@ -601,7 +611,8 @@ async function runAccountCheck(owner:string,id:string,opts?:{
    }
 
    if(status==='frozen'||status==='spamblock'){
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'account').run();
+    // Подтверждённый проверкой спамблок без таймера: старый истёкший cooldownUntil не должен «снять» его (REQ-M8)
+    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...next,cooldownUntil:'',cooldownReason:status}),owner,id,'account').run();
     return {id,ok:false,status:next.status,error:next.error,profile,proxyRotated:proxyRotated||undefined};
    }
 
@@ -714,20 +725,23 @@ async function resolveApiKey(owner:string,config:any){
  return '';
 }
 
-/** Строгий AI-шлюз: подтверждает кандидатов ядра. Лучше 0, чем шум. */
+/**
+ * Строгий AI-шлюз: подтверждает кандидатов ядра. Лучше 0, чем шум.
+ * Итог по батчам (lib/processes/scan-flow.ts::applyAiVerdicts): ответ модели — вердикт, сбой — fallback на ядро.
+ */
 async function qualifyLeadsWithAi(
  apiKey:string,
  settings:any,
  messages:{tgMsgId:string;message:string;name:string;coreScore?:number;coreReasons?:string[]}[],
-){
- type Picked={tgMsgId:string;reason:string;temperature:LeadTemperature};
- if(!messages.length)return [] as Picked[];
+):Promise<AiBatchOutcome[]>{
+ if(!messages.length)return [];
  const brief=buildProjectBrief(settings);
- const stop=mergeKeywords(settings.minusKeywords||'',settings.avoidTopics||'');
+ const stop=scanStopTerms(settings).join(', ');
  const batchSize=20;
- const out:Picked[]=[];
+ const out:AiBatchOutcome[]=[];
  for(let offset=0;offset<messages.length;offset+=batchSize){
   const batch=messages.slice(offset,offset+batchSize);
+  const ids=batch.map(m=>String(m.tgMsgId));
   const listed=batch.map((m,i)=>{
    const core=m.coreScore!=null?`Ядро: score ${m.coreScore}/100 · ${(m.coreReasons||[]).slice(0,3).join('; ')}`:'';
    return `#${i+1} id=${m.tgMsgId}\nАвтор: ${m.name}\n${core}\n${m.message.slice(0,900)}`;
@@ -753,26 +767,34 @@ async function qualifyLeadsWithAi(
     user:'Отметь ТОЛЬКО тех, кто ищет сервис/внедрение под продукт из настроек. Остальных пропусти:\n\n'+listed,
    });
    const match=text.match(/\[[\s\S]*\]/);
-   if(!match)continue;
+   if(!match)throw new Error('AI: ответ без JSON-массива');
    const arr=JSON.parse(match[0]) as {id?:string;tgMsgId?:string;reason?:string;temperature?:string}[];
-   const allowIds=new Set(batch.map(m=>String(m.tgMsgId)));
+   if(!Array.isArray(arr))throw new Error('AI: ответ не массив');
+   const allowIds=new Set(ids);
+   const picked:AiPick[]=[];
    for(const x of arr){
-    const tgMsgId=String(x.id||x.tgMsgId||'');
+    const tgMsgId=String(x?.id||x?.tgMsgId||'');
     if(!tgMsgId||!allowIds.has(tgMsgId))continue;
     const temperature=parseLeadTemperature(x.temperature);
     if(temperature!=='hot'&&temperature!=='warm')continue;
-    out.push({tgMsgId,reason:String(x.reason||'').slice(0,500),temperature});
+    picked.push({tgMsgId,reason:String(x.reason||'').slice(0,500),temperature});
    }
-  }catch{/* батч пропускаем */}
+   out.push({ids,ok:true,picked});
+  }catch(e){
+   // Сбой батча (429/таймаут/мусор) — не вердикт: его кандидаты пойдут по ядру
+   console.warn('[workspace] qualify_leads_ai batch failed:',String((e as Error)?.message||e).slice(0,200));
+   out.push({ids,ok:false,picked:[]});
+  }
  }
  return out;
 }
 
-function leadCoreSettingsFrom(settings:any,keywords:string,minusKeywords:string):LeadCoreSettings{
+/** stopTerms = the exact ordered list the worker gets (avoidTopics already merged in by scanStopTerms). */
+function leadCoreSettingsFrom(settings:any,keywords:string,stopTerms:readonly string[]):LeadCoreSettings{
  return {
   keywords,
-  minusKeywords,
-  avoidTopics:String(settings.avoidTopics||''),
+  minusKeywords:stopTerms.join(', '),
+  avoidTopics:'',
   leadCriteria:String(settings.leadCriteria||''),
   hotSignals:String(settings.hotSignals||''),
   product:String(settings.product||''),
@@ -790,8 +812,9 @@ function ensureJunkMinus(minus:string){
  return mergeKeywords(minus||'',DEFAULT_JUNK_MINUS);
 }
 
-function stopWordsFromSettings(settings:any){
- return mergeKeywords(settings.minusKeywords||'',settings.avoidTopics||'');
+/** Sanitized at read time: polluted stop-lists (product words learned as minus) recover without a manual cleanup. */
+function stopWordsFromSettings(settings:any):string[]{
+ return scanStopTerms(settings);
 }
 
 function scanLimitFromDays(days:number){
@@ -1086,6 +1109,89 @@ async function notifyTelegramText(token:string,chatId:string,text:string){
  }
 }
 
+/** REQ-L6: a scanned lead the user deletes is remembered on its group, so the next scan does not re-create it. */
+async function rememberDeletedLead(owner:string,leadId:string){
+ const db=database();
+ const row=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,leadId,'lead').first<{data:string}>();
+ if(!row)return;
+ let lead:{groupId?:unknown;tgMsgId?:unknown};
+ try{lead=JSON.parse(String(row.data))}catch{return}
+ const groupId=String(lead.groupId||'');
+ const tgMsgId=String(lead.tgMsgId||'');
+ if(!groupId||!tgMsgId)return;
+ const grow=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,groupId,'group').first<{data:string}>();
+ if(!grow)return;
+ let gdata:Record<string,unknown>;
+ try{gdata=JSON.parse(String(grow.data))}catch{return}
+ const next={...gdata,leadTombstones:addLeadTombstone(gdata.leadTombstones,tgMsgId)};
+ await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,groupId,'group').run();
+}
+
+/** Message of the worker /scan-group answer; `_core` is attached by scan_group after the core decision. */
+type ScanWorkerMessage={tgMsgId?:unknown;message?:string;name?:string;_core?:{score?:number;reasons?:string[]}};
+
+/** Scan of one group runs at most once at a time (cron + manual force); TTL covers worker + AI batches. */
+const SCAN_LOCK_TTL_MS=10*60_000;
+
+async function acquireGroupScanLock(owner:string,groupId:string){
+ const token=crypto.randomUUID();
+ const until=new Date(Date.now()+SCAN_LOCK_TTL_MS).toISOString();
+ const res=await database().prepare("UPDATE records SET data=json_set(data,'$.scanLockUntil',?,'$.scanLockToken',?) WHERE owner=? AND id=? AND kind='group' AND COALESCE(json_extract(data,'$.scanLockUntil'),'')<?")
+  .bind(until,token,owner,groupId,new Date().toISOString()).run();
+ return res.meta.changes===1?{token,until}:null;
+}
+
+async function releaseGroupScanLock(owner:string,groupId:string,token:string){
+ try{
+  await database().prepare("UPDATE records SET data=json_set(data,'$.scanLockUntil','','$.scanLockToken','') WHERE owner=? AND id=? AND kind='group' AND json_extract(data,'$.scanLockToken')=?")
+   .bind(owner,groupId,token).run();
+ }catch(e){
+  console.error('[workspace] release_scan_lock:',String((e as Error)?.message||e).slice(0,300));
+ }
+}
+
+const NOTIFY_MAX_ATTEMPTS=5;
+const NOTIFY_CLAIM_MS=60_000;
+const NOTIFY_BATCH=20;
+
+/**
+ * REQ-L9: leads with notifyPending are claimed (so parallel scans never send one lead twice), sent in one
+ * Telegram message, then marked notifiedAt; a failed send is logged and retried on the next scan.
+ */
+async function flushLeadNotifications(owner:string,settings:{notifyEnabled?:unknown}){
+ if(!settings?.notifyEnabled)return;
+ const db=database();
+ const rows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='lead' AND json_extract(data,'$.notifyPending')=1 ORDER BY created LIMIT ?").bind(owner,NOTIFY_BATCH).all();
+ const nowIso=new Date().toISOString();
+ const claimUntil=new Date(Date.now()+NOTIFY_CLAIM_MS).toISOString();
+ const claimed:{id:string;data:Record<string,unknown>}[]=[];
+ for(const r of rows.results){
+  const res=await db.prepare("UPDATE records SET data=json_set(data,'$.notifyClaimUntil',?) WHERE owner=? AND id=? AND kind='lead' AND json_extract(data,'$.notifyPending')=1 AND COALESCE(json_extract(data,'$.notifyClaimUntil'),'')<?")
+   .bind(claimUntil,owner,String(r.id),nowIso).run();
+  if(res.meta.changes!==1)continue;
+  try{claimed.push({id:String(r.id),data:JSON.parse(String(r.data))})}catch{/* битая запись: claim истечёт */}
+ }
+ if(!claimed.length)return;
+ const sent=await notifyNewLeadsTelegram(settings,claimed.map(c=>({
+  name:String(c.data.name||''),
+  message:String(c.data.message||''),
+  temperature:String(c.data.temperature||''),
+  source:String(c.data.source||''),
+ })));
+ if(sent.ok){
+  for(const c of claimed){
+   await db.prepare("UPDATE records SET data=json_set(data,'$.notifyPending',json('false'),'$.notifiedAt',?,'$.notifyClaimUntil','') WHERE owner=? AND id=? AND kind='lead'").bind(new Date().toISOString(),owner,c.id).run();
+  }
+  return;
+ }
+ const error='error' in sent?String(sent.error||''):'уведомления выключены';
+ for(const c of claimed){
+  await db.prepare("UPDATE records SET data=json_set(data,'$.notifyAttempts',COALESCE(json_extract(data,'$.notifyAttempts'),0)+1,'$.notifyClaimUntil','','$.notifyPending',CASE WHEN COALESCE(json_extract(data,'$.notifyAttempts'),0)+1>=? THEN json('false') ELSE json('true') END) WHERE owner=? AND id=? AND kind='lead'")
+   .bind(NOTIFY_MAX_ATTEMPTS,owner,c.id).run();
+ }
+ await appendGlobalRescanLog(owner,'warn',`Уведомление о новых лидах (${claimed.length}) не отправлено: ${error.slice(0,160)} — повтор при следующем скане`);
+}
+
 async function loadNotifySettings(db:any,owner:string){
  const row:any=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='settings' LIMIT 1").bind(owner).first();
  if(!row)return null;
@@ -1118,6 +1224,173 @@ function sameTelegramPeer(lead:any,msg:any){
  const a=normTgUser(lead?.senderUsername||lead?.username);
  const b=normTgUser(msg?.username);
  return !!(a&&b&&a===b);
+}
+
+/** Lead rows change under us (manager reply, DM poll, save): writes are compare-and-swap on the row text. */
+class LeadUpdateConflictError extends Error{}
+
+/**
+ * Worker send job may take 120 s (worker-app.mjs timeoutForAction) after waiting for a slot; aborting kills the job,
+ * so a shorter app timeout turns a slow-but-delivered reply into an «unknown» result.
+ */
+const SEND_MESSAGE_TIMEOUT_MS=185_000;
+/** /inbox-dms: 120 s worker job + queue margin. */
+const INBOX_DMS_TIMEOUT_MS=150_000;
+/** One poll_dm_replies per owner; covers the worst case of up to 4 accounts × INBOX_DMS_TIMEOUT_MS. */
+const DM_POLL_LEASE_MS=11*60_000;
+
+type LiveAccount={id:string;data:Record<string,unknown>};
+type InboxMessage=Record<string,unknown>;
+type ConversationLead={id:string;data:LeadData};
+
+const dmPollLeaseId=(owner:string)=>`dm-poll-lease:${owner}`;
+
+/** Lease row lives with the AI guard rows (kind ai_guard is hidden from GET); returns the stamp to release with. */
+async function acquireDmPollLease(db:D1LikeDatabase,owner:string):Promise<string|null>{
+ const now=Date.now();
+ const stamp=new Date(now).toISOString();
+ const r=await db.prepare('INSERT INTO records(id,owner,kind,data,created) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET created=excluded.created WHERE records.created < ?')
+  .bind(dmPollLeaseId(owner),owner,'ai_guard','{}',stamp,new Date(now-DM_POLL_LEASE_MS).toISOString()).run();
+ return r.meta.changes?stamp:null;
+}
+
+/** Releases only our own lease (an expired one may already belong to another poll). */
+async function releaseDmPollLease(db:D1LikeDatabase,owner:string,stamp:string){
+ await db.prepare('UPDATE records SET created=? WHERE id=? AND owner=? AND created=?').bind(new Date(0).toISOString(),dmPollLeaseId(owner),owner,stamp).run();
+}
+
+/** Ответ клиента берём только в переписку, которую мы уже начали с этим лидом. */
+async function loadConversationLeads(db:D1LikeDatabase,owner:string){
+ const leadRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='lead'").bind(owner).all();
+ const leads=leadRows.results.map(r=>{
+  try{return {id:String(r.id),data:JSON.parse(String(r.data)) as LeadData}}catch{return null}
+ }).filter(Boolean) as ConversationLead[];
+ const match=(msg:InboxMessage):ConversationLead|null=>leads.find(L=>{
+  if(!sameTelegramPeer(L.data,msg))return false;
+  const d=L.data||{};
+  if(d.conversationOpen)return true;
+  return leadReplies(d).some(x=>x.from==='us'||x.mode==='dm');
+ })??null;
+ return {match};
+}
+
+/**
+ * Records one incoming DM into the freshly re-read lead (CAS).
+ * Returns the client name when something new was recorded (and notified), null for an already known message.
+ */
+async function recordIncomingDm(db:D1LikeDatabase,owner:string,accountId:string,msg:InboxMessage,leadRow:ConversationLead):Promise<string|null>{
+ const text=String(msg.text||'').trim()||(msg.hasMedia?'[медиа]':'');
+ if(!text)return null;
+ const nowIso=new Date().toISOString();
+ const incoming:ReplyEntry={
+  text:text.slice(0,4000),
+  mode:'dm',
+  at:String(msg.at||nowIso).slice(0,40),
+  ok:true,
+  error:'',
+  messageId:String(msg.messageId||'').slice(0,40),
+  link:msg.username?`https://t.me/${String(msg.username).replace(/^@/,'')}`:'',
+  chatId:String(msg.userId||'').slice(0,40),
+  from:'client',
+  accountId,
+ };
+ const ctx={accountId,userId:String(msg.userId||''),username:String(msg.username||''),nowIso};
+ const done=await mutateLead(db,owner,leadRow.id,cur=>{
+  const next=mergeIncomingDm(cur,incoming,ctx);
+  return {next:next??undefined,result:!!next};
+ });
+ if(!done)return null;
+ leadRow.data=done.lead;
+ if(!done.result)return null;
+ const name=String(done.lead.name||msg.name||msg.username||'Клиент');
+ void notifyConversationEvent(db,owner,String(done.lead.name||''),String(done.lead.senderUsername||msg.username||''),incoming.text);
+ return name;
+}
+
+/** One inbox pass over a rotating slice of live accounts (caller holds the per-owner lease). */
+async function pollDmReplies(db:D1LikeDatabase,owner:string,live:LiveAccount[]){
+ const {match}=await loadConversationLeads(db,owner);
+ const settingsRow=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='settings' LIMIT 1").bind(owner).first<{id:string;data:string}>();
+ let cursor=0;
+ if(settingsRow){
+  try{cursor=Math.max(0,Number(JSON.parse(String(settingsRow.data)).inboxPollCursor)||0)}catch{/* */}
+ }
+ const take=Math.min(4,Math.max(2,live.length));
+ const slice=live.slice(cursor%live.length).concat(live.slice(0,cursor%live.length)).slice(0,take);
+ const nextCursor=(cursor+slice.length)%Math.max(1,live.length);
+
+ let opened=0;
+ const names:string[]=[];
+ for(const acc of slice){
+  let result:{ok?:unknown;messages?:unknown;complete?:unknown;nextOffsetDate?:unknown;scanStartedTs?:unknown};
+  try{
+   const {payload}=await loadAccountSessionPayload(owner,acc.id);
+   result=await workerPost('/inbox-dms',{
+    ...payload,
+    sinceTs:Number(acc.data.inboxSinceTs)||0,
+    offsetDate:Number(acc.data.inboxPageOffset)||0,
+    maxUserDialogs:30,
+   },INBOX_DMS_TIMEOUT_MS);
+  }catch{
+   continue;
+  }
+  if(!result?.ok)continue;
+  const msgs:InboxMessage[]=Array.isArray(result.messages)?result.messages:[];
+  let persisted=true;
+  let maxTs=0;
+  for(const msg of msgs){
+   maxTs=Math.max(maxTs,Number(msg.ts)||0);
+   const leadRow=match(msg);
+   if(!leadRow)continue;
+   try{
+    const name=await recordIncomingDm(db,owner,acc.id,msg,leadRow);
+    if(name){opened++;names.push(name)}
+   }catch(e){
+    persisted=false;
+    console.error('[workspace] poll_dm_replies:',String((e as Error)?.message||e).slice(0,300));
+   }
+  }
+  // Курсор двигаем только по тому, что воркер реально просмотрел и мы сохранили
+  if(persisted){
+   const next=nextInboxCursor(acc.data,result,maxTs?maxTs-INBOX_CURSOR_MARGIN_SEC:0);
+   await db.prepare("UPDATE records SET data=json_set(data,'$.inboxSinceTs',?,'$.inboxPageOffset',?,'$.inboxPageStartTs',?) WHERE owner=? AND id=? AND kind='account'")
+    .bind(next.inboxSinceTs,next.inboxPageOffset,next.inboxPageStartTs,owner,acc.id).run();
+  }
+ }
+ if(settingsRow){
+  await db.prepare("UPDATE records SET data=json_set(data,'$.inboxPollCursor',?) WHERE owner=? AND id=? AND kind='settings'").bind(nextCursor,owner,String(settingsRow.id)).run();
+ }
+ return {ok:true,opened,names:names.slice(0,12),nextCursor};
+}
+
+/** A thrown send: busy worker = not sent (retry allowed); our timeout/abort = maybe sent (retry blocked). */
+function sendFailureOutcome(e:unknown):{outcome:SendOutcome;httpStatus:number}{
+ if(e instanceof WorkerBusyError){
+  return {outcome:{status:'failed',error:'Telegram-воркер занят — повторите через минуту'},httpStatus:429};
+ }
+ const name=String((e as Error)?.name||'');
+ if(name==='TimeoutError'||name==='AbortError'){
+  console.error('[workspace] send_lead_message: worker timeout, delivery unknown');
+  return {outcome:{status:'unknown',error:'Нет ответа Telegram-воркера — сообщение могло уйти. Проверьте переписку в Telegram перед повтором.'},httpStatus:504};
+ }
+ return {outcome:{status:'failed',error:internalError('send_lead_message',e,'Не удалось отправить сообщение. Повторите попытку.')},httpStatus:503};
+}
+
+/**
+ * Re-reads the lead, applies `fn` and writes only if the row is unchanged since the read (retries on a race).
+ * `fn` returns `next` to write (or none to skip the write) and a result; null when the lead is gone.
+ */
+async function mutateLead<T>(db:D1LikeDatabase,owner:string,id:string,fn:(lead:LeadData)=>{next?:LeadData;result:T}):Promise<{result:T;lead:LeadData}|null>{
+ for(let attempt=0;attempt<5;attempt++){
+  const row=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'lead').first<{data:string}>();
+  if(!row)return null;
+  const lead=JSON.parse(String(row.data)) as LeadData;
+  const {next,result}=fn(lead);
+  if(!next)return {result,lead};
+  const upd=await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=? AND data=?').bind(JSON.stringify(next),owner,id,'lead',String(row.data)).run();
+  if(upd.meta.changes)return {result,lead:next};
+ }
+ throw new LeadUpdateConflictError('Лид одновременно изменён — повторите');
 }
 
 export async function GET(){const session=await getSessionUser();if(!session?.userId)return reply({error:'Войдите в рабочее пространство'},401);
@@ -1457,7 +1730,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'group').run();
    if(spentJoin){
     // Счётчик уже поднят резервом; осталось уйти в отлёжку, если это вступление исчерпало лимит
-    const cooled=applyQuotaCooldownIfExhausted(reserved);
+    const cooled=applyQuotaCooldownIfExhausted(reserved,'invite');
     if(cooled!==reserved){
      await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(cooled),owner,gdata.accountId,'account').run();
     }
@@ -1523,7 +1796,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const force=b.force===true;
   const grow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'group').first();
   if(!grow)return reply({error:'Группа не найдена'},404);
-  const gdata=JSON.parse(grow.data);
+  let gdata=JSON.parse(grow.data);
   if(!gdata.accountId)return reply({error:'Назначьте аккаунт группе'},400);
   if(isCatalogPlaceholderUrl(gdata.url||''))return reply({error:'Нужна реальная ссылка t.me/… или инвайт (это шаблон каталога)',needUrl:true},400);
   // Сканирует только назначенный аккаунт: отлёжка — позже, мёртвый — ошибка без подмены.
@@ -1534,12 +1807,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     return reply({error:'Аккаунт группы не найден',accountDead:true},400);
    }
    const st=String(adata.status||'');
-   if(isDayLimitCooldown(adata)||st==='spamblock'||st==='frozen'){
+   const gate=evaluateScanGate(adata);
+   if(!gate.ok&&gate.reason==='cooldown'){
     return reply({
      ok:false,
      skipped:true,
      accountCooldown:true,
-     waitSec:Math.max(60,Math.ceil((Date.parse(String(adata.cooldownUntil||''))-Date.now())/1000)||300),
+     waitSec:gate.waitSec,
      error:'Аккаунт группы на отлёжке — скан позже',
      group:gdata,
     },429);
@@ -1581,9 +1855,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const keywords=workerKeywordsFromSettings(coreSettings).join(', ')||String(settings.keywords||'');
   const scanDepthDays=Math.max(1,Math.min(90,Number(settings.scanDepthDays)||7));
   const scanLimit=scanLimitFromDays(scanDepthDays);
+  const lock=await acquireGroupScanLock(owner,id);
+  if(!lock)return reply({ok:true,skipped:true,locked:true,scanned:0,matched:0,added:0,message:'Скан этой группы уже идёт'});
+  gdata={...gdata,scanLockUntil:lock.until,scanLockToken:lock.token};
+  try{
   try{
    const {payload}=await loadAccountSessionPayload(owner,gdata.accountId);
-   const result=await workerPost('/scan-group',{...payload,url:gdata.url,keywords,minusKeywords,limit:scanLimit,days:scanDepthDays});
+   const result=await workerPost('/scan-group',{...payload,url:gdata.url,keywords,minusKeywords,limit:scanLimit,days:scanDepthDays,minId:String(gdata.scanCursor||'')});
     if(!result.ok){
     if(workerLooksDeadAccount(result)){
      const frozen=workerLooksFrozen(result);
@@ -1671,14 +1949,15 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    }
    const cutoff=Date.now()-scanDepthDays*24*60*60*1000;
    const workerRaw=Array.isArray(result.messages)?result.messages.length:0;
-   let candidates=(result.messages||[]).filter((msg:any)=>{
+   let candidates=(result.messages||[]).filter((msg:{tgMsgId?:unknown;date?:string;message?:string;_core?:unknown})=>{
+    if(!String(msg.tgMsgId||''))return false;
     if(msg.date){
      const t=Date.parse(msg.date);
      if(Number.isFinite(t)&&t<cutoff)return false;
     }
-    const scored=scoreLead(msg.message||'',coreSettings);
-    if(!scored||scored.score<LEAD_SCORE_WARM)return false;
-    (msg as any)._core=scored;
+    const decision=decideScanLead(msg.message||'',coreSettings);
+    if(!decision.pass)return false;
+    msg._core=decision.core;
     return true;
    });
    const existing=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='lead'").bind(owner).all();
@@ -1694,89 +1973,57 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      }
     }catch{/* */}
    }
-   if(excludedTexts.size){
-    candidates=candidates.filter((msg:any)=>{
-     const fp=normalizeLeadMessage(msg.message||'');
-     return !fp||!excludedTexts.has(fp);
-    });
-   }
+   // Удалённые пользователем лиды — как существующие (REQ-L6)
+   for(const t of Array.isArray(gdata.leadTombstones)?gdata.leadTombstones:[])seen.add(leadMessageFingerprint('',id,String(t)));
+   const isNewMessage=(msg:{tgMsgId?:unknown;message?:string})=>{
+    if(seen.has(leadMessageFingerprint(msg.message||'',id,String(msg.tgMsgId||''))))return false;
+    const fp=normalizeLeadMessage(msg.message||'');
+    return !fp||!excludedTexts.has(fp);
+   };
+   candidates=candidates.filter((msg:{message?:string})=>{
+    const fp=normalizeLeadMessage(msg.message||'');
+    return !fp||!excludedTexts.has(fp);
+   });
    const prefilterCount=candidates.length;
-   const reasons=new Map<string,string>();
-   const temps=new Map<string,LeadTemperature>();
-   let aiUsed=false;
-   let aiRequired=false;
-   const wantAi=settings.aiQualify!==false;
-   if(wantAi&&candidates.length){
-    const apiKey=await resolveApiKey(owner,config);
-    if(apiKey){
-     aiRequired=true;
-     try{
-      const forAi=candidates.map((m:any)=>({
-       tgMsgId:String(m.tgMsgId||''),
-       message:String(m.message||''),
-       name:String(m.name||''),
-       coreScore:Number(m._core?.score)||0,
-       coreReasons:Array.isArray(m._core?.reasons)?m._core.reasons:[],
-      }));
-      const picked=await qualifyLeadsWithAi(apiKey,settings,forAi);
-      aiUsed=true;
-      if(picked.length){
-       const allow=new Set(picked.map(p=>p.tgMsgId));
-       for(const p of picked){
-        const core=candidates.find((m:any)=>String(m.tgMsgId)===p.tgMsgId)?._core;
-        const decision=core?{...core,pass:true,temperature:p.temperature,summary:'',fingerprint:'',text:''}:null;
-        reasons.set(p.tgMsgId,decision?reasonFromCore(decision as any,p.reason):p.reason);
-        // AI не повышает выше ядра: если ядро warm — остаётся warm; hot только если ядро тоже hot-capable
-        const coreTemp=core?classifyWithLeadCore(String(candidates.find((m:any)=>String(m.tgMsgId)===p.tgMsgId)?.message||''),coreSettings):null;
-        let t=p.temperature;
-        if(coreTemp==='warm'&&t==='hot')t='warm';
-        if(!coreTemp)continue;
-        temps.set(p.tgMsgId,t);
-       }
-       candidates=candidates.filter((m:any)=>allow.has(String(m.tgMsgId))&&temps.has(String(m.tgMsgId)));
-      }else{
-       // Пустой ответ AI не должен обнулять ядро — иначе 0 лидов при живом скане
-       aiRequired=false;
-       aiUsed=false;
-      }
-     }catch{
-      aiRequired=false;
-      aiUsed=false;
-     }
+   // Дедуп до AI: уже известные сообщения не отправляем в модель повторно
+   candidates=candidates.filter(isNewMessage);
+   const now=Date.now();
+   const aiSig=aiSettingsSignature(settings);
+   const apiKey=settings.aiQualify!==false&&candidates.length?await resolveApiKey(owner,config):'';
+   const aiRejectsActive=activeAiRejects(gdata.aiRejected,aiSig,now);
+   let aiRemembered=0;
+   let batches:AiBatchOutcome[]|null=null;
+   if(apiKey){
+    // REQ-L11: отказ AI помним (TTL) — не шлём то же сообщение в модель на каждом переобходе
+    const fresh=candidates.filter((m:{tgMsgId?:unknown})=>!aiRejectsActive[String(m.tgMsgId)]);
+    aiRemembered=candidates.length-fresh.length;
+    candidates=fresh;
+    if(candidates.length){
+     batches=await qualifyLeadsWithAi(apiKey,settings,candidates.map((m:ScanWorkerMessage)=>({
+      tgMsgId:String(m.tgMsgId||''),
+      message:String(m.message||''),
+      name:String(m.name||''),
+      coreScore:Number(m._core?.score)||0,
+      coreReasons:Array.isArray(m._core?.reasons)?m._core.reasons:[],
+     })));
     }
    }
-   // Без AI — только температура ядра (не мягче AI)
-   if(!aiRequired){
-    const kept:any[]=[];
-    for(const m of candidates){
-     const t=classifyWithLeadCore(m.message||'',coreSettings);
-     if(!t)continue;
-     const scored=m._core||scoreLead(m.message||'',coreSettings);
-     temps.set(String(m.tgMsgId),t);
-     reasons.set(String(m.tgMsgId),reasonFromCore({
-      ...scored,
-      pass:true,
-      temperature:t,
-      summary:'',
-      fingerprint:'',
-      text:String(m.message||''),
-     }));
-     kept.push(m);
-    }
-    candidates=kept;
-   }
+   const aiUsed=!!batches?.some(b=>b.ok);
+   // REQ-L1: ответ AI по батчу — вердикт; упавший батч — по ядру
+   const verdict=applyAiVerdicts(candidates.map((m:ScanWorkerMessage)=>({tgMsgId:String(m.tgMsgId),core:m._core as LeadScoreResult})),batches);
+   const keptById=new Map(verdict.kept.map(k=>[k.tgMsgId,k]));
+   candidates=candidates.filter((m:{tgMsgId?:unknown})=>keptById.has(String(m.tgMsgId)));
+   const aiRejectedNext=apiKey?rememberAiRejects(aiRejectsActive,verdict.rejectedIds,aiSig,now):gdata.aiRejected;
    let added=0;
    const addedByTemp={hot:0,warm:0,cold:0};
-   const notifyBatch:{name:string;message:string;temperature:string;source:string}[]=[];
    for(const msg of candidates){
     const key=leadMessageFingerprint(msg.message||'',id,String(msg.tgMsgId||''));
     if(seen.has(key))continue;
-    const textFp=normalizeLeadMessage(msg.message||'');
-    if(textFp&&excludedTexts.has(textFp))continue;
     seen.add(key);
     const tgMsgId=String(msg.tgMsgId||'');
-    const temperature:LeadTemperature|null=temps.get(tgMsgId)??classifyWithLeadCore(msg.message||'',coreSettings);
-    if(!temperature||(temperature!=='hot'&&temperature!=='warm'))continue;
+    const kept=keptById.get(tgMsgId);
+    if(!kept)continue;
+    const temperature=kept.temperature;
     addedByTemp[temperature]++;
     const lead={
      name:msg.name||'Участник',
@@ -1787,7 +2034,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      draft:'',
      tgMsgId,
      groupId:id,
-     reason:reasons.get(tgMsgId)||'',
+     reason:kept.reason,
      viewed:false,
      viewedAt:'',
      excludeFromTraining:false,
@@ -1800,14 +2047,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      replies:[],
      coreScore:Number(msg._core?.score)||0,
      accountId:String(gdata.joinedAccountId||gdata.accountId||''),
+     notifyPending:!!settings.notifyEnabled,
+     notifiedAt:'',
     };
     await db.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)').bind(crypto.randomUUID(),owner,'lead',JSON.stringify(lead),null,new Date().toISOString()).run();
     added++;
-    notifyBatch.push({name:lead.name,message:lead.message,temperature,source:lead.source});
    }
-   if(notifyBatch.length){
-    try{await notifyNewLeadsTelegram(settings,notifyBatch)}catch{/* не блокируем скан */}
-   }
+   try{await flushLeadNotifications(owner,settings)}catch(e){console.error('[workspace] notify_leads:',String((e as Error)?.message||e).slice(0,300))}
    // Пересчёт метрик группы по всем лидам этой groupId
    const allLeads=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='lead'").bind(owner).all();
    const counts={hot:0,warm:0,cold:0};
@@ -1822,9 +2068,13 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const leadsTotal=counts.hot+counts.warm+counts.cold;
    const rating=ratingFromTemperatures(counts);
    // Успешный скан только если аккаунт в группе → чиним membership/status
+   // База — свежая запись: удаления лидов (tombstones) и правки группы во время скана не теряем
+   const freshGroup=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'group').first<{data:string}>();
+   let base=gdata;
+   try{if(freshGroup)base={...JSON.parse(String(freshGroup.data)),scanLockUntil:gdata.scanLockUntil,scanLockToken:gdata.scanLockToken}}catch{/* битая запись — берём снимок */}
    const isPending=gdata.status==='pending'||gdata.membership==='pending';
    const groupNext={
-    ...gdata,
+    ...base,
     status:isPending?'pending':'active',
     membership:isPending?'pending':'joined',
     joinedAt:isPending?(gdata.joinedAt||''):(gdata.joinedAt||new Date().toISOString()),
@@ -1842,12 +2092,14 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     scanMatched:candidates.length,
     rating,
     lastScanned:new Date().toISOString(),
+    scanCursor:String(result.cursor||base.scanCursor||''),
+    aiRejected:aiRejectedNext,
     scanLog:pushTaskLog(
-     gdata.scanLog,
+     base.scanLog,
      added?'ok':'info',
      added
-      ?`Переобход · +${added} · ${String(result.scanMode||'chat')} · worker ${workerRaw} → ядро ${prefilterCount} → AI/match ${candidates.length}${aiUsed?' · AI':''}`
-      :`Переобход · 0 · ${String(result.scanMode||'chat')} · worker ${workerRaw} → ядро ${prefilterCount} → AI/match ${candidates.length}${aiUsed?' · AI':''}`,
+      ?`Переобход · +${added} · ${String(result.scanMode||'chat')} · worker ${workerRaw} → ядро ${prefilterCount} → AI/match ${candidates.length}${aiUsed?' · AI':''}${aiRemembered?` · отказ AI помним ${aiRemembered}`:''}`
+      :`Переобход · 0 · ${String(result.scanMode||'chat')} · worker ${workerRaw} → ядро ${prefilterCount} → AI/match ${candidates.length}${aiUsed?' · AI':''}${aiRemembered?` · отказ AI помним ${aiRemembered}`:''}`,
      50,
     ),
    };
@@ -1889,23 +2141,19 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    }catch{/* */}
    return reply({error:errMsg},503);
   }
+  }finally{
+   await releaseGroupScanLock(owner,id,lock.token);
+  }
  }
  if(b.action==='mark_lead_viewed'){
   const id=z.string().uuid().parse(b.id);
-  const row:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'lead').first();
-  if(!row)return reply({error:'Лид не найден'},404);
-  const data=JSON.parse(row.data);
-  const alreadyViewed=!!data.viewed;
-  const needsManager=!!data.needsManager;
-  if(alreadyViewed&&!needsManager)return reply({ok:true,already:true});
-  const next={
-   ...data,
-   viewed:true,
-   viewedAt:data.viewedAt||new Date().toISOString(),
-   needsManager:false,
-  };
-  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'lead').run();
-  return reply({ok:true,lead:next});
+  const nowIso=new Date().toISOString();
+  const done=await mutateLead(db,owner,id,lead=>{
+   const patch=markLeadOpened(lead,nowIso);
+   return {next:patch?{...lead,...patch}:undefined,result:!patch};
+  });
+  if(!done)return reply({error:'Лид не найден'},404);
+  return done.result?reply({ok:true,already:true}):reply({ok:true,lead:done.lead});
  }
  if(b.action==='set_lead_training_exclude'){
   const id=z.string().uuid().parse(b.id);
@@ -1991,6 +2239,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    notifyBotToken:current.notifyBotToken||'',
    notifyChatId:current.notifyChatId||'',
   };
+  // LLM-минус проходит тот же фильтр, что и обучение: без слов продукта/плюса/контекста маркетплейсов
+  next.minusKeywords=sanitizeMinusTerms(parseKeywordCsv(next.minusKeywords),next).join(', ');
   const data=settingsSchema.parse(next);
   const id=config?.id||crypto.randomUUID();
   if(config)await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(data),owner,id,'settings').run();
@@ -2036,12 +2286,16 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     }
    }catch{/* heuristic only */}
   }
+  const learnedKeywords=mergeKeywordsPreferNew(settings.keywords||'',plusAdd,8000);
+  const learnedExamples=appendLearnExamples(settings.learnExamples||'',learnBits).slice(0,4000);
+  const learnedSignals=mergeKeywordsPreferNew(settings.hotSignals||'',plusAdd.slice(0,8),4000);
+  minusAdd=sanitizeMinusTerms(minusAdd,{...settings,keywords:learnedKeywords,learnExamples:learnedExamples,hotSignals:learnedSignals});
   const next={
    ...settings,
-   keywords:mergeKeywordsPreferNew(settings.keywords||'',plusAdd,8000),
+   keywords:learnedKeywords,
    minusKeywords:mergeKeywordsPreferNew(settings.minusKeywords||'',minusAdd,8000),
-   learnExamples:appendLearnExamples(settings.learnExamples||'',learnBits).slice(0,4000),
-   hotSignals:mergeKeywordsPreferNew(settings.hotSignals||'',plusAdd.slice(0,8),4000),
+   learnExamples:learnedExamples,
+   hotSignals:learnedSignals,
   };
   const data=settingsSchema.parse(next);
   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(data),owner,config.id,'settings').run();
@@ -2080,9 +2334,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     }
    }catch{/* heuristic only */}
   }
-  // Убрать из минуса то, что уже в плюсе
-  const plusSet=new Set(String(settings.keywords||'').toLowerCase().split(/[,;\n]+/).map((s:string)=>s.trim()).filter(Boolean));
-  minusAdd=minusAdd.filter(t=>t&&!plusSet.has(t.toLowerCase().trim()));
+  // Не пускать в стоп-лист слова продукта/плюса/контекста маркетплейсов — иначе скан режет целевые лиды
+  minusAdd=sanitizeMinusTerms(minusAdd,settings);
   const next={
    ...settings,
    minusKeywords:mergeKeywordsPreferNew(settings.minusKeywords||'',minusAdd,8000),
@@ -2136,25 +2389,15 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     }
    }catch{/* heuristic only */}
   }
-  const plusSet=new Set(String(settings.keywords||'').toLowerCase().split(/[,;\n]+/).map((s:string)=>s.trim()).filter(Boolean));
-  const generic=new Set(['помогите','помоги','подскажите','нужен','нужна','нужно','ищу','ищем','скажите','пожалуйста']);
-  minusAdd=minusAdd
-   .map(t=>String(t||'').trim().slice(0,60))
-   .filter(t=>t.length>=3&&!plusSet.has(t.toLowerCase())&&!generic.has(t.toLowerCase()));
-  // уникальные, порядок сохранён
-  const uniq:string[]=[];
-  const seen=new Set<string>();
-  for(const t of minusAdd){
-   const k=t.toLowerCase();
-   if(seen.has(k))continue;
-   seen.add(k);
-   uniq.push(t);
-  }
-  minusAdd=uniq.slice(0,10);
+  // Без коротких/общих слов, контекста маркетплейсов и терминов продукта (уникальные, порядок сохранён)
+  const minusCandidates=minusAdd.map(t=>String(t||'').trim().slice(0,60)).filter(Boolean);
+  minusAdd=sanitizeMinusTerms(minusCandidates,settings).slice(0,10);
+  // UI: «ничего не добавлено — слова пересекаются с продуктом» vs «уже были в минусе»
+  const minusSkippedAsProduct=minusAdd.length?0:minusCandidates.length;
   // Если всё уже было в минусе — всё равно добавим короткую цитату-фразу из сообщения
   if(!minusAdd.length){
    const clip=msg.replace(/\s+/g,' ').trim().slice(0,48).toLowerCase();
-   if(clip.length>=8)minusAdd=[clip];
+   if(clip.length>=8)minusAdd=sanitizeMinusTerms([clip],settings);
   }
 
   const next={
@@ -2178,14 +2421,15 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    };
   }
   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(data),owner,config.id,'settings').run();
-  return reply({ok:true,lead:leadNext,data,minusAdded:minusAdd,minusKeywords:data.minusKeywords});
+  return reply({ok:true,lead:leadNext,data,minusAdded:minusAdd,minusSkippedAsProduct,minusKeywords:data.minusKeywords});
  }
-  if(b.action==='send_lead_message'){
+ if(b.action==='send_lead_message'){
   const id=z.string().uuid().parse(b.id);
   const mode=z.enum(['dm','chat']).parse(b.mode||'dm');
   const text=z.string().trim().min(1).max(4000).parse(b.text);
+  const clientMsgId=z.string().trim().max(80).optional().parse(b.clientMsgId)||'';
+  const force=b.force===true;
   const silent=b.silent===true;
-  const deleteDialog=b.deleteDialog===true;
   const row:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'lead').first();
   if(!row)return reply({error:'Лид не найден'},404);
   const lead=JSON.parse(row.data);
@@ -2207,102 +2451,114 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const arow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,sendAccountId,'account').first();
   const adata=arow?JSON.parse(arow.data):null;
   if(!adata)return reply({error:'Аккаунт лида не найден'},404);
-  // Открытую переписку продолжаем тем же аккаунтом, даже на отлёжке, пока он читает ЛС
-  const keepConversationAccount=!!lead.conversationOpen||(Array.isArray(lead.replies)&&lead.replies.some((x:any)=>x&&x.from==='us'&&x.ok));
-  const conversationAlive=keepConversationAccount&&canPollDmInbox(adata);
-  if(!isAccountUsable(adata)&&!conversationAlive){
-   return reply({error:'Аккаунт лида недоступен или на отлёжке — отправка невозможна',cooldown:true},429);
+  // Открытая переписка тоже не обходит отлёжку/спамблок/лимит: ответ только с этого же аккаунта позже
+  if(!isAccountUsable(adata)){
+   return reply({
+    error:'Аккаунт лида на отлежке или в спамблоке — с другого аккаунта ответить нельзя. Повторите позже.',
+    cooldown:true,
+    cooldownUntil:String(adata.cooldownUntil||''),
+   },429);
   }
-  if(!hasMessageQuota(adata)&&!conversationAlive){
-   return reply({error:'Дневной лимит сообщений аккаунта лида исчерпан',limitReached:true},429);
+  if(!hasMessageQuota(adata)){
+   return reply({error:'Дневной лимит сообщений аккаунта лида исчерпан — ответ после полуночи (МСК)',limitReached:true},429);
   }
+  let payload:Record<string,unknown>;
   try{
-   const {payload}=await loadAccountSessionPayload(owner,sendAccountId);
-   // Берём лучший peer из истории переписки (chatId после успешной отправки)
-   const replyPeers=(Array.isArray(lead.replies)?lead.replies:[])
-    .filter((x:any)=>x&&x.ok!==false&&(x.chatId||x.from==='client'))
-    .map((x:any)=>String(x.chatId||'').replace(/^-/,'').trim())
-    .filter(Boolean);
-   let senderId=String(lead.senderId||'').replace(/^-/,'').trim();
-   if((!senderId||senderId.startsWith('100'))&&replyPeers[0])senderId=replyPeers[0];
-   // access_hash чужого аккаунта ломает SendMessage → invalid Peer
-   const sameAccount=String(lead.accountId||'')===String(sendAccountId);
-   const accessHash=sameAccount?String(lead.senderAccessHash||''):'';
-   const result=await workerPost('/send-message',{
-    ...payload,
-    mode,
-    text,
-    url:gdata.url,
-    replyTo:mode==='chat'?(lead.tgMsgId||''):'',
-    tgMsgId:lead.tgMsgId||'',
-    senderId:senderId||lead.senderId||'',
-    senderUsername:lead.senderUsername||'',
-    senderAccessHash:accessHash,
-    silent,
-    deleteDialog:false,
-   });
-   // Повтор без access_hash, если peer битый
-   let finalResult=result;
-   if(!result.ok&&/invalid peer/i.test(String(result.error||''))&&accessHash){
-    finalResult=await workerPost('/send-message',{
-     ...payload,
-     mode,
-     text,
-     url:gdata.url,
-     replyTo:mode==='chat'?(lead.tgMsgId||''):'',
-     tgMsgId:lead.tgMsgId||'',
-     senderId:senderId||lead.senderId||'',
-     senderUsername:lead.senderUsername||'',
-     senderAccessHash:'',
-     silent,
-     deleteDialog:false,
-    });
-   }
-   const link=String(finalResult.link||'').slice(0,300);
-   const messageId=String(finalResult.messageId||'').slice(0,40);
-   const entry={
-    text,
-    mode,
-    at:new Date().toISOString(),
-    ok:!!finalResult.ok,
-    error:(finalResult.error||'').slice(0,400),
-    messageId,
-    link,
-    chatId:String(finalResult.chatId||senderId||'').slice(0,40),
-    from:'us' as const,
-   };
-   const replies=[...(Array.isArray(lead.replies)?lead.replies:[]),entry].slice(-40);
-   const next={
-    ...lead,
-    replies,
-    draft:text,
-    status:lead.status==='new'?'working':lead.status,
-    viewed:true,
-    viewedAt:lead.viewedAt||new Date().toISOString(),
-    conversationOpen:true,
-    accountId:sendAccountId||lead.accountId||'',
-    needsManager:false,
-    senderId:String(finalResult.chatId||senderId||lead.senderId||'').replace(/^-/,'').slice(0,40),
-    senderUsername:String(finalResult.chatUsername||lead.senderUsername||'').slice(0,64),
-    senderAccessHash:String(finalResult.senderAccessHash||(finalResult.ok?accessHash:lead.senderAccessHash)||'').slice(0,40),
-   };
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'lead').run();
-   if(finalResult.flood||finalResult.status==='flood'){
-    const sec=Number(finalResult.waitSec)||900;
-    // FloodWait на ЛС — пауза ответа, аккаунт не уводим в «Отлежка».
-    return reply({ok:false,error:finalResult.error||'FloodWait',waitSec:sec,lead:next,pace:true},429);
-   }
-   if(!finalResult.ok)return reply({ok:false,error:finalResult.error||'Не удалось отправить',lead:next},502);
-   const accRow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,sendAccountId,'account').first();
-   if(accRow){
-    const acc=JSON.parse(accRow.data);
-    const bumped=applyQuotaCooldownIfExhausted({...acc,...bumpMessageCounters(acc,1)});
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(bumped),owner,sendAccountId,'account').run();
-   }
-   return reply({ok:true,lead:next,mode,link,messageId,accountId:sendAccountId});
+   ({payload}=await loadAccountSessionPayload(owner,sendAccountId));
   }catch(e){
    return reply({error:internalError('send_lead_message',e,'Не удалось отправить сообщение. Повторите попытку.')},503);
   }
+  // Берём лучший peer из истории лички (chatId ответа в чат — это группа, не клиент)
+  const replyPeers=(Array.isArray(lead.replies)?lead.replies:[])
+   .filter((x:any)=>x&&x.mode!=='chat'&&x.ok!==false&&(x.chatId||x.from==='client'))
+   .map((x:any)=>String(x.chatId||'').replace(/^-/,'').trim())
+   .filter(Boolean);
+  let senderId=String(lead.senderId||'').replace(/^-/,'').trim();
+  if((!senderId||senderId.startsWith('100'))&&replyPeers[0])senderId=replyPeers[0];
+  // access_hash чужого аккаунта ломает SendMessage → invalid Peer
+  const sameAccount=String(lead.accountId||'')===String(sendAccountId);
+  const accessHash=sameAccount?String(lead.senderAccessHash||''):'';
+
+  // Запись «отправляется» до вызова воркера: повтор после таймаута не шлёт дубль
+  const sendKey=clientMsgId||`srv:${crypto.randomUUID()}`;
+  const pendingEntry:ReplyEntry={text,mode,at:new Date().toISOString(),ok:false,status:'pending',error:'',messageId:'',link:'',chatId:'',from:'us',sendKey,accountId:sendAccountId};
+  const claim=await mutateLead(db,owner,id,cur=>{
+   const block=findSendBlock(cur,{clientMsgId,text,mode},Date.now());
+   if(block&&!(force&&block.kind==='unknown'))return {result:block};
+   return {next:{...withPendingSend(cur,pendingEntry,block?.entry.sendKey||''),draft:text},result:null};
+  });
+  if(!claim)return reply({error:'Лид не найден'},404);
+  const block=claim.result;
+  if(block?.kind==='delivered'){
+   return reply({ok:true,duplicate:true,lead:claim.lead,mode,link:block.entry.link,messageId:block.entry.messageId,accountId:String(claim.lead.accountId||'')});
+  }
+  if(block){
+   return reply({
+    error:block.kind==='inflight'
+     ?'Это сообщение уже отправляется — дождитесь результата'
+     :'Результат прошлой отправки этого сообщения неизвестен. Проверьте переписку в Telegram — если сообщения нет, отправьте ещё раз.',
+    inflight:block.kind==='inflight',
+    unknown:block.kind==='unknown',
+    lead:claim.lead,
+   },409);
+  }
+
+  const sendBody={
+   ...payload,
+   mode,
+   text,
+   url:gdata.url,
+   replyTo:mode==='chat'?(lead.tgMsgId||''):'',
+   tgMsgId:lead.tgMsgId||'',
+   senderId:senderId||lead.senderId||'',
+   senderUsername:lead.senderUsername||'',
+   silent,
+   deleteDialog:false,
+  };
+  let finalResult:Record<string,unknown>={};
+  let usedHash=accessHash;
+  let outcome:SendOutcome;
+  let failStatus=502;
+  try{
+   finalResult=await workerPost('/send-message',{...sendBody,senderAccessHash:accessHash},SEND_MESSAGE_TIMEOUT_MS);
+   // Повтор без access_hash, если peer битый
+   if(!finalResult.ok&&/invalid peer/i.test(String(finalResult.error||''))&&accessHash){
+    usedHash='';
+    finalResult=await workerPost('/send-message',{...sendBody,senderAccessHash:''},SEND_MESSAGE_TIMEOUT_MS);
+   }
+   outcome={
+    status:finalResult.ok?'sent':'failed',
+    error:String(finalResult.error||(finalResult.ok?'':'Не удалось отправить')),
+    messageId:String(finalResult.messageId||''),
+    link:String(finalResult.link||''),
+    chatId:String(finalResult.chatId||''),
+    chatUsername:String(finalResult.chatUsername||''),
+    senderAccessHash:String(finalResult.senderAccessHash||''),
+   };
+  }catch(e){
+   ({outcome,httpStatus:failStatus}=sendFailureOutcome(e));
+  }
+  const saved=await mutateLead(db,owner,id,cur=>({
+   next:applySendOutcome(cur,{sendKey,mode,accountId:sendAccountId,peerId:senderId,accessHash:usedHash,nowIso:new Date().toISOString()},outcome),
+   result:null,
+  }));
+  const next=saved?.lead||lead;
+  if(outcome.status==='unknown')return reply({ok:false,unknown:true,error:outcome.error,lead:next},504);
+  if(finalResult.flood||finalResult.status==='flood'){
+   const sec=Number(finalResult.waitSec)||900;
+   // FloodWait на ЛС — пауза ответа, аккаунт не уводим в «Отлежка».
+   return reply({ok:false,error:finalResult.error||'FloodWait',waitSec:sec,lead:next,pace:true},429);
+  }
+  if(outcome.status!=='sent')return reply({ok:false,error:outcome.error,busy:failStatus===429,lead:next},failStatus);
+  const accRow:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,sendAccountId,'account').first();
+  if(accRow){
+   const acc=JSON.parse(accRow.data);
+   const bumped=applyQuotaCooldownIfExhausted({...acc,...bumpMessageCounters(acc,1)},'message');
+   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(bumped),owner,sendAccountId,'account').run();
+  }
+  const link=String(finalResult.link||'').slice(0,300);
+  const messageId=String(finalResult.messageId||'').slice(0,40);
+  return reply({ok:true,lead:next,mode,link,messageId,accountId:sendAccountId});
  }
  if(b.action==='rescan_groups'){
   const force=b.force===true;
@@ -2498,18 +2754,16 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const config:any=await db.prepare('SELECT * FROM records WHERE owner=? AND kind=? LIMIT 1').bind(owner,'settings').first();
   const settings=config?.data?JSON.parse(config.data):{};
   const keywords=sanitizeLeadKeywords(String(b.keywords??settings.keywords??''));
-  const minusKeywords=ensureJunkMinus(stopWordsFromSettings({
+  const previewSettings={
    ...settings,
-   minusKeywords:b.minusKeywords??settings.minusKeywords,
-   avoidTopics:b.avoidTopics??settings.avoidTopics,
-  }));
-  const core=leadCoreSettingsFrom({
-   ...settings,
+   keywords,
+   minusKeywords:ensureJunkMinus(z.string().max(8000).optional().parse(b.minusKeywords)??String(settings.minusKeywords||'')),
+   avoidTopics:z.string().max(8000).optional().parse(b.avoidTopics)??settings.avoidTopics,
    leadCriteria:b.leadCriteria??settings.leadCriteria,
    hotSignals:b.hotSignals??settings.hotSignals,
    product:b.product??settings.product,
-   avoidTopics:b.avoidTopics??settings.avoidTopics,
-  },keywords,minusKeywords);
+  };
+  const core=leadCoreSettingsFrom(previewSettings,keywords,stopWordsFromSettings(previewSettings));
   const decision=explainLeadDecision(message,core);
   return reply({
    ok:true,
@@ -2552,7 +2806,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
 
  if(b.action==='poll_dm_replies'){
   const accRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='account'").bind(owner).all();
-  const live:{id:string;data:any}[]=[];
+  const live:LiveAccount[]=[];
   for(const r of accRows.results){
    try{
     const a=JSON.parse(String(r.data));
@@ -2560,103 +2814,14 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    }catch{/* */}
   }
   if(!live.length)return reply({ok:true,opened:0,skipped:true,reason:'no_accounts'});
-
-  const leadRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='lead'").bind(owner).all();
-  const leads=leadRows.results.map((r:any)=>{
-   try{return {id:String(r.id),data:JSON.parse(String(r.data))}}catch{return null}
-  }).filter(Boolean) as {id:string;data:any}[];
-
-  // Ответ клиента берём только в переписку, которую мы уже начали с этим лидом
-  const findConversationLead=(msg:any)=>leads.find(L=>{
-   if(!sameTelegramPeer(L.data,msg))return false;
-   const d=L.data||{};
-   if(d.conversationOpen)return true;
-   return Array.isArray(d.replies)&&d.replies.some((x:any)=>x&&(x.from==='us'||x.mode==='dm'));
-  });
-
-  const settingsRow:any=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='settings' LIMIT 1").bind(owner).first();
-  let settingsData:any={};
-  let settingsId='';
-  if(settingsRow){
-   settingsId=String(settingsRow.id);
-   try{settingsData=JSON.parse(String(settingsRow.data))}catch{settingsData={}}
+  // Каждая вкладка опрашивает раз в 15 с — одновременно работает один опрос на владельца
+  const lease=await acquireDmPollLease(db,owner);
+  if(!lease)return reply({ok:true,opened:0,skipped:true,reason:'busy'});
+  try{
+   return reply(await pollDmReplies(db,owner,live));
+  }finally{
+   await releaseDmPollLease(db,owner,lease);
   }
-  const cursor=Math.max(0,Number(settingsData.inboxPollCursor)||0);
-  const take=Math.min(4,Math.max(2,live.length));
-  const slice=live.slice(cursor%live.length).concat(live.slice(0,cursor%live.length)).slice(0,take);
-  const nextCursor=(cursor+slice.length)%Math.max(1,live.length);
-
-  let opened=0;
-  const names:string[]=[];
-  for(const acc of slice){
-   let result:any;
-   try{
-    const {payload}=await loadAccountSessionPayload(owner,acc.id);
-    result=await workerPost('/inbox-dms',{...payload,sinceTs:Number(acc.data.inboxSinceTs)||0,limitDialogs:30},90_000);
-   }catch{
-    continue;
-   }
-   const msgs:any[]=Array.isArray(result?.messages)?result.messages:[];
-   let maxSafeTs=Number(acc.data.inboxSinceTs)||0;
-   for(const msg of msgs){
-    const ts=Number(msg.ts)||0;
-    if(ts>maxSafeTs)maxSafeTs=ts;
-    const leadRow=findConversationLead(msg);
-    if(!leadRow)continue;
-    const mid=String(msg.messageId||'');
-    const text=String(msg.text||'').trim()||(msg.hasMedia?'[медиа]':'');
-    if(!text)continue;
-    const incoming={
-     text:text.slice(0,4000),
-     mode:'dm' as const,
-     at:String(msg.at||new Date().toISOString()).slice(0,40),
-     ok:true,
-     error:'',
-     messageId:mid.slice(0,40),
-     link:msg.username?`https://t.me/${String(msg.username).replace(/^@/,'')}`:'',
-     chatId:String(msg.userId||'').slice(0,40),
-     from:'client' as const,
-    };
-    const already=(Array.isArray(leadRow.data.replies)?leadRow.data.replies:[]).some((x:any)=>String(x.messageId||'')===mid&&mid);
-    if(already)continue;
-    const replies=[...(Array.isArray(leadRow.data.replies)?leadRow.data.replies:[]),incoming].slice(-40);
-    const next={
-     ...leadRow.data,
-     replies,
-     status:'working',
-     conversationOpen:true,
-     conversationAt:new Date().toISOString(),
-     incomingLastText:incoming.text,
-     needsManager:true,
-     viewed:false,
-     temperature:'hot',
-     accountId:acc.id,
-     senderId:leadRow.data.senderId||String(msg.userId||''),
-     senderUsername:leadRow.data.senderUsername||String(msg.username||''),
-     draft:leadRow.data.draft||'',
-    };
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,leadRow.id,'lead').run();
-    leadRow.data=next;
-    opened++;
-    names.push(String(next.name||msg.name||msg.username||'Клиент'));
-    void notifyConversationEvent(db,owner,String(next.name||''),String(next.senderUsername||msg.username||''),incoming.text);
-   }
-   if(maxSafeTs){
-    const fresh:any=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,acc.id,'account').first();
-    if(fresh){
-     try{
-      const adata=JSON.parse(String(fresh.data));
-      await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...adata,inboxSinceTs:maxSafeTs}),owner,acc.id,'account').run();
-     }catch{/* */}
-    }
-   }
-  }
-  if(settingsId){
-   try{
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...settingsData,inboxPollCursor:nextCursor}),owner,settingsId,'settings').run();
-   }catch{/* */}
-  }
-  return reply({ok:true,opened,names:names.slice(0,12),nextCursor});
  }
 
  // Действия удалённых функций (сбор аудитории, инвайтинг, рассылка, массовое вступление) сюда тоже попадают.
@@ -2681,6 +2846,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    await db.prepare('DELETE FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,kind).run();
    return reply({ok:true,leadsRemoved:removed});
   }
+  if(kind==='lead')await rememberDeletedLead(owner,id);
   await db.prepare('DELETE FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,kind).run();
   return reply({ok:true});
  }
@@ -2712,6 +2878,10 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const reason=duplicateReason(kind,data,other);
    if(reason)return reply({error:reason,duplicate:true},409);
   }
+ }
+ // REQ-L10: поля, которыми владеет сервер (переписка, скан, уведомления), клиентский save не затирает
+ if(existing&&(kind==='lead'||kind==='group')){
+  try{Object.assign(data,keepServerOwnedFields(kind,JSON.parse(existing.data),data))}catch{/* битая запись — сохраняем как пришло */}
  }
  if(kind==='group'&&existing){
   try{
