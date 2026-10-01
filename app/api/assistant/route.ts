@@ -1,6 +1,8 @@
 import { getSessionUser } from "@/lib/auth";
 import { envAiApiKey } from "@/lib/ai-client";
 import { database, unseal } from "@/lib/server-store";
+import { ensureDefaultProject } from "@/lib/leads/projects";
+import { loadSettingsRow } from "@/lib/processes/lead-store";
 import {
   assistantRequestSchema,
   canAskAssistant,
@@ -48,24 +50,24 @@ function cooldownKey(req: Request, owner: string | null): string | null {
   return ip ? "assistant-guard:ip:" + ip : null;
 }
 
-type RecordRow = { created?: string; data?: string; secret?: string | null };
+type RecordRow = { created?: string };
 
+/**
+ * Product context = the owner's default project card (REQ-4: `settings.product` is legacy and only
+ * seeds that project when its row does not exist yet, `lib/leads/projects.ts::ensureDefaultProject`).
+ */
 async function loadOwnerProduct(
   owner: string,
 ): Promise<{ product?: string; apiKey?: string }> {
   const fromEnv = envAiApiKey() || undefined;
   try {
     const db = database();
-    const config = await db
-      .prepare("SELECT * FROM records WHERE owner=? AND kind=? LIMIT 1")
-      .bind(owner, "settings")
-      .first<RecordRow>();
-    if (!config) return { apiKey: fromEnv };
-    const data = JSON.parse(config.data || "{}") as { product?: string };
-    const sealedKey = config.secret
-      ? await unseal(config.secret, owner).catch(() => undefined)
+    const settings = await loadSettingsRow(db, owner);
+    const project = await ensureDefaultProject(db, owner, settings.data, Date.now());
+    const sealedKey = settings.secret
+      ? await unseal(settings.secret, owner).catch(() => undefined)
       : undefined;
-    return { product: data.product, apiKey: fromEnv || sealedKey };
+    return { product: project.project.product || undefined, apiKey: fromEnv || sealedKey };
   } catch {
     return { apiKey: fromEnv };
   }

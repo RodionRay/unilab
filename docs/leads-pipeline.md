@@ -26,6 +26,8 @@ are no keyword / intent regexes on the lead path; project keywords are only a hi
 - A settings save never writes project fields (REQ-4): `route.ts::settingsSchema` has no product / keyword /
   stop-word / depth fields; legacy values stay in the row only for `projects.ts::defaultProjectFromSettings`.
   The settings page has no scan depth input (depth is the project card's `scanDepthDays`).
+- The in-app assistant's product context is the default project's `product`
+  (`app/api/assistant/route.ts::loadOwnerProduct` → `projects.ts::ensureDefaultProject`), never `settings.product`.
 
 ## Group scan (`scan_group`)
 
