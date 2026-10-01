@@ -23,8 +23,10 @@ prioritise on-topic groups, keep joining safe but fast. Reference: `docs/join-pi
   per-account daily cap (20 aged, warm-up 5/10/15), randomized 6–15 min gaps, exact FloodWait + margin,
   PEER_FLOOD → spamblock, CHANNELS_TOO_MUCH → 7-day stop, 4 consecutive errors → 6 h pause, and SHALL log
   throughput per tick.
-- **R4** WHEN «Слот не видит @» comes from 3 distinct accounts THE system SHALL mark the group dead and
-  stop retrying it; retries go only to untried accounts.
+- **R4** WHEN «Слот не видит @» comes from an account THE system SHALL record it and retry only untried
+  accounts; it SHALL mark the group dead only when t.me confirms the username missing (changed
+  2026-10-01: K distinct witnesses no longer mark dead — the farm lies; the failure is an account error,
+  `docs/join-pipeline.md` §5).
 - **R5** THE groups list SHALL show band/score/reason and offer approve / skip per row and in bulk.
 
 ## Evidence matrix
@@ -34,7 +36,7 @@ prioritise on-topic groups, keep joining safe but fast. Reference: `docs/join-pi
 | R1 | `tests/join-relevance.test.ts`; `tests/join-queue-route.test.ts` (heal gate, join_group 409, form save) |
 | R2 | `tests/join-relevance.test.ts` (order); `tests/join-queue-route.test.ts` (rescan order, rescore counts) |
 | R3 | `tests/join-pacing.test.ts`; `tests/join-queue-route.test.ts` (FloodWait, jitter, PEER_FLOOD, farm hand-off); `tests/cron-join-parallel.test.ts`; `telegram-worker/tests/test_join_limits.py` |
-| R4 | `tests/join-dead-username.test.ts`; `tests/join-queue-route.test.ts` (join + scan caps) |
-| R5 | build + manual check on the local stand (design-panel: n/a — one status reuse, one muted reason line and two existing-style buttons in an existing row) |
+| R4 | `tests/join-dead-username.test.ts`; `tests/join-queue-route.test.ts` (join + scan caps); `tests/join-account-selection.test.ts` (account-side errors) |
+| R5 | `tests/group-tabs.test.ts` (tabs, status label); build + manual check on the local stand (design-panel: n/a — one status reuse, one muted reason line and two existing-style buttons in an existing row) |
 
 NOT verified: real Telegram joins (FloodWait/PEER_FLOOD paths are covered by stubbed worker answers only).

@@ -1,6 +1,6 @@
 import {getSessionUser} from '@/lib/auth';
 import {GROUP_CATALOG,isCatalogPlaceholderUrl} from '@/lib/group-catalog';
-import {JOIN_SUCCESS_PATCH,type JoinAccountState,type JoinProxyState,evaluateAccountJoinReadiness,isJoinFarmCandidate,JOIN_WORKER_ERROR_RETRY_MS,accountBlindPatch,classifyJoinFailure,deadLinkPatch,isAccountBlindResult,isAccountResolveBlind,isUsernameMissingResult,joinFailurePatch,missingAccountsOf,planGroupHeal,recordUsernameMissing,sanitizeJoinStateError,seedMissingAccounts,tmeMissingPatch} from '@/lib/processes/join-flow';
+import {JOIN_SUCCESS_PATCH,USERNAME_DEAD_AFTER_ACCOUNTS,accountSideJoinErrorPatch,clearAccountSideJoinError,type JoinAccountState,type JoinProxyState,evaluateAccountJoinReadiness,isJoinFarmCandidate,JOIN_WORKER_ERROR_RETRY_MS,accountBlindPatch,classifyJoinFailure,isAccountBlindResult,isAccountResolveBlind,isUsernameMissingResult,joinFailurePatch,missingAccountsOf,planGroupHeal,recordUsernameMissing,sanitizeJoinStateError,seedMissingAccounts,tmeMissingPatch} from '@/lib/processes/join-flow';
 import {probeTmeUsername,probeableUsername,tmeMissingMessage,tmeProbeDue,type TmeProbeResult} from '@/lib/tme-probe';
 import {buildRelevanceProfile,compareJoinPriority,joinGateFor,rescoreGroup,seedRejoin,type JoinGateState} from '@/lib/join-relevance';
 import {JOIN_RESERVE_MS,accountJoinWaitSec,channelsTooMuchPatch,joinAttemptPatch,farmThroughput,joinErrorPatch,joinFloodPatch,joinSuccessPatch,planJoinFarm,type FarmAccount} from '@/lib/join-pacing';
@@ -1187,6 +1187,8 @@ async function refreshGroupRelevance(owner:string,opts:{force?:boolean}={}){
    if(patch.clearQueue){next={...next,joinState:'',joinStateAt:''};cleared++}
   }
   if(opts.force)next=seedMissingAccounts(next);
+  // Ошибка аккаунта (слеп, FloodWait, «Слот не видит») не висит на группе статусом «Ошибка».
+  next=clearAccountSideJoinError(next);
   if(next!==d){
    // CAS по исходному JSON: параллельный join успел записать группу — не затираем, оценим в следующий раз.
    const res:any=await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=? AND data=?').bind(JSON.stringify(next),owner,String(row.id),'group',String(row.data)).run();
@@ -1982,11 +1984,12 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      // Пусто только из-за аккаунтов, которые уже не видели @ этой группы: это ссылка, а не лимит фермы.
      const untried=farm.filter(a=>isAccountUsable(a.data)&&!exclude.has(a.id));
      if(!untried.length){
-      const msg=`Ссылка не открывается: все ${exclude.size} рабочих аккаунта не видят группу — проверьте ссылку`;
-      const dead={...gdata,...deadLinkPatch(msg)};
-      await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(dead),owner,id,'group').run();
-      try{await appendGlobalRescanLog(owner,'error',`${gdata.name||'Группа'}: ${msg}`)}catch{/* */}
-      return reply({error:msg,parked:true,deadLink:true,gate:'dead',group:dead},409);
+      // Мёртвой ссылку признаёт только t.me (проба выше); здесь — ошибка фермы: нужен новый аккаунт.
+      const msg=`Все ${exclude.size} рабочих аккаунта не видят @ группы, а t.me не подтвердил, что её нет — нужен другой аккаунт`;
+      const deferred={...gdata,...accountSideJoinErrorPatch(gdata,String(gdata.accountId||''),msg),joinState:'',joinStateAt:'',joinNextAt:new Date(Date.now()+JOIN_WORKER_ERROR_RETRY_MS*2).toISOString()};
+      await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(deferred),owner,id,'group').run();
+      try{await appendGlobalRescanLog(owner,'warn',`${gdata.name||'Группа'}: ${msg}`)}catch{/* */}
+      return reply({error:msg,deferred:true,accountSide:true,group:deferred},409);
      }
      // Непробованные аккаунты есть, но сейчас на лимите/паузе — откладываем группу, не всю ферму.
      const deferred={...gdata,joinState:'',joinStateAt:'',joinNextAt:new Date(Date.now()+JOIN_WORKER_ERROR_RETRY_MS*2).toISOString()};
@@ -2045,7 +2048,10 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const failure=!joinedOk&&!flood&&!frozen&&!accountBlind&&!sessionFault&&!workerTransient?classifyJoinFailure(result):null;
    // Спам-сигналы, лимиты, сессия/прокси — проблема аккаунта, не группы: статус группы и её попытки не трогаем.
    const accountFault=flood||accountBlind||sessionFault||failure==='peer_flood'||failure==='channels_too_much';
-   const status=result.join==='requested'?'pending':reallyJoined?'active':accountFault||workerTransient?(gdata.status==='error'?'error':'setup'):'error';
+   // «Слот не видит @» до подтверждения t.me — тоже аккаунт (ферма часто врёт); мёртвой группу делает только t.me.
+   const usernameMissing=!joinedOk&&!accountBlind&&isUsernameMissingResult(result);
+   const accountSide=!joinedOk&&(accountFault||frozen||workerTransient||(usernameMissing&&!gdata.tmeMissing));
+   const status=result.join==='requested'?'pending':reallyJoined?'active':accountSide?accountSideJoinErrorPatch(gdata,accountId,'').status:'error';
    let next:any={
     ...gdata,
     status,
@@ -2061,14 +2067,15 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     ...(joinedOk?{...JOIN_SUCCESS_PATCH,joinRejoin:false}:accountFault?{}:workerTransient?{joinNextAt:new Date(Date.now()+JOIN_WORKER_ERROR_RETRY_MS).toISOString()}:joinFailurePatch(gdata)),
     name:result.title&&(!gdata.name||gdata.name.startsWith('http')||gdata.name==='Группа')?result.title:gdata.name,
    };
-   // «Слот не видит @»: считаем разные аккаунты; после K — ссылка мёртвая, ферму больше не жжём.
+   // «Слот не видит @»: аккаунт в список пробовавших (ферма его для группы пропускает); мёртвая — только по t.me.
    let deadLink=false;
-   if(!joinedOk&&!accountBlind&&isUsernameMissingResult(result)){
+   if(usernameMissing){
     const step=recordUsernameMissing(gdata,accountId,String(result.error||''));
     next={...next,...step.patch};
     deadLink=step.dead;
     if(deadLink){try{await appendGlobalRescanLog(owner,'error',`${gdata.name||'Группа'}: ${String(step.patch.error)}`)}catch{/* */}}
    }
+   if(accountSide)next={...next,...accountSideJoinErrorPatch(gdata,accountId,String(result.error||'Аккаунт не смог вступить'))};
    // accessHash только от фактического join/already этой сессии
    if(result.channelId)next.channelId=String(result.channelId).slice(0,40);
    if(result.accessHash&&(reallyJoined||result.join==='already'||result.join==='requested')){
@@ -2145,9 +2152,10 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    }else{
     await patchAccount(owner,accountId,release);
    }
-   const next={...gdata,status:'error',error:msg.slice(0,500),joinState:'',joinStateAt:'',joinStateError:msg.slice(0,500),joinNextAt:new Date(Date.now()+JOIN_WORKER_ERROR_RETRY_MS).toISOString()};
+   // Сбой воркера/сессии — ошибка аккаунта, не группы: статус группы не «Ошибка».
+   const next={...gdata,...accountSideJoinErrorPatch(gdata,accountId,msg),joinState:'',joinStateAt:'',joinNextAt:new Date(Date.now()+JOIN_WORKER_ERROR_RETRY_MS).toISOString()};
    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'group').run();
-   return reply({error:next.error,accountFrozen:frozen},frozen?400:503);
+   return reply({error:msg.slice(0,500),accountFrozen:frozen,accountSide:true},frozen?400:503);
   }
  }
  if(b.action==='scan_group'){
@@ -2271,7 +2279,9 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
      const step=recordUsernameMissing(gdata,String(gdata.accountId||''),String(result.error||''));
      const tried=new Set(step.missingAccounts);
      const live=await listJoinTargetIds(owner);
-     const nextAcc=step.dead?undefined:live.find(aid=>!tried.has(aid));
+     // Не больше K аккаунтов на одну группу: дальше ферму не жжём (мёртвой её признаёт только t.me).
+     const capped=step.missingAccounts.length>=USERNAME_DEAD_AFTER_ACCOUNTS;
+     const nextAcc=step.dead||capped?undefined:live.find(aid=>!tried.has(aid));
      if(nextAcc){
       const rotated={
        ...gdata,
@@ -3258,6 +3268,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     ...gdata,
     accountId,
     error:gdata.accountId===accountId?gdata.error:'',
+    // Владелец дал другой аккаунт — ошибка прежнего с группы снимается.
+    ...(String(gdata.joinAccountErrorId||'')!==accountId?{joinAccountError:'',joinAccountErrorId:''}:{}),
    };
    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,gid,'group').run();
    assignments.push({groupId:gid,accountId});

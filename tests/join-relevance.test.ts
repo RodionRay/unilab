@@ -104,6 +104,37 @@ describe("relevance score · bands", () => {
   });
 });
 
+describe("relevance score · topical floor and business chats", () => {
+  it("bumps the formula version so stored scores are recomputed", () => {
+    expect(JOIN_RELEVANCE_VERSION).toBeGreaterThanOrEqual(3);
+    expect(isRelevanceStale({ v: 2, sig: profile.sig, score: 24 }, profile)).toBe(true);
+  });
+
+  it("a topical channel (strong hit «wb») is never below review: «Дана Малкина WB»", () => {
+    const r = score({ name: "Дана Малкина WB", url: "https://t.me/malkinawb", source: "tgstat" });
+    expect(r.band, `${r.score} ${r.reasons.join(" · ")}`).toBe("review");
+    expect(r.score).toBeGreaterThanOrEqual(RELEVANCE_REVIEW_MIN);
+    expect(r.reasons.join(" ")).toMatch(/совпадения: wb/);
+  });
+
+  it("business chats are for the owner to decide, not skipped", () => {
+    for (const g of [
+      { name: "Предприниматели | Чат о бизнесе", url: "https://t.me/moscow_biz" },
+      { name: "Бизнес-чат №1", url: "https://t.me/biznes_chat" },
+    ]) {
+      const r = score(g);
+      expect(r.band, `${g.name} ${r.score} ${r.reasons.join(" · ")}`).toBe("review");
+      expect(r.reasons.join(" ")).toMatch(/бизнес-чат: селлеры бывают — решите сами/);
+      expect(r.reasons.join(" ")).not.toMatch(/не ваша ниша/);
+    }
+  });
+
+  it("business broadcast channels and off-niche celebrity channels stay skipped", () => {
+    expect(score({ name: "Мышление Миллионера", url: "https://t.me/millionaire_thinks", source: "tgstat" }).band).toBe("skip");
+    expect(score({ name: "Ольга Звезда", url: "https://t.me/celebrity_star_test", source: "tgstat-blogs" }).band).toBe("skip");
+  });
+});
+
 describe("join gate", () => {
   const rel = (band: "auto" | "review" | "skip", s: number) => ({ v: 1, sig: "x", score: s, band, reasons: ["r"], members: 0, at: "" });
 

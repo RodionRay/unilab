@@ -21,7 +21,7 @@ import { scanStopTerms } from "@/lib/lead-stopwords";
 import { tmeMissingMessage } from "@/lib/tme-probe";
 
 /** Bump when the formula changes: stored scores with another version are recomputed. */
-export const JOIN_RELEVANCE_VERSION = 2;
+export const JOIN_RELEVANCE_VERSION = 3;
 export const RELEVANCE_AUTO_MIN = 60;
 export const RELEVANCE_REVIEW_MIN = 35;
 
@@ -91,6 +91,9 @@ const CHAT_RE = /(^|[^\p{L}])(чат|chat|группа|сообществ|фор
 const CHAT_USERNAME_RE = /(chat|group|talk|forum|community)/i;
 const BLOG_RE = /(^|[^\p{L}])(блог|blog|подкаст|podcast|медиа|media|новости|news|журнал)/iu;
 const TGSTAT_CHANNEL_RE = /канал из tgstat/i;
+/** Entrepreneurs' chats: sellers ask there too — never auto, never silently skipped. */
+const BUSINESS_NAME_RE = /бизнес|предприним/i;
+const BUSINESS_CHAT_REASON = "бизнес-чат: селлеры бывают — решите сами";
 const MEMBERS_RE = /\(([\d\s ]+)\s*(subscribers|подписчик|участник)/i;
 
 function norm(s: string): string {
@@ -339,6 +342,7 @@ export function scoreGroupRelevance(
 
   const isChannel = String(group.source || "").startsWith("tgstat") || TGSTAT_CHANNEL_RE.test(description);
   const isChat = !isChannel && (CHAT_RE.test(name) || CHAT_USERNAME_RE.test(username));
+  const businessChat = isChat && (groupNiches.includes("business") || BUSINESS_NAME_RE.test(name));
   if (isChat) {
     score += CHAT_POINTS;
     reasons.push("чат: участники пишут сами");
@@ -352,7 +356,9 @@ export function scoreGroupRelevance(
     score -= BLOG_PENALTY;
     reasons.push("блог/медиа");
   }
-  if (groupNiches.length && !nicheHits.length && !strongHits.length) {
+  if (businessChat) {
+    reasons.unshift(BUSINESS_CHAT_REASON);
+  } else if (groupNiches.length && !nicheHits.length && !strongHits.length) {
     score -= OFF_NICHE_PENALTY;
     const labels = groupNiches.filter((n) => n !== "blogs").slice(0, 2).map((n) => GROUP_NICHE_LABELS[n]);
     reasons.push(`не ваша ниша${labels.length ? `: ${labels.join(", ")}` : ""}`);
@@ -368,13 +374,15 @@ export function scoreGroupRelevance(
     score -= TINY_PENALTY;
     reasons.push(`мало участников: ${members}`);
   }
-  if (!topical) {
+  if (!topical && !businessChat) {
     score = Math.min(score, NO_TOPIC_CAP);
     reasons.unshift("нет признаков вашей ниши в названии/описании");
   } else if ((isChannel || isBlog) && score >= RELEVANCE_AUTO_MIN) {
     // Broadcast channels and blogs give few leads even on-topic: the owner decides, never auto.
     score = RELEVANCE_AUTO_MIN - 1;
   }
+  // Topical evidence or a business chat is never silently skipped: at worst the owner decides.
+  if (topical || businessChat) score = Math.max(score, RELEVANCE_REVIEW_MIN);
   const final = clamp(score);
   return {
     v: JOIN_RELEVANCE_VERSION,

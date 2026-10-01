@@ -20,10 +20,16 @@ niches / description / audience / subscriber count (`catalogEntryFor`, `membersF
 | weak product word | +6 each, ≤ 12 |
 | chat (участники пишут сами) | +12 |
 | broadcast channel / blog–media title | −15 / −10, and never above 59 (owner decides) |
-| catalog niches, none ours, no strong term | −20 |
+| catalog niches, none ours, no strong term (not for business chats) | −20 |
 | stop-word in the title (only without strong terms) | −30 |
 | < 300 subscribers | −5 |
-| no topical evidence at all | capped at 30 |
+| no topical evidence at all (not for business chats) | capped at 30 |
+| topical evidence (niche / strong term / leads) or a business chat | never below 35 (review) |
+
+A **business chat** is a chat (not a broadcast channel) whose catalog niches include `business` or whose
+title matches «бизнес» / «предприним»: sellers ask there too, so it is never skipped silently — reason
+«бизнес-чат: селлеры бывают — решите сами». Business broadcast channels are scored as before.
+`JOIN_RELEVANCE_VERSION` = 3: stored scores of older versions are recomputed (`isRelevanceStale`).
 
 Bands (`RELEVANCE_AUTO_MIN` = 60, `RELEVANCE_REVIEW_MIN` = 35): **auto** joins by itself,
 **review** («На подтверждение») waits for the owner, **skip** («Не вступать») is not joined. Nothing is
@@ -92,14 +98,45 @@ The worker reports `join: "peer_flood"` / `"too_many"` explicitly
 
 ## 3. Dead usernames — «Слот не видит @»
 
-`recordUsernameMissing` counts the distinct accounts that could not resolve a group; the next attempt
-goes only to an untried account (join: farm `exclude`; scan: rotation). After
-`USERNAME_DEAD_AFTER_ACCOUNTS` = 3 the group is marked `joinDead` and leaves the auto-queue with the
-reason «Ссылка не открывается …». Approving it (or editing its link) clears the mark and retries.
-`seedMissingAccounts` migrates groups that failed before tracking existed. When every usable account is
-already in the tried list the group is marked dead at once (small farms); when untried accounts exist but
-are capped/paused the group is deferred (`409 {deferred:true}`, retried in 30 min) — never reported as a
-farm-wide limit.
+`recordUsernameMissing` records the distinct accounts that could not resolve a group
+(`joinMissingAccounts`); the next attempt goes only to an untried account (join: farm `exclude`; scan:
+rotation, at most `USERNAME_DEAD_AFTER_ACCOUNTS` = 3 accounts per group). Witnesses alone never mark a
+group dead — the farm often lies. `joinDead` is set only when t.me confirms the username is missing
+(`tmeMissing`, §4); groups marked dead by the old witness rule stay as they are until approved or probed.
+Approving a dead group (or editing its link) clears the mark and retries. `seedMissingAccounts` migrates
+groups that failed before tracking existed. When every usable account is already in the tried list, or
+untried accounts are capped/paused, the group is deferred (`409 {deferred:true}`, retried in 30 min) —
+never reported as a farm-wide limit; in the first case it also gets an account error (§5).
+
+## 5. Account-side join errors
+
+A join that fails because of the account — resolve-blind (`accountBlind`), FloodWait, session/proxy
+(`sessionFault`), worker transient, PEER_FLOOD, CHANNELS_TOO_MUCH, frozen, a worker exception, or
+«Слот не видит @» before t.me confirmed the link dead — does not touch the group's `status` / `error`:
+`lib/processes/join-flow.ts::accountSideJoinErrorPatch` keeps the previous non-error status (else
+`setup`), clears `error` / `joinStateError` and stores `joinAccountError` (≤ 300 chars) +
+`joinAccountErrorId` (the account). A successful join (`JOIN_SUCCESS_PATCH`, also used by approve and
+restore) and `assign_group_accounts` with a different account clear both fields.
+`clearAccountSideJoinError` migrates old groups on every `refreshGroupRelevance` (heal tick): a non-member,
+non-dead group in status `error` whose texts are all account-side (or empty) goes back to `setup`, the text
+moves to `joinAccountError`. Real group errors (private, banned, invite expired) keep status `error`.
+
+## 6. Groups page tabs — `lib/group-tabs.ts`
+
+`groupTab` puts each group in one tab; chip counts and the list filter use the same `groupInTab`:
+
+| Tab | Rule (first match wins) |
+|---|---|
+| Заявки | membership / status `pending` |
+| Вступили | member (`groupIsMember`; the filter also lists requests) |
+| Ошибки | status `error`, gate `dead`, or `joinAccountError` |
+| Ждут | gate allows, real link (not a catalog placeholder) — also without an account: the row shows «Назначить аккаунт» (row account picker) instead of «Вступить» |
+| На подтверждение | gate `review` |
+| Не вступать | gate `skip` / `skipped` only |
+
+`groupStatusLabel`: queue state, then «Заявка» / «Вступили», then «Ошибка аккаунта» (`joinAccountError`),
+«Ссылка мертва» (gate `dead`), «Ошибка» (status `error`), then the gate labels. A row with an account
+error shows «Аккаунт <name> не смог вступить: <text>» and a «Другой аккаунт» button (row account picker).
 
 ## 4. Chats that do not exist — t.me probe (`lib/tme-probe.ts`)
 

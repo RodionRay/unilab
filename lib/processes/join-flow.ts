@@ -1,7 +1,7 @@
 /** Решения по вступлению в группы (чистая логика для тестов и route). */
 
 import { isCatalogPlaceholderUrl } from "@/lib/group-catalog";
-import { tmeMissingMessage } from "@/lib/tme-probe";
+import { probeableUsername, tmeMissingMessage } from "@/lib/tme-probe";
 import {
   hasInviteQuota,
   isAccountUsable,
@@ -254,7 +254,10 @@ export function accountBlindPatch(now = Date.now()): { resolveBlindUntil: string
   return { resolveBlindUntil: new Date(now + ACCOUNT_BLIND_COOLDOWN_MS).toISOString() };
 }
 
-/** «Слот не видит @x» from this many DIFFERENT accounts → the link is dead, stop spending joins on it. */
+/**
+ * «Слот не видит @x» from this many DIFFERENT accounts: the farm stops rotating the group to new accounts.
+ * Witnesses alone never mark the link dead (the farm often lies) — only t.me does (tmeMissing).
+ */
 export const USERNAME_DEAD_AFTER_ACCOUNTS = 3;
 
 const USERNAME_MISSING_RE = /не видит @|no user has|nobody is using|username_not_occupied|username_invalid/i;
@@ -267,6 +270,8 @@ export type MissingTrackedGroup = {
   usernameMissing?: boolean;
   joinMissingAccounts?: unknown;
   joinDead?: boolean;
+  /** t.me confirmed the @username does not exist (lib/tme-probe). */
+  tmeMissing?: boolean;
 };
 
 export function missingAccountsOf(group: MissingTrackedGroup): string[] {
@@ -281,9 +286,9 @@ export type UsernameMissingStep = {
 };
 
 /**
- * One more account could not resolve the group's @username. Returns the group patch: the account joins
- * the «tried» list; after USERNAME_DEAD_AFTER_ACCOUNTS distinct accounts the group is marked dead
- * (out of the auto-queue until the owner fixes the link or approves a retry).
+ * One more account could not resolve the group's @username: the account joins the «tried» list
+ * (joinMissingAccounts, the farm skips it for this group). The group is marked dead only when t.me
+ * already confirmed the username missing; otherwise it is an account-side failure for the caller.
  */
 export function recordUsernameMissing(
   group: MissingTrackedGroup,
@@ -291,15 +296,76 @@ export function recordUsernameMissing(
   errorText: string,
 ): UsernameMissingStep {
   const missingAccounts = [...new Set([...missingAccountsOf(group), String(accountId || "")].filter(Boolean))];
-  const dead = missingAccounts.length >= USERNAME_DEAD_AFTER_ACCOUNTS;
-  const base = {
-    usernameMissing: true,
-    joinMissingAccounts: missingAccounts,
-    error: String(errorText || "Слот не видит группу").slice(0, 500),
+  const base = { usernameMissing: true, joinMissingAccounts: missingAccounts };
+  if (!group.tmeMissing) return { dead: false, missingAccounts, patch: base };
+  const username = probeableUsername(String(group.url || ""));
+  const msg = username ? tmeMissingMessage(username) : String(errorText || "Ссылка не открывается");
+  return { dead: true, missingAccounts, patch: { ...base, ...deadLinkPatch(msg) } };
+}
+
+/** Short account-side failure kept on the group (UI «Ошибка аккаунта»), never in `error`. */
+export const JOIN_ACCOUNT_ERROR_MAX = 300;
+
+export type AccountSideJoinErrorPatch = {
+  status: string;
+  error: "";
+  joinStateError: "";
+  joinAccountError: string;
+  joinAccountErrorId: string;
+};
+
+/**
+ * A join failed because of the account (blind, FloodWait, session, spam, 500 channels, frozen, farm «не видит»):
+ * the group keeps its previous non-error status and the text goes to joinAccountError.
+ */
+export function accountSideJoinErrorPatch(
+  group: { status?: string },
+  accountId: string,
+  message: string,
+): AccountSideJoinErrorPatch {
+  const prev = String(group.status || "");
+  return {
+    status: prev && prev !== "error" ? prev : "setup",
+    error: "",
+    joinStateError: "",
+    joinAccountError: String(message || "Аккаунт не смог вступить").slice(0, JOIN_ACCOUNT_ERROR_MAX),
+    joinAccountErrorId: String(accountId || ""),
   };
-  if (!dead) return { dead, missingAccounts, patch: base };
-  const msg = `Ссылка не открывается: ${missingAccounts.length} разных аккаунта не видят группу — проверьте ссылку`;
-  return { dead, missingAccounts, patch: { ...base, ...deadLinkPatch(msg) } };
+}
+
+const ACCOUNT_SIDE_ERROR_RE = /не резолвит даже @|ложь фермы|Слот не видит|FloodWait|PEER_FLOOD|заморожен|CHANNELS_TOO_MUCH/i;
+
+export type AccountSideErrorGroup = {
+  accountId?: string;
+  status?: string;
+  error?: string;
+  joinStateError?: string;
+  membership?: string;
+  joinedAt?: string;
+  joinDead?: boolean;
+};
+
+/**
+ * Migration: groups stuck in status «error» because of an account problem (or with no reason at all)
+ * go back to «setup»; the account text moves to joinAccountError. Real group errors, members and dead
+ * links are untouched. Returns the same object when nothing changes.
+ */
+export function clearAccountSideJoinError<T extends AccountSideErrorGroup>(
+  group: T,
+): T & { joinAccountError?: string; joinAccountErrorId?: string } {
+  const member = group.membership === "joined" || group.membership === "pending" || group.status === "pending" || !!group.joinedAt;
+  if (member || group.joinDead || group.status !== "error") return group;
+  const texts = [group.error, group.joinStateError].map((x) => String(x || "").trim()).filter(Boolean);
+  if (texts.some((t) => !ACCOUNT_SIDE_ERROR_RE.test(t))) return group;
+  const accountText = texts[0];
+  return {
+    ...group,
+    status: "setup",
+    error: "",
+    joinStateError: "",
+    joinAccountError: String(accountText || "").slice(0, JOIN_ACCOUNT_ERROR_MAX),
+    joinAccountErrorId: String(group.accountId || ""),
+  };
 }
 
 /** Group leaves the auto-queue as a dead link (owner approval or a new URL brings it back). */
@@ -371,10 +437,13 @@ export function classifyJoinFailure(result: JoinWorkerResult & { usernameMissing
   return "account";
 }
 
-export const JOIN_SUCCESS_PATCH: Required<JoinRetryFields> = {
+/** After a join (or the owner's approval/restore): retries reset and the account error is gone. */
+export const JOIN_SUCCESS_PATCH: Required<JoinRetryFields> & { joinAccountError: ""; joinAccountErrorId: "" } = {
   joinAttempts: 0,
   joinNextAt: "",
   joinGaveUp: false,
+  joinAccountError: "",
+  joinAccountErrorId: "",
 };
 
 export type GroupHealAction =

@@ -93,7 +93,13 @@ describe("повторы вступления", () => {
     expect(g.joinAttempts).toBe(JOIN_MAX_ATTEMPTS);
     expect(g.joinGaveUp).toBe(true);
     expect(Date.parse(g.joinNextAt!)).toBeGreaterThan(NOW);
-    expect({ ...g, ...JOIN_SUCCESS_PATCH }).toEqual({ joinAttempts: 0, joinNextAt: "", joinGaveUp: false });
+    expect({ ...g, ...JOIN_SUCCESS_PATCH }).toEqual({
+      joinAttempts: 0,
+      joinNextAt: "",
+      joinGaveUp: false,
+      joinAccountError: "",
+      joinAccountErrorId: "",
+    });
   });
 });
 

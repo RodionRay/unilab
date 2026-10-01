@@ -200,6 +200,55 @@ describe('выбор аккаунта для вступления',()=>{
     expect(rec(GROUP).accountId).toBe('');
   });
 
+  it('слепой аккаунт не вешает ошибку на группу: status setup, текст в joinAccountError',async()=>{
+    await addAccount(ACC_A,{});
+    addGroup({status:'error',error:'',joinStateError:''});
+    workerReply={ok:false,join:'missing',accountBlind:true,error:'Аккаунт не резолвит даже @telegram — ограничен Telegram, @wanted_chat тут ни при чём'};
+
+    await join();
+
+    const g=rec(GROUP);
+    expect(g.status).toBe('setup');
+    expect(g.error).toBe('');
+    expect(g.joinStateError).toBe('');
+    expect(g.joinAccountError).toMatch(/не резолвит даже @telegram/);
+    expect(g.joinAccountErrorId).toBe(ACC_A);
+  });
+
+  it('FloodWait и «Слот не видит @» без t.me — ошибка аккаунта, не группы',async()=>{
+    await addAccount(ACC_A,{});
+    addGroup({status:'active'});
+    workerReply={ok:false,join:'missing',usernameMissing:true,error:'Слот не видит @wanted_chat (ResolveUsername). Часто ложь фермы — нужен другой аккаунт'};
+
+    await join();
+
+    const g=rec(GROUP);
+    expect(g.status).toBe('active');
+    expect(g.error).toBe('');
+    expect(g.joinDead).toBeFalsy();
+    expect(g.joinMissingAccounts).toEqual([ACC_A]);
+    expect(g.joinAccountError).toMatch(/ложь фермы/);
+  });
+
+  it('успешное вступление снимает ошибку аккаунта',async()=>{
+    await addAccount(ACC_A,{});
+    addGroup({joinAccountError:'FloodWait 300',joinAccountErrorId:ACC_A});
+
+    await join();
+
+    expect(rec(GROUP)).toMatchObject({membership:'joined',joinAccountError:'',joinAccountErrorId:''});
+  });
+
+  it('назначение другого аккаунта снимает ошибку аккаунта',async()=>{
+    await addAccount(ACC_C,{});
+    addGroup({joinAccountError:'FloodWait 300',joinAccountErrorId:ACC_A});
+
+    const res=await POST(postRequest({action:'assign_group_accounts',groupIds:[GROUP],accountIds:[ACC_C]}));
+
+    expect(res.status).toBe(200);
+    expect(rec(GROUP)).toMatchObject({accountId:ACC_C,joinAccountError:'',joinAccountErrorId:''});
+  });
+
   it('import_catalog не привязывает каталог к замороженному аккаунту',async()=>{
     await addAccount(ACC_A,{status:'frozen'});
 

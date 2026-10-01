@@ -15,6 +15,7 @@ import {TaskLogDialog} from '@/components/product/task-log-dialog';
 import {EmployeesPanel} from '@/components/product/employees-panel';
 import {DEFAULT_DM_SOFT_CLOSE,DEFAULT_MAILING_TASK} from '@/lib/mailing';
 import {joinGateFor} from '@/lib/join-relevance';
+import {groupInTab,groupIsMember,groupStatusLabel as groupStatusLabelOf,type GroupTab} from '@/lib/group-tabs';
 import {canAccessNav,type CrmAccess,type WorkspaceInvite,type WorkspaceMember} from '@/lib/staff-types';
 import {DEFAULT_NAV} from '@/components/product/workspace-nav';
 import {Input} from '@/components/ui/input';
@@ -298,11 +299,7 @@ function KeywordChips({value,onChange,variant,placeholder}:{value:string;onChang
 }
 
 function groupAlreadyIn(item:RecordItem){
-  const d=item.data||{};
-  if(d.membership==='joined'||d.membership==='pending')return true;
-  if(d.status==='pending')return true;
-  if(d.joinedAt)return true;
-  return false;
+  return groupIsMember(item.data||{});
 }
 
 /** Группа может вступить сама: есть аккаунт и ссылка, ещё не внутри, фильтр релевантности пропускает. */
@@ -313,31 +310,10 @@ function groupNeedsJoin(item:RecordItem){
   return joinGateFor(d).allow;
 }
 
-/** Не вступили и фильтр держит: на подтверждение / не вступать / мёртвая ссылка. */
-function groupParked(item:RecordItem){
-  if(groupAlreadyIn(item))return false;
-  return !joinGateFor(item.data||{}).allow;
-}
-
-type GroupFilter='all'|'need'|'review'|'skip'|'joined'|'pending'|'error';
+type GroupFilter='all'|GroupTab;
 
 function groupStatusLabel(item:RecordItem){
-  const d=item.data||{};
-  const js=String(d.joinState||'');
-  if(js==='queued')return {label:'В очереди',tone:'warning' as const};
-  if(js==='waiting')return {label:'Пауза',tone:'warning' as const};
-  if(js==='joining')return {label:'Вступаем…',tone:'warning' as const};
-  if(js==='scanning')return {label:'Скан…',tone:'warning' as const};
-  const s=String(d.status||'setup');
-  if(d.membership==='pending'||s==='pending')return {label:'Заявка',tone:'warning' as const};
-  if(d.membership==='joined'||(s==='active'&&d.joinedAt)||groupAlreadyIn(item))return {label:'Вступили',tone:'success' as const};
-  const gate=joinGateFor(d);
-  if(gate.state==='dead')return {label:gate.label,tone:'danger' as const};
-  if(gate.state==='review')return {label:gate.label,tone:'warning' as const};
-  if(gate.state==='skip'||gate.state==='skipped')return {label:gate.label,tone:'neutral' as const};
-  if(s==='error')return {label:'Ошибка',tone:'danger' as const};
-  if(s==='active')return {label:'Не вступили',tone:'warning' as const};
-  return {label:'Ждёт вступления',tone:'neutral' as const};
+  return groupStatusLabelOf(item.data||{});
 }
 
 const JOIN_ACTIVE_STATES=new Set(['queued','waiting','joining','scanning']);
@@ -2709,13 +2685,7 @@ function WorkspaceHome(){
   const listRows=useMemo(()=>{
     if(currentKind==='group'){
       return displayed.filter(r=>{
-        if(groupFilter==='need')return groupNeedsJoin(r);
-        if(groupFilter==='review')return groupParked(r)&&joinGateFor(r.data).state==='review';
-        if(groupFilter==='skip')return groupParked(r)&&joinGateFor(r.data).state!=='review';
-        if(groupFilter==='joined')return groupAlreadyIn(r);
-        if(groupFilter==='pending')return r.data.status==='pending';
-        if(groupFilter==='error')return r.data.status==='error';
-        return true;
+        return groupFilter==='all'||groupInTab(r.data||{},groupFilter);
       });
     }
     if(view==='Переписки'){
@@ -3002,6 +2972,10 @@ function WorkspaceHome(){
           const err=r.data.status==='error'?shortErr(r.data.error||r.data.joinStateError||''):'';
           const gate=joined?null:joinGateFor(r.data);
           const parked=!!gate&&!gate.allow&&!groupAlreadyIn(r);
+          const accountErr=!groupAlreadyIn(r)?String(r.data.joinAccountError||''):'';
+          const accountErrId=String(r.data.joinAccountErrorId||'');
+          const accountErrName=accountErrId?(records.find(x=>x.id===accountErrId)?.data.name||accountErrId.slice(0,8)):'';
+          const needsAccount=!r.data.accountId&&!queued&&!parked&&!groupAlreadyIn(r)&&!!r.data.url&&!isCatalogPlaceholderUrl(r.data.url)&&!!gate?.allow;
           return (
             <div className={`groups-row ${queued?'is-queue':''} ${groupSelected.includes(r.id)?'is-selected':''}`} key={r.id}>
               <label className="groups-check">
@@ -3018,6 +2992,11 @@ function WorkspaceHome(){
                   )}
                 </div>
                 {err&&<div className="groups-err" title={r.data.error||r.data.joinStateError}>{err}{(r.data.error||r.data.joinStateError||'').length>90?'…':''}</div>}
+                {accountErr&&(
+                  <div className="groups-err" title={accountErr}>
+                    {`Аккаунт ${accountErrName||'группы'} не смог вступить: ${shortErr(accountErr)}`}{accountErr.length>90?'…':''}
+                  </div>
+                )}
                 {gate&&gate.state!=='joined'&&(gate.reason||gate.score!=null)&&(
                   <div className="groups-why" title={gate.reason}>
                     {gate.score!=null?`Релевантность ${gate.score} · `:''}{gate.reason}
@@ -3039,6 +3018,16 @@ function WorkspaceHome(){
                 {canJoin&&(
                   <Button size="sm" disabled={busy||!telegramConnected||!r.data.accountId} onClick={()=>joinGroup(r)}>
                     <Plug size={14}/>Вступить
+                  </Button>
+                )}
+                {needsAccount&&(
+                  <Button size="sm" variant="outline" disabled={busy} onClick={()=>openAccountPicker('row',r.id)}>
+                    <UserRound size={14}/>Назначить аккаунт
+                  </Button>
+                )}
+                {accountErr&&!needsAccount&&(
+                  <Button size="sm" variant="outline" disabled={busy} onClick={()=>openAccountPicker('row',r.id)} title="Вступить другим аккаунтом">
+                    <Shuffle size={14}/>Другой аккаунт
                   </Button>
                 )}
                 {parked&&(
@@ -3716,12 +3705,12 @@ function WorkspaceHome(){
                   <div className="groups-filters">
                     {([
                       ['all',`Все ${list('group').length}`],
-                      ['need',`Ждут ${list('group').filter(groupNeedsJoin).length}`],
-                      ['review',`На подтверждение ${list('group').filter(g=>groupParked(g)&&joinGateFor(g.data).state==='review').length}`],
-                      ['skip',`Не вступать ${list('group').filter(g=>groupParked(g)&&joinGateFor(g.data).state!=='review').length}`],
-                      ['joined',`Вступили ${list('group').filter(groupAlreadyIn).length}`],
-                      ['pending',`Заявки ${list('group').filter(g=>g.data.status==='pending').length}`],
-                      ['error',`Ошибки ${list('group').filter(g=>g.data.status==='error').length}`],
+                      ['need',`Ждут ${list('group').filter(g=>groupInTab(g.data||{},'need')).length}`],
+                      ['review',`На подтверждение ${list('group').filter(g=>groupInTab(g.data||{},'review')).length}`],
+                      ['skip',`Не вступать ${list('group').filter(g=>groupInTab(g.data||{},'skip')).length}`],
+                      ['joined',`Вступили ${list('group').filter(g=>groupInTab(g.data||{},'joined')).length}`],
+                      ['pending',`Заявки ${list('group').filter(g=>groupInTab(g.data||{},'pending')).length}`],
+                      ['error',`Ошибки ${list('group').filter(g=>groupInTab(g.data||{},'error')).length}`],
                     ] as const).map(([id,label])=>(
                       <button
                         key={id}

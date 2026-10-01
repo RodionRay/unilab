@@ -225,7 +225,7 @@ describe('workspace API: join pacing',()=>{
     expect(account(ACC2).joinsToday).toBe(1);
   });
 
-  it('«Слот не видит @» from 3 distinct accounts marks the link dead',async()=>{
+  it('«Слот не видит @» from 3 distinct accounts is an account error, not a dead link (only t.me marks dead)',async()=>{
     const ids=[ACC2,'11111111-1111-4111-8111-111111111113'];
     for(const [i,id] of ids.entries()){
       addRecord(id,'account',{name:`F${i}`,phone:`+7999000113${i}`,status:'active',proxyId:''},await seal(JSON.stringify({session:`x${i}`}),OWNER));
@@ -237,12 +237,15 @@ describe('workspace API: join pacing',()=>{
 
     const g=group(G_WB);
     expect(new Set(g.joinMissingAccounts).size).toBe(3);
-    expect(g.joinDead).toBe(true);
+    expect(g.joinDead).toBeFalsy();
+    expect(g.status).not.toBe('error');
+    expect(g.joinAccountError).toMatch(/не видит/);
     const again=await POST(postRequest({action:'join_group',id:G_WB}));
     expect(again.status).toBe(409);
+    expect((await body(again)).deadLink).toBeFalsy();
   });
 
-  it('scan: «Слот не видит @» rotates only to untried accounts and stops at the cap',async()=>{
+  it('scan: «Слот не видит @» rotates only to untried accounts and stops at the cap without marking dead',async()=>{
     const ids=[ACC2,'11111111-1111-4111-8111-111111111113','11111111-1111-4111-8111-111111111114'];
     for(const [i,id] of ids.entries()){
       addRecord(id,'account',{name:`S${i}`,phone:`+7999000114${i}`,status:'active',proxyId:''},await seal(JSON.stringify({session:`s${i}`}),OWNER));
@@ -258,12 +261,12 @@ describe('workspace API: join pacing',()=>{
     }
 
     const g=group(G_WB);
-    expect(g.joinDead).toBe(true);
+    expect(g.joinDead).toBeFalsy();
     expect(new Set(g.joinMissingAccounts).size).toBe(3);
     expect(tried.size).toBe(3);
   });
 
-  it('a farm where every usable account already failed to see @ marks the link dead, not «farm exhausted»',async()=>{
+  it('a farm where every usable account already failed to see @ is an account error, not «farm exhausted» and not dead',async()=>{
     const g={...group(G_WB),joinMissingAccounts:[ACCOUNT_ID],usernameMissing:true};
     testDb().sqlite.prepare('UPDATE records SET data=? WHERE id=?').run(JSON.stringify(g),G_WB);
     const calls=stubWorker({ok:true,join:'joined'});
@@ -273,9 +276,22 @@ describe('workspace API: join pacing',()=>{
 
     expect(res.status).toBe(409);
     expect(data.farmExhausted).toBeUndefined();
-    expect(data.deadLink).toBe(true);
-    expect(group(G_WB).joinDead).toBe(true);
+    expect(data.deferred).toBe(true);
+    expect(data.deadLink).toBeFalsy();
+    const after=group(G_WB);
+    expect(after.joinDead).toBeFalsy();
+    expect(after.status).toBe('setup');
+    expect(after.joinAccountError).toMatch(/не видят/);
     expect(calls.filter(u=>u.endsWith('/join-group'))).toHaveLength(0);
+  });
+
+  it('the heal tick moves old account-side errors off the group (status setup, text → joinAccountError)',async()=>{
+    const text='Аккаунт не резолвит даже @telegram — ограничен Telegram, @wb_official_chat_test тут ни при чём';
+    testDb().sqlite.prepare('UPDATE records SET data=? WHERE id=?').run(JSON.stringify({...group(G_WB),status:'error',error:text,joinState:''}),G_WB);
+
+    await POST(postRequest({action:'heal_dead_group_accounts'}));
+
+    expect(group(G_WB)).toMatchObject({status:'setup',error:'',joinAccountError:text,joinAccountErrorId:ACCOUNT_ID});
   });
 
   it('a joined group moved off a dead account is re-joined without the relevance gate',async()=>{
