@@ -3,6 +3,7 @@
  * that the components use: funnel step mapping, project patch diff, lead → project, queue predicates.
  * No React here so the rules stay unit-testable (tests/ui-ai-workspace.test.ts).
  */
+import type { JudgeSkipReason } from '@/lib/leads/types';
 
 export const MAX_STOP_WORDS = 50;
 export const MAX_EXAMPLES = 10;
@@ -88,17 +89,19 @@ export type FunnelPart = Pick<FunnelView, 'counts' | 'samples'>;
 export type FunnelResponse = { ok: true; funnel: FunnelView; dm: FunnelView };
 
 /** `lib/leads/types.ts::JudgeSkipReason` in the seller's words. */
-export const SKIP_REASON_LABEL: Record<string, string> = {
+// Keyed by the server's union: a new skip reason without a label fails the typecheck
+export const SKIP_REASON_LABEL: Record<JudgeSkipReason, string> = {
   no_ai_key: 'Нет ключа AI',
   daily_cap: 'Дневной лимит оценок исчерпан',
   blocked: 'AI не ответил раньше в этой проверке',
   batch_limit: 'Не поместилось в эту проверку: оценим в следующей',
   sender_limit: 'Слишком много новых собеседников за раз',
   no_project: 'Нет активного проекта',
+  deadline: 'Не успели оценить за 90 секунд: оценим в следующей проверке',
 };
 
 export const sampleCaption = (s: FunnelSample): string =>
-  s.term ? `Стоп-слово «${s.term}»` : s.reason ? (SKIP_REASON_LABEL[s.reason] ?? s.reason) : '';
+  s.term ? `Стоп-слово «${s.term}»` : s.reason ? ((SKIP_REASON_LABEL as Record<string, string>)[s.reason] ?? s.reason) : '';
 
 /** Skip reasons seen in the samples of «Без оценки»: drives the key / daily-cap banners. */
 export function skipReasons(view: FunnelPart): ReadonlySet<string> {
