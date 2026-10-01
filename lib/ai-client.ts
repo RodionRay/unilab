@@ -133,12 +133,19 @@ export function parseAiJson<T>(
   return parsed.data;
 }
 
+/**
+ * Called before each retry; a throw aborts the call with that error (e.g. a daily cap that must
+ * pay for the extra attempt too).
+ */
+export type BeforeRetry = (prompt: ChatPrompt) => Promise<void>;
+
 /** JSON LLM over any text LLM: a call error or an invalid answer is retried `retries` times. */
-export function jsonLlmFrom(text: TextLlm, retries = 1): JsonLlm {
+export function jsonLlmFrom(text: TextLlm, retries = 1, beforeRetry?: BeforeRetry): JsonLlm {
   return async (schema, prompt) => {
     let lastError = "";
     const attempts = retries + 1;
     for (let attempt = 1; attempt <= attempts; attempt++) {
+      if (attempt > 1 && beforeRetry) await beforeRetry(prompt);
       try {
         return parseAiJson(schema, await text(prompt), attempt);
       } catch (e) {

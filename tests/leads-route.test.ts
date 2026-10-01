@@ -386,6 +386,33 @@ describe('lead core v2 · workspace route',()=>{
       expect(f.body.funnel.samples.judgeSkipped[0].reason).toBe('daily_cap');
     });
 
+    it('a retry reserves the daily cap again: no room → no second paid call',async()=>{
+      setSettings({judgeDailyCap:25});
+      workerMessages=messages(20);
+      workerCursor='119';
+      judge=()=>new Response('down',{status:500});
+
+      await scan();
+
+      expect(calls.judge).toHaveLength(1);
+      expect(record(GROUP_ID).scanCursor).toBe('99');
+      const day=new Date().toISOString().slice(0,10);
+      expect(record(`judge-day:${OWNER}:${day}`).count).toBe(20);
+    });
+
+    it('a retry within the cap is charged for its messages',async()=>{
+      setSettings({judgeDailyCap:100});
+      workerMessages=messages(5);
+      let n=0;
+      judge=()=>++n===1?new Response('down',{status:500}):{score:90};
+
+      await scan();
+
+      expect(calls.judge).toHaveLength(2);
+      expect(scanLeads()).toHaveLength(5);
+      expect(record(`judge-day:${OWNER}:${new Date().toISOString().slice(0,10)}`).count).toBe(10);
+    });
+
     it('comment ids never reach the cursor',async()=>{
       vi.stubEnv('AI_API_KEY','');
       workerMessages=[msg(9000,undefined,{messageKind:'comment'})];

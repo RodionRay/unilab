@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {buildDraftPrompt, buildGroupJudgePrompt, DRAFT_THREAD_LIMIT} from '@/lib/leads/prompt';
+import {buildDmJudgePrompt, buildDraftPrompt, buildGroupJudgePrompt, DRAFT_THREAD_LIMIT} from '@/lib/leads/prompt';
 import {generateDraft} from '@/lib/leads/draft';
 import type {ChatPrompt} from '@/lib/ai-client';
 import {makeMessage, makeProject} from './fakes';
@@ -63,3 +63,22 @@ describe('generateDraft', () => {
     expect(long.length).toBeLessThanOrEqual(1500);
   });
 });
+
+describe('buildDmJudgePrompt size', () => {
+  it('10 projects with every field at its maximum stay under about 20k characters of cards', () => {
+    const long = (n: number) => 'я'.repeat(n);
+    const projects = Array.from({length: 10}, (_, i) => ({
+      id: `p${i}`,
+      project: makeProject({
+        name: long(120), url: long(500), product: long(12000), audience: long(2000), leadCriteria: long(4000),
+        notLead: long(4000), valueProps: long(4000), keywords: Array.from({length: 30}, (_, k) => `${long(95)}${k}`),
+      }),
+    }));
+
+    const p = buildDmJudgePrompt(projects, [{id: '1', name: 'A', text: 'ищу сервис'}]);
+    const cards = p.system.slice(p.system.indexOf('Проекты:'));
+
+    expect(cards.length).toBeLessThan(21000);
+  });
+});
+
