@@ -7,7 +7,7 @@ import {parseLeadTemperature,ratingFromTemperatures} from '@/lib/lead-filter';
 import {addLeadTombstone,evaluateScanGate,keepServerOwnedFields} from '@/lib/processes/scan-flow';
 import {DRAFT_KINDS,defaultProjectId as defaultProjectIdOf,generateDraft,normalizeDmMessage,type DmMessage,type ProjectRow} from '@/lib/leads';
 import {dailyCapOf,findOwnedProject,findProjectOf,loadSettingsRow,mutateLead,reserveDailyCap,withoutDraft} from '@/lib/processes/lead-store';
-import {autoDraftCandidates,autoDraftLeads,autoDraftKind,draftLlm,draftLeadOf,judgeInboxDms,scanGroupLeads,type InsertedLead} from '@/lib/processes/lead-scan';
+import {autoDraftCandidates,autoDraftLeads,autoDraftKind,draftLlm,draftLeadOf,judgeInboxDms,loadPeerLeads,scanGroupLeads,type InsertedLead} from '@/lib/processes/lead-scan';
 import {createProject,deleteProject,generateAccountAbout,leadFeedback,projectFunnel,rebuildProduct,requestedProject,setGroupProject,updateProject,type ActionResult} from '@/lib/processes/lead-actions';
 import {after} from 'next/server';
 import {ACCOUNT_STATUSES,DEFAULT_ACCOUNT_LIMITS,JOIN_GAP_DEFAULT_SEC,PROXY_STATUSES,applyQuotaCooldownIfExhausted,bumpJoinCounters,bumpMessageCounters,canPollDmInbox,generateTelegramUsername,hasMessageQuota,isAccountUsable,isOnCooldown,withFrozenStatus} from '@/lib/telegram-accounts';
@@ -1157,9 +1157,11 @@ function conversationStarted(d:LeadData):boolean{
  * ЛС от собеседника, который уже лид: сначала его начатая переписка, иначе самый свежий лид этого человека
  * (mergeIncomingDm открывает переписку). Такие ЛС не идут к судье — человек уже лид.
  */
-async function loadConversationLeads(db:D1LikeDatabase,owner:string){
- const leadRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='lead' ORDER BY created DESC,rowid DESC").bind(owner).all();
- const leads=leadRows.results.map(r=>{
+async function loadConversationLeads(db:D1LikeDatabase,owner:string,msgs:readonly InboxMessage[]){
+ const userIds=msgs.map(m=>String(m?.userId||m?.chatId||'').replace(/^-/,'').trim()).filter(Boolean);
+ const usernames=msgs.map(m=>normTgUser(m?.username)).filter(Boolean);
+ const leadRows=await loadPeerLeads(db,owner,{userIds,usernames});
+ const leads=leadRows.map(r=>{
   try{return {id:String(r.id),data:JSON.parse(String(r.data)) as LeadData}}catch{return null}
  }).filter(Boolean) as ConversationLead[];
  const match=(msg:InboxMessage):ConversationLead|null=>{
@@ -1235,7 +1237,6 @@ async function judgeUnmatchedDms(db:D1LikeDatabase,owner:string,messages:DmMessa
 
 /** One inbox pass over a rotating slice of live accounts (caller holds the per-owner lease). */
 async function pollDmReplies(db:D1LikeDatabase,owner:string,live:LiveAccount[]){
- const {match}=await loadConversationLeads(db,owner);
  const settingsRow=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='settings' LIMIT 1").bind(owner).first<{id:string;data:string}>();
  let cursor=0;
  if(settingsRow){
@@ -1263,6 +1264,7 @@ async function pollDmReplies(db:D1LikeDatabase,owner:string,live:LiveAccount[]){
   }
   if(!result?.ok)continue;
   const msgs:InboxMessage[]=Array.isArray(result.messages)?result.messages:[];
+  const {match}=await loadConversationLeads(db,owner,msgs);
   let persisted=true;
   let maxTs=0;
   for(const msg of msgs){

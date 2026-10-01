@@ -37,6 +37,9 @@ are no keyword / intent regexes on the lead path; project keywords are only a hi
 3. Worker `/scan-group` with `{…session, url, days: project.scanDepthDays, minId: group.scanCursor}`
    (no keywords/limit; REQ-5 lives in `telegram-worker/src/check_account.py::scan_group`).
 4. `lib/processes/lead-scan.ts::scanGroupLeads` → `lib/leads/pipeline.ts::runGroupScan`:
+   - known leads are read bounded, never the whole lead table: only this group's leads whose `tgMsgId` is
+     among the returned ids, `IN (…)` chunks of ≤50 (`lead-scan.ts::loadKnownFingerprints`,
+     `::leadsWhereIn`, `LEAD_LOOKUP_CHUNK`); deleted leads stay blocked by `group.leadTombstones`;
    - `lib/leads/filter.ts::filterMessages` — in order: empty id (`skippedErrorApp`), older than
      `scanDepthDays` (`old`), text < 12 (`short`), known fingerprint / tombstone / AI-reject memory / same
      sender+text (`duplicate`), word-start stop word (`stopword`);
@@ -76,6 +79,9 @@ conversation first, else the newest lead of that person — and opens the conver
 (`lib/lead-conversation.ts::mergeIncomingDm`, `route.ts::loadConversationLeads`); it never reaches the judge.
 Every other DM is collected and judged once per pass by
 `route.ts::judgeUnmatchedDms` → `lead-scan.ts::judgeInboxDms` → `pipeline.ts::runDmJudge`:
+- lead lookups are bounded to the pass's peers: conversation match per account by `senderId` / `peerId` /
+  normalized `senderUsername` IN the DM peers (`lead-scan.ts::loadPeerLeads`), known senders by `senderId`
+  IN the DM user ids (`::loadKnownSenderIds`), chunks of ≤50;
 - own accounts dropped app-side (`lead-scan.ts::loadOwnAccounts`: account `username`, `tgUserId` stored by
   `route.ts::runAccountCheck`), senders that already are leads → `duplicate`;
 - ≤20 senders in one call with all active project cards (`lib/leads/dm-judge.ts::judgeDmSenders`; each card

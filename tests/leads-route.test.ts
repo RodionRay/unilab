@@ -1,5 +1,5 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
-import {ACCOUNT_ID,LEAD_ID,OWNER,SETTINGS_ID,addRecord,login,postRequest,resetWorkspace,testDb} from './helpers/workspace-harness';
+import {ACCOUNT_ID,LEAD_ID,OWNER,SETTINGS_ID,addRecord,cfModule,login,postRequest,resetWorkspace,testDb} from './helpers/workspace-harness';
 import {ACC_A,API_ID,addSealedAccount,dropHarnessAccount} from './helpers/chats-fixture';
 
 vi.mock('cloudflare:workers',async()=>(await import('./helpers/workspace-harness')).cfModule);
@@ -444,6 +444,62 @@ describe('lead core v2 · workspace route',()=>{
       await scan();
 
       expect(record(GROUP_ID).scanCursor).toBe('300');
+    });
+  });
+
+  describe('bounded lead reads (no full lead-table scan per scan / DM pass)',()=>{
+    type Stmt={bind:(...v:unknown[])=>{all:()=>Promise<{results:unknown[]}>}&Record<string,unknown>};
+    /** Wraps the D1 fake: rows returned by every SELECT over leads, and the bind size of each such SELECT. */
+    function countLeadReads(){
+      const stats={rows:0,maxBinds:0};
+      const db=cfModule.env.DB as {prepare:(sql:string)=>Stmt};
+      const prepare=db.prepare.bind(db);
+      vi.spyOn(db,'prepare').mockImplementation((sql:string)=>{
+       const stmt=prepare(sql);
+       if(!/^\s*SELECT/i.test(sql)||!/kind='lead'/.test(sql))return stmt;
+       return {...stmt,bind:(...v:unknown[])=>{
+        stats.maxBinds=Math.max(stats.maxBinds,v.length);
+        const bound=stmt.bind(...v);
+        return {...bound,all:async()=>{const r=await bound.all();stats.rows+=r.results.length;return r}};
+       }};
+      });
+      return stats;
+    }
+    function seedLeads(n:number){
+      for(let i=0;i<n;i++)addRecord(`e0000000-0000-4000-8000-${String(i).padStart(12,'0')}`,'lead',{
+       name:`L${i}`,message:`старый лид ${i}`,groupId:GROUP_2,tgMsgId:String(1000+i),senderId:`9${i}`,senderUsername:`old${i}`,status:'new',notifyPending:false,
+      });
+    }
+
+    it('a group scan reads only the leads of the returned ids, in chunks of ≤50',async()=>{
+      seedLeads(150);
+      addRecord('e1000000-0000-4000-8000-000000000001','lead',{name:'Known',message:'уже лид',groupId:GROUP_ID,tgMsgId:'101',status:'new',notifyPending:false});
+      workerMessages=messages(80);
+      judge=()=>({isLead:false,score:1});
+      const stats=countLeadReads();
+
+      await scan();
+
+      expect(calls.judge.flat()).not.toContain('101');
+      expect(stats.rows).toBeLessThanOrEqual(5);
+      expect(stats.maxBinds).toBeLessThanOrEqual(52);
+    });
+
+    it('a DM pass reads only leads of the DM senders',async()=>{
+      dropHarnessAccount();
+      await addSealedAccount(ACC_A,{username:'our_farm'});
+      seedLeads(150);
+      inboxMessages=[
+       {userId:'95',username:'old5',name:'Old',text:'Снова пишу',messageId:'1',at:nowIso(),ts:Math.floor(Date.now()/1000),hasMedia:false},
+       {userId:'4242',username:'fresh',name:'New',text:'Ищу сервис для остатков',messageId:'2',at:nowIso(),ts:Math.floor(Date.now()/1000),hasMedia:false},
+      ];
+      const stats=countLeadReads();
+
+      await post({action:'poll_dm_replies'});
+
+      expect(calls.dm).toEqual([['4242']]);
+      expect(record('e0000000-0000-4000-8000-000000000005').conversationOpen).toBe(true);
+      expect(stats.rows).toBeLessThanOrEqual(5);
     });
   });
 
