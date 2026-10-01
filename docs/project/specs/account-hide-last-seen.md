@@ -21,8 +21,11 @@ status: implemented (branch `task/account-hide-last-seen-2026-10-01`)
 - Аренда `lastSeenPrivacyLease` (CAS, 60 с > таймаута воркера 45 с): второй вызов во время применения → 429
   «уже применяется», воркер не зовётся (не два входа одной сессией). Снимается вместе с записью итога.
   Занятый воркер (429) → «Воркер занят — повторите позже».
-- Известное ограничение: `check_account` и клиентский `save` переписывают `data` целиком; если они завершатся
-  во время применения, итог может перезаписаться (UI покажет «Применится после «Сохранить»», повтор безопасен).
+- Гонки с другими писателями записи: клиентский `save` сливается со строкой «как сейчас» под CAS
+  (`lib/record-cas.ts::updateRecordData` + `lib/processes/scan-flow.ts::keepServerOwnedFields`, `account`:
+  `lastSeenPrivacy`, `lastSeenPrivacyLease`); `check_account` и её исходы пишут только свои поля поверх строки «как сейчас»
+  (`app/api/workspace/route.ts::putAccountPatch`), поэтому итог применения, записанный во время проверки или
+  между чтением и записью `save`, не теряется.
 - Воркер: `/set-last-seen-privacy` → `set_last_seen_privacy` (`telegram-worker/src/worker-app.mjs::ROUTES`,
   `telegram-worker/src/check_account.py::set_last_seen_privacy`): `account.SetPrivacyRequest(InputPrivacyKeyStatusTimestamp,
   [DisallowAll | AllowAll])`. Идемпотентно (правило задаётся целиком). FloodWait → текст с секундами;
@@ -34,5 +37,5 @@ status: implemented (branch `task/account-hide-last-seen-2026-10-01`)
   пустеет, точные «был в …» уходят в приблизительные корзины. Вступления, скан, инвайт, рассылка, ЛС статус не читают.
 
 ## Тесты
-`tests/account-last-seen-route.test.ts`, `tests/account-privacy.test.ts`,
+`tests/account-last-seen-route.test.ts`, `tests/account-server-fields-race.test.ts` (гонки save/check_account), `tests/account-privacy.test.ts`,
 `telegram-worker/tests/test_last_seen_privacy.py` (telethon-заглушка клиента).

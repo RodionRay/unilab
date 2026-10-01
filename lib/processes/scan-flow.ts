@@ -175,8 +175,9 @@ export function addLeadTombstone(list: unknown, tgMsgId: string): string[] {
 /**
  * REQ-L10 / REQ-L7: fields the server owns; a client save (stale copy or zod-stripped) never
  * overwrites or introduces them. Lead: conversation, sender and scan data. Group: scan lock, cursor, memories.
+ * Account: last-seen privacy applied in Telegram and its apply lease (apply_account_last_seen).
  */
-const SERVER_OWNED: Record<"lead" | "group", readonly string[]> = {
+const SERVER_OWNED: Record<"lead" | "group" | "account", readonly string[]> = {
   lead: [
     "replies", "needsManager", "incomingLastText", "conversationOpen", "conversationAt",
     "coreScore", "notifyPending", "notifiedAt", "notifyAttempts", "notifyClaimUntil",
@@ -184,6 +185,7 @@ const SERVER_OWNED: Record<"lead" | "group", readonly string[]> = {
     "tgMsgId", "groupId", "accountId", "mailingTaskId",
   ],
   group: ["scanLockUntil", "scanLockToken", "scanCursor", "aiRejected", "leadTombstones"],
+  account: ["lastSeenPrivacy", "lastSeenPrivacyLease"],
 };
 
 export function keepServerOwnedFields(
@@ -191,7 +193,7 @@ export function keepServerOwnedFields(
   prev: Record<string, unknown>,
   next: Record<string, unknown>,
 ): Record<string, unknown> {
-  const fields = kind === "lead" || kind === "group" ? SERVER_OWNED[kind] : [];
+  const fields = kind === "lead" || kind === "group" || kind === "account" ? SERVER_OWNED[kind] : [];
   const out = { ...next };
   for (const f of fields) {
     // Missing in the stored row → still not the client's to set (sender, peer, account …).

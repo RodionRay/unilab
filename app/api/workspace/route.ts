@@ -52,6 +52,7 @@ import {proxyCheckTimeoutMs,workerAppTimeoutMs,workerSlots} from '@/lib/worker-t
 import {WorkerBusyError,isRetryableTickError,tickRetryPatch} from '@/lib/processes/tick-retry';
 import {commitTaskEdit,startTickSession,tickLockIsLive,tickLockWaitSec,updateTaskData,type TaskData,type TickSession,type TickTaskKind} from '@/lib/processes/tick-lock';
 import {mergeTaskSave} from '@/lib/processes/task-save-merge';
+import {updateRecordData,type RecordData} from '@/lib/record-cas';
 import {JOIN_GATE_ROTATE_WAIT_SEC,JOIN_PENDING_ERROR,audienceJoinGate,classifyCollectFailure,insertAudienceUsers,interpretAudienceJoin,isDeadSessionError,isSlotBlindError,listAudienceUsers,loadAudienceSeenIds,type AudienceUserData} from '@/lib/processes/audience-tick';
 import {authorizeWorkspaceAction,keepOwnerSecretsOnSave,visibleRecordsFor,type WorkspaceActor} from '@/lib/security/workspace-authz';
 import {ALL_CRM_ACCESS} from '@/lib/staff-types';
@@ -626,13 +627,11 @@ async function healStuckAccountChecks(owner:string,maxAgeMs=180_000){
    const started=Date.parse(String(d.checkingAt||''));
    const stale=!Number.isFinite(started)||now-started>maxAgeMs;
    if(!stale)continue;
-   const next={
-    ...d,
+   await putAccountPatch(owner,String(row.id),{
     status:'setup',
     error:'Проверка прервана (таймаут). Нажмите проверку снова.',
     checkingAt:'',
-   };
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,String(row.id),'account').run();
+   });
    fixed++;
   }catch{/* */}
  }
@@ -704,21 +703,27 @@ const CONNECT_RETRY_PAUSE_MS=400;
 const ACCOUNT_CHECK_TIMEOUT_MS=22_000;
 const ACCOUNT_CHECK_CONCURRENCY=3;
 
+/**
+ * Запись исхода проверки/коннекта: только поля, которые решил этот писатель, поверх строки «как сейчас» (CAS).
+ * Счётчики тиков, «был в сети» (apply_account_last_seen), правки save между чтением и записью не затираются.
+ */
+async function putAccountPatch(owner:string,id:string,patch:RecordData){
+ await updateRecordData(database(),owner,id,'account',fresh=>({...(fresh??{}),...patch}));
+}
+
 /** Ошибка коннекта/прокси — статус disconnected/proxy_error, БЕЗ отлёжки. */
-async function putAccountConnectFailed(owner:string,id:string,data:any,opts:{
+async function putAccountConnectFailed(owner:string,id:string,opts:{
  attempts:number;
  lastError:string;
  proxyRotated?:string;
  status?:'disconnected'|'proxy_error';
 }){
- const db=database();
  const tip=
   `Не удалось подключить за ${opts.attempts} попыток${opts.proxyRotated?' со сменой прокси':''}. `+
   `Проверьте прокси и свежий tdata/session. `+
   `Последняя ошибка: ${String(opts.lastError||'').slice(0,180)}`;
  const status=opts.status||(/proxy|socks|ECONN|прокси/i.test(String(opts.lastError||''))?'proxy_error':'disconnected');
  const next={
-  ...data,
   status,
   // Не ставим cooldownUntil — отлёжка только по лимитам / спамблоку / заморозке.
   cooldownUntil:'',
@@ -726,7 +731,7 @@ async function putAccountConnectFailed(owner:string,id:string,data:any,opts:{
   error:tip.slice(0,500),
   ...(opts.proxyRotated?{proxyId:opts.proxyRotated}:{}),
  };
- await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'account').run();
+ await putAccountPatch(owner,id,next);
  return {
   id,
   ok:false,
@@ -736,24 +741,22 @@ async function putAccountConnectFailed(owner:string,id:string,data:any,opts:{
  };
 }
 
-async function putAccountUnauthorized(owner:string,id:string,data:any,opts:{
+async function putAccountUnauthorized(owner:string,id:string,opts:{
  lastError:string;
  proxyRotated?:string;
 }){
- const db=database();
  const tip=
   `Сессия недействительна (смена прокси не помогла). `+
   `Перелогиньтесь в Telegram Desktop и заново загрузите tdata/session. `+
   `${String(opts.lastError||'').slice(0,160)}`;
  const next={
-  ...data,
   status:'unauthorized' as const,
   cooldownUntil:'',
   checkingAt:'',
   error:tip.slice(0,500),
   ...(opts.proxyRotated?{proxyId:opts.proxyRotated}:{}),
  };
- await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'account').run();
+ await putAccountPatch(owner,id,next);
  return {
   id,
   ok:false,
@@ -761,6 +764,17 @@ async function putAccountUnauthorized(owner:string,id:string,data:any,opts:{
   error:next.error,
   proxyRotated:opts.proxyRotated||undefined,
  };
+}
+
+/** Профиль из ответа воркера → только то, что он вернул; чего нет — в записи не трогаем. */
+function accountProfilePatch(data:{name?:string},profile:{firstName?:string|null;lastName?:string|null;username?:string|null;phone?:string|null}):RecordData{
+ const patch:RecordData={};
+ if(profile.firstName!=null)patch.firstName=profile.firstName;
+ if(profile.lastName!=null)patch.lastName=profile.lastName;
+ if(profile.username!=null)patch.username=profile.username;
+ if(profile.phone&&/^\+[1-9]\d{7,14}$/.test(profile.phone))patch.phone=profile.phone;
+ if(data.name?.startsWith('Аккаунт')&&profile.firstName)patch.name=`${profile.firstName}${profile.lastName?' '+profile.lastName:''}`;
+ return patch;
 }
 
 async function runAccountCheck(owner:string,id:string,opts?:{
@@ -777,8 +791,7 @@ async function runAccountCheck(owner:string,id:string,opts?:{
  const row:any=await db.prepare('SELECT * FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,id,'account').first();
  if(!row)return {id,ok:false,status:'unauthorized',error:'Аккаунт не найден'};
  let data=JSON.parse(row.data);
- const checkingAt=new Date().toISOString();
- await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...data,status:'checking',error:'',checkingAt}),owner,id,'account').run();
+ await putAccountPatch(owner,id,{status:'checking',error:'',checkingAt:new Date().toISOString()});
 
  const triedProxies=new Set<string>(data.proxyId?[String(data.proxyId)]:[]);
  let proxyRotated='';
@@ -807,21 +820,15 @@ async function runAccountCheck(owner:string,id:string,opts?:{
    lastStatus=status;
 
    const next={
-    ...data,
     status,
     error:err,
     checkingAt:'',
-    firstName:profile.firstName??data.firstName??'',
-    lastName:profile.lastName??data.lastName??'',
-    username:profile.username??data.username??'',
-    phone:profile.phone&&/^\+[1-9]\d{7,14}$/.test(profile.phone)?profile.phone:data.phone,
-    name:data.name?.startsWith('Аккаунт')&&profile.firstName?`${profile.firstName}${profile.lastName?' '+profile.lastName:''}`:data.name,
+    ...accountProfilePatch(data,profile),
     ...(proxyRotated?{proxyId:proxyRotated}:{}),
    };
 
    if(workerResult.ok||status==='active'){
-    const okNext={...next,status:'active',cooldownUntil:'',cooldownReason:'',error:''};
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(okNext),owner,id,'account').run();
+    await putAccountPatch(owner,id,{...next,status:'active',cooldownUntil:'',cooldownReason:'',error:''});
     return {
      id,ok:true,status:'active',error:'',profile,
      proxyRotated:proxyRotated||undefined,
@@ -832,7 +839,7 @@ async function runAccountCheck(owner:string,id:string,opts?:{
    const sessionDead=isSessionDeadError(status,err);
    if(sessionDead){
     // Без кручения прокси — быстрее и безопаснее
-    return putAccountUnauthorized(owner,id,data,{
+    return putAccountUnauthorized(owner,id,{
      lastError:err||status,
      proxyRotated:proxyRotated||undefined,
     });
@@ -840,7 +847,7 @@ async function runAccountCheck(owner:string,id:string,opts?:{
 
    if(status==='frozen'||status==='spamblock'){
     // Подтверждённый проверкой спамблок без таймера: старый истёкший cooldownUntil не должен «снять» его (REQ-M8)
-    await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...next,cooldownUntil:'',cooldownReason:status}),owner,id,'account').run();
+    await putAccountPatch(owner,id,{...next,cooldownUntil:'',cooldownReason:status});
     return {id,ok:false,status:next.status,error:next.error,profile,proxyRotated:proxyRotated||undefined};
    }
 
@@ -860,25 +867,25 @@ async function runAccountCheck(owner:string,id:string,opts?:{
      triedProxies.add(nextProxy);
      proxyRotated=nextProxy;
      data={...data,proxyId:nextProxy};
-     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({
-      ...data,
+     await putAccountPatch(owner,id,{
+      proxyId:nextProxy,
       status:'checking',
       checkingAt:new Date().toISOString(),
       error:`Смена прокси · попытка ${attempt+2}/${maxAttempts}…`,
-     }),owner,id,'account').run();
+     });
      continue;
     }
    }
 
    if(rotateProxy&&(status==='proxy_error'||status==='disconnected'||status==='unauthorized')){
-    return putAccountConnectFailed(owner,id,data,{
+    return putAccountConnectFailed(owner,id,{
      attempts:attempt+1,
      lastError:err||status,
      proxyRotated:proxyRotated||undefined,
     });
    }
 
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,id,'account').run();
+   await putAccountPatch(owner,id,next);
    return {id,ok:false,status:next.status,error:next.error,profile,proxyRotated:proxyRotated||undefined};
   }catch(e){
    const msg=String((e as Error).message||e);
@@ -888,7 +895,7 @@ async function runAccountCheck(owner:string,id:string,opts?:{
    const looksProxy=/proxy|socks|ECONN|connection to telegram|прокси/i.test(msg);
    const sessionish=/сессия больше не действительн|session.*(revoked|invalid)|unauthorized|authkey/i.test(msg);
    if(sessionish){
-    return putAccountUnauthorized(owner,id,data,{
+    return putAccountUnauthorized(owner,id,{
      lastError:msg,
      proxyRotated:proxyRotated||undefined,
     });
@@ -905,26 +912,25 @@ async function runAccountCheck(owner:string,id:string,opts?:{
      triedProxies.add(nextProxy);
      proxyRotated=nextProxy;
      data={...data,proxyId:nextProxy};
-     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({
-      ...data,
+     await putAccountPatch(owner,id,{
+      proxyId:nextProxy,
       status:'checking',
       checkingAt:new Date().toISOString(),
       error:isTimeout
        ?`Таймаут · попытка ${attempt+2}/${maxAttempts}, смена прокси…`
        :`Сеть · попытка ${attempt+2}/${maxAttempts}, смена прокси…`,
-     }),owner,id,'account').run();
+     });
      continue;
     }
    }
    if(rotateProxy){
-    return putAccountConnectFailed(owner,id,data,{
+    return putAccountConnectFailed(owner,id,{
      attempts:attempt+1,
      lastError:msg,
      proxyRotated:proxyRotated||undefined,
     });
    }
    const failed={
-    ...data,
     status:msg.includes('воркер')||msg.includes('fetch')||isTimeout?'disconnected':'unauthorized',
     error:msg.includes('ECONNREFUSED')||msg.includes('fetch failed')
      ?'Telegram-воркер недоступен. Запустите: npm run dev'
@@ -932,12 +938,12 @@ async function runAccountCheck(owner:string,id:string,opts?:{
     checkingAt:'',
     ...(proxyRotated?{proxyId:proxyRotated}:{}),
    };
-   await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(failed),owner,id,'account').run();
+   await putAccountPatch(owner,id,failed);
    return {id,ok:false,status:failed.status,error:failed.error,proxyRotated:proxyRotated||undefined};
   }
  }
 
- return putAccountConnectFailed(owner,id,data,{
+ return putAccountConnectFailed(owner,id,{
   attempts:maxAttempts,
   lastError:lastError||lastStatus,
   proxyRotated:proxyRotated||undefined,
@@ -2263,9 +2269,9 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    if(accountFault){
     const errMsg=String(result.error||'Аккаунт недоступен');
     if(String(result.status)==='unauthorized'){
-     await putAccountUnauthorized(owner,gdata.accountId,adata,{lastError:errMsg});
+     await putAccountUnauthorized(owner,gdata.accountId,{lastError:errMsg});
     }else{
-     await putAccountConnectFailed(owner,gdata.accountId,adata,{attempts:1,lastError:errMsg,status:'proxy_error'});
+     await putAccountConnectFailed(owner,gdata.accountId,{attempts:1,lastError:errMsg,status:'proxy_error'});
     }
    }
    if(accountBlind){
@@ -3438,7 +3444,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     if(isDeadSessionError(errMsg)){
      sessionErrors.push(errMsg);
      transientOnly=false;
-     try{await putAccountUnauthorized(owner,accountId,accMap.get(accountId)||{},{lastError:errMsg})}catch{/* */}
+     try{await putAccountUnauthorized(owner,accountId,{lastError:errMsg})}catch{/* */}
      accMap.set(accountId,{...(accMap.get(accountId)||{}),status:'unauthorized'});
      data={...data,log:pushTaskLog(data.log,'warn',`Слот ${slotName(accountId)}: сессия мертва — следующий`)};
      continue;
@@ -3455,7 +3461,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    result=null;
    if(failure.kind==='dead_session'){
     transientOnly=false;
-    try{await putAccountUnauthorized(owner,accountId,accMap.get(accountId)||{},{lastError:errMsg})}catch{/* */}
+    try{await putAccountUnauthorized(owner,accountId,{lastError:errMsg})}catch{/* */}
     accMap.set(accountId,{...(accMap.get(accountId)||{}),status:'unauthorized'});
     data={...data,log:pushTaskLog(data.log,'warn',`Слот ${slotName(accountId)}: tdata/session недействителен — следующий`)};
     continue;
@@ -3476,7 +3482,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
     const cur=accMap.get(accountId)||{};
     try{
      if(cur.proxyId)await markProxyTelegramBad(owner,String(cur.proxyId),errMsg).catch(()=>{});
-     await putAccountConnectFailed(owner,accountId,cur,{attempts:1,lastError:errMsg,status:'proxy_error'}).catch(()=>{});
+     await putAccountConnectFailed(owner,accountId,{attempts:1,lastError:errMsg,status:'proxy_error'}).catch(()=>{});
     }catch{/* */}
     accMap.set(accountId,{...cur,status:'proxy_error'});
     data={...data,log:pushTaskLog(data.log,'warn',`Слот ${slotName(accountId)}: прокси/сеть — следующий`)};
@@ -3544,7 +3550,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    const joinBlind=!!joinRes.usernameMissing||joinRes.join==='missing'||isSlotBlindError(joinErr);
    if(joinBlind||isDeadSessionError(joinErr)){
     if(isDeadSessionError(joinErr)){
-     try{await putAccountUnauthorized(owner,accountId,account,{lastError:joinErr})}catch{/* */}
+     try{await putAccountUnauthorized(owner,accountId,{lastError:joinErr})}catch{/* */}
     }
     // Ротация: пробуем следующий слот на следующем тике
     const next={
@@ -4981,36 +4987,24 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    if(reason)return reply({error:reason,duplicate:true},409);
   }
  }
- // REQ-L10: поля, которыми владеет сервер (переписка, скан, уведомления), клиентский save не затирает
- if(existing&&(kind==='lead'||kind==='group')){
-  try{Object.assign(data,keepServerOwnedFields(kind,JSON.parse(existing.data),data))}catch{/* битая запись — сохраняем как пришло */}
- }
- // Состояние применения приватности и аренду пишет только apply_account_last_seen, не клиентский save.
- // Новая/удалённая сессия — другой вход Telegram: прежнее «применено» к ней не относится.
- if(kind==='account'){
-  delete data.lastSeenPrivacy;
-  delete data.lastSeenPrivacyLease;
-  if(existing){
-   try{
-    const prev=JSON.parse(existing.data);
-    const kept=lastSeenPrivacySchema.safeParse(prev.lastSeenPrivacy);
-    if(kept.success&&!b.secret&&!b.clearSecret)data.lastSeenPrivacy=kept.data;
-    if(typeof prev.lastSeenPrivacyLease==='string')data.lastSeenPrivacyLease=prev.lastSeenPrivacyLease.slice(0,40);
-   }catch{/* битая запись — без состояния */}
+ // REQ-L10: поля, которыми владеет сервер (переписка, скан, уведомления, применённая приватность аккаунта),
+ // клиентский save не затирает. Слияние со строкой «как сейчас» под CAS: скан/apply_account_last_seen могли
+ // записать их между нашим чтением existing и записью.
+ const sessionReplaced=Boolean(b.secret||b.clearSecret);
+ const mergeStored=(prev:RecordData|null):RecordData=>{
+  if(!prev)return kind==='account'?keepServerOwnedFields(kind,{},data):data;// битая запись — сохраняем как пришло
+  const next=keepServerOwnedFields(kind,prev,data);
+  // Новая/удалённая сессия — другой вход Telegram: прежнее «применено» к ней не относится.
+  if(kind==='account'&&sessionReplaced)delete next.lastSeenPrivacy;
+  const active=new Set(['queued','waiting','joining','scanning']);
+  if(kind==='group'&&active.has(String(prev.joinState||''))&&!next.joinState){
+   next.joinState=prev.joinState;
+   next.joinStateAt=prev.joinStateAt||'';
+   // Не возвращаем битый joinStateError из БД (объект Zod от старого бага).
+   next.joinStateError=sanitizeJoinStateError(prev.joinStateError);
   }
- }
- if(kind==='group'&&existing){
-  try{
-   const prev=JSON.parse(existing.data);
-   const active=new Set(['queued','waiting','joining','scanning']);
-   if(active.has(String(prev.joinState||''))&&!data.joinState){
-    data.joinState=prev.joinState;
-    data.joinStateAt=prev.joinStateAt||'';
-    // Не возвращаем битый joinStateError из БД (объект Zod от старого бага).
-    data.joinStateError=sanitizeJoinStateError(prev.joinStateError);
-   }
-  }catch{/* */}
- }
+  return next;
+ };
  const refId=kind==='account'?data.proxyId:kind==='group'?data.accountId:null;if(refId){const ref=await db.prepare('SELECT id FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,refId,kind==='account'?'proxy':'account').first();if(!ref)return reply({error:'Выбранное подключение не найдено'},400)}
  if(kind==='account'&&!existing){
   const uname=String(data.username||'').replace(/^@/,'').trim();
@@ -5023,8 +5017,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
  if(b.clearSecret!==undefined&&typeof b.clearSecret!=='boolean')return reply({error:'Некорректная команда очистки секрета'},400);if(b.clearSecret&&b.secret)return reply({error:'Нельзя одновременно заменить и удалить секрет'},400);const secret=b.clearSecret?null:b.secret?await seal(z.string().max(200000).parse(b.secret),owner):existing?.secret??null;
  // Задачи: с клиента только конфиг; прогресс/статус/лок/журнал — серверные, мерж в строку «как сейчас» (REQ-I5)
  if(existing&&(kind==='audience_task'||kind==='invite_task'||kind==='mailing_task'))await updateTaskData(db,owner,id,kind,fresh=>mergeTaskSave(kind,fresh,data));
- else if(existing)await db.prepare('UPDATE records SET data=?,secret=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(data),secret,owner,id,kind).run();
- else await db.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)').bind(id,owner,kind,JSON.stringify(data),secret,new Date().toISOString()).run();
+ else if(existing){if(!await updateRecordData(db,owner,id,kind,mergeStored,{secret}))return reply({error:'Запись не найдена'},404)}
+ else await db.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)').bind(id,owner,kind,JSON.stringify(mergeStored(null)),secret,new Date().toISOString()).run();
  let provision:any=null;
  if(!existing&&kind==='account'&&secret&&b.provisionUsername===true){
   try{

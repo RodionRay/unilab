@@ -114,6 +114,17 @@ describe("скан · tombstones и серверные поля (REQ-L6, REQ-L10
     expect(keepServerOwnedFields("account", { status: "a" }, { status: "b" })).toEqual({ status: "b" });
   });
 
+  it("save аккаунта не задаёт применённую приватность и аренду — их пишет только сервер", () => {
+    const applied = { hidden: true, applied: true, at: "t", error: "" };
+    const merged = keepServerOwnedFields(
+      "account",
+      { lastSeenPrivacy: applied, lastSeenPrivacyLease: "l", hideLastSeen: false },
+      { lastSeenPrivacy: { ...applied, applied: false }, hideLastSeen: true },
+    );
+    expect(merged).toEqual({ lastSeenPrivacy: applied, lastSeenPrivacyLease: "l", hideLastSeen: true });
+    expect(keepServerOwnedFields("account", {}, { lastSeenPrivacy: applied })).toEqual({});
+  });
+
   it("save лида не даёт клиенту задать серверное поле, которого нет в сохранённом лиде", () => {
     const merged = keepServerOwnedFields(
       "lead",

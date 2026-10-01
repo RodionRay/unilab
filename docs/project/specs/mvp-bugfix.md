@@ -48,7 +48,7 @@ Gate baseline: vitest 405/405 green; tsc 51 errors; lint 289 problems (red base,
 - REQ-L7 Per-group cursor: worker reads from last seen message id to the depth cutoff (paged), not only newest 200.
 - REQ-L8 Dedupe key is `groupId:tgMsgId` when tgMsgId exists (edited message ≠ new lead).
 - REQ-L9 Failed notification is logged and retried on the next tick (per-lead `notifiedAt`).
-- REQ-L10 Lead `save` merges server-owned fields (replies, needsManager, coreScore, …) instead of overwriting.
+- REQ-L10 Lead `save` merges server-owned fields (replies, needsManager, coreScore, …) instead of overwriting; the merge runs against the row as it is now under CAS (`lib/record-cas.ts::updateRecordData`).
 - REQ-L11 AI-rejected messages are remembered (with TTL) and not re-sent to AI every rescan.
 - REQ-L12 Route uses the tested helpers (or tests target the real route path) — no tests of dead copies.
 
