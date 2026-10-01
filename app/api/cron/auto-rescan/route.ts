@@ -8,6 +8,7 @@ import {
 import { listUserIdsForCron } from "@/lib/users";
 import { constantTimeEqual } from "@/lib/security/secret-compare";
 import { selfOrigin } from "@/lib/security/self-origin";
+import { interleaveScans } from "@/lib/processes/scan-queue";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -16,6 +17,9 @@ export const maxDuration = 300;
 const TICK_BUDGET_MS = 210_000;
 const JOIN_TIMEOUT_MS = 90_000;
 const SCAN_TIMEOUT_MS = 150_000;
+/** AM-12: a VK source scan is capped at 60 s; start one only with ≥70 s of tick left. */
+const VK_SCAN_TIMEOUT_MS = 60_000;
+const VK_SCAN_MIN_LEFT_MS = 70_000;
 const BOOT_TIMEOUT_MS = 20_000;
 const MAX_JOINS = 3;
 const MAX_SCANS_AUTO = 6;
@@ -177,6 +181,22 @@ export async function POST(req: Request) {
   });
 }
 
+async function scanVkItem(
+  origin: string,
+  cookie: string,
+  id: string,
+  force: boolean,
+  timeoutMs: number,
+): Promise<{ skipped: boolean; added: number; error: string }> {
+  try {
+    const r = await workspace(origin, cookie, { action: "scan_vk_source", id, force }, timeoutMs);
+    return { skipped: !!r?.skipped, added: Number(r?.added) || 0, error: "" };
+  } catch (e) {
+    if (isAbort(e)) throw e;
+    return { skipped: false, added: 0, error: `vk ${id.slice(0, 8)}: ${String((e as Error).message || e).slice(0, 120)}` };
+  }
+}
+
 async function tickOwner(
   origin: string,
   cookie: string,
@@ -265,11 +285,34 @@ async function tickOwner(
     }
 
     const ids: string[] = Array.isArray(pack.groupIds) ? pack.groupIds : [];
+    const vkIds: string[] = Array.isArray(pack.vkSourceIds) ? pack.vkSourceIds : [];
     let scanned = 0;
     let added = 0;
     let skipped = 0;
+    let vkScanned = 0;
 
-    for (const id of ids) {
+    for (const { kind, id } of interleaveScans(ids, vkIds)) {
+      if (kind === "vk") {
+        if (left() < VK_SCAN_MIN_LEFT_MS) {
+          stoppedEarly = true;
+          break;
+        }
+        try {
+          const r = await scanVkItem(origin, cookie, id, force, opTimeout(VK_SCAN_TIMEOUT_MS));
+          if (r.error) errors.push(r.error);
+          else if (r.skipped) skipped++;
+          else {
+            scanned++;
+            vkScanned++;
+            added += r.added;
+          }
+        } catch {
+          stoppedEarly = true;
+          errors.push(`vk timeout:${id.slice(0, 8)}`);
+          break;
+        }
+        continue;
+      }
       if (left() < 90_000) {
         stoppedEarly = true;
         break;
@@ -353,7 +396,7 @@ async function tickOwner(
     const summary =
       `Автообход: вступил ${joined}/${Math.min(rejoin.length, MAX_JOINS)}, ` +
       `в очереди ${rejoin.length}, возвращено ${Number(pack.restored) || 0}, ` +
-      `просканировано ${scanned}, лидов +${added}` +
+      `просканировано ${scanned} (VK ${vkScanned}), лидов +${added}` +
       (errors.length ? ` · ошибки: ${errors.slice(0, 3).join(" | ")}` : "");
     try {
       await workspace(
@@ -366,10 +409,11 @@ async function tickOwner(
       /* */
     }
 
-    const due = Number(pack.total) || ids.length;
+    const vkDue = Number(pack.vkTotal) || vkIds.length;
+    const due = (Number(pack.total) || ids.length) + vkDue;
     const more =
       stoppedEarly ||
-      due > ids.length ||
+      due > ids.length + vkIds.length ||
       extraReassigned > 0 ||
       pendingJoins.size > 0;
     return {
@@ -379,7 +423,8 @@ async function tickOwner(
       joined,
       skipped,
       due,
-      queued: ids.length,
+      queued: ids.length + vkIds.length,
+      vkScanned,
       remaining: Math.max(0, due - scanned - skipped),
       reassigned: (Number(pack.reassigned) || 0) + extraReassigned,
       more,
