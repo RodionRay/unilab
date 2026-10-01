@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useRef, useState } from "react";
-import { AlertCircle, Check, ChevronDown, Clock3, Flame } from "lucide-react";
+import { AlertCircle, Check, Clock3, Flame } from "lucide-react";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Textarea } from "@/components/ui/textarea";
 import { Spinner } from "@/components/ui/spinner";
@@ -155,8 +155,10 @@ function LeadView({ lead, reload, hasMainButton }: { lead: Lead; reload(): Promi
     <>
       <div ref={scroller} className="tma-scroll" data-testid="lead-scroll">
         <LeadHeader lead={lead} />
-        <OriginalMessage lead={lead} defaultOpen={lead.messages.length === 0} />
-        <ol aria-label="Переписка" className="flex flex-col gap-1.5 px-3 pt-2 pb-4">
+        <ol aria-label="Переписка" className="flex flex-col gap-1.5 px-3 pt-1 pb-4">
+          <li className="flex flex-col">
+            <OriginalBubble lead={lead} collapsedByDefault={lead.messages.length > 0} />
+          </li>
           {messages.map((m, i) => {
             const prev = messages[i - 1];
             const newDay = !prev || dayKey(prev.at) !== dayKey(m.at);
@@ -169,14 +171,14 @@ function LeadView({ lead, reload, hasMainButton }: { lead: Lead; reload(): Promi
                     </span>
                   </li>
                 ) : null}
-                <li>
+                <li className="flex flex-col">
                   <MessageBubble message={m} />
                 </li>
               </Fragment>
             );
           })}
           {messages.length === 0 ? (
-            <li className="py-4 text-center text-[13px] text-(--tma-hint)">Вы ещё не писали этому человеку</li>
+            <li className="py-3 text-center text-[13px] text-(--tma-hint)">Вы ещё не писали этому человеку — черновик ответа ниже</li>
           ) : null}
         </ol>
       </div>
@@ -202,7 +204,7 @@ function LeadView({ lead, reload, hasMainButton }: { lead: Lead; reload(): Promi
           disabled={!lead.canReply || sending}
           placeholder="Сообщение"
           rows={1}
-          className="max-h-[32svh] min-h-11 rounded-[20px] border-(--tma-separator) bg-(--tma-section) px-4 py-2.5 text-[16px] leading-snug shadow-none md:text-[16px] dark:bg-(--tma-section)"
+          className="tma-field max-h-[140px] min-h-11"
         />
         <div className="flex items-center justify-between gap-2 pt-1">
           <button
@@ -237,25 +239,20 @@ function LeadView({ lead, reload, hasMainButton }: { lead: Lead; reload(): Promi
 
 function LeadHeader({ lead }: { lead: Lead }) {
   return (
-    <header className="flex flex-col gap-3 px-4 pt-4 pb-3">
+    <header className="flex flex-col gap-2.5 px-4 pt-4 pb-3">
       <div className="flex items-center gap-3">
-        <Avatar id={lead.id} name={lead.name} username={lead.username} size={56} />
+        <Avatar id={lead.id} name={lead.name} username={lead.username} size={48} />
         <div className="min-w-0 flex-1">
           <h1 tabIndex={-1} className="truncate text-[20px] leading-6 font-semibold outline-none">
             {lead.name || `@${lead.username}`}
           </h1>
-          <p className="truncate text-[14px] text-(--tma-hint)">
-            {lead.username ? `@${lead.username}` : "без username"} · {lead.source}
-          </p>
+          <p className="truncate text-[14px] text-(--tma-hint)">{lead.username ? `@${lead.username}` : "без username"}</p>
         </div>
-        <TemperatureChip value={lead.temperature} />
       </div>
-      {lead.reason ? (
-        <p className="text-[14px] leading-snug text-(--tma-hint)">
-          <span className="font-medium text-(--tma-text)">Почему лид: </span>
-          {lead.reason}
-        </p>
-      ) : null}
+      <p className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-[14px] leading-snug">
+        <TemperatureChip value={lead.temperature} />
+        {lead.reason ? <span className="text-(--tma-text)">{lead.reason}</span> : null}
+      </p>
     </header>
   );
 }
@@ -264,8 +261,8 @@ function TemperatureChip({ value }: { value: Temperature }) {
   return (
     <span
       className={cn(
-        "flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[13px] font-semibold",
-        value === "hot" ? "bg-(--tma-accent) text-(--tma-accent-ink)" : "bg-(--tma-fill) text-(--tma-text)",
+        "inline-flex shrink-0 items-center gap-1 self-center rounded-full px-2 py-0.5 text-[13px] font-semibold",
+        value === "hot" ? "bg-(--tma-accent) text-(--tma-accent-ink)" : "bg-(--tma-fill-strong) text-(--tma-text)",
       )}
     >
       {value === "hot" ? <Flame className="size-3.5 fill-current" aria-hidden /> : null}
@@ -274,26 +271,33 @@ function TemperatureChip({ value }: { value: Temperature }) {
   );
 }
 
-function OriginalMessage({ lead, defaultOpen }: { lead: Lead; defaultOpen: boolean }) {
+const LONG_ORIGINAL = 180;
+
+/** The message the lead was found by, styled like Telegram's forwarded message: group name on top. */
+function OriginalBubble({ lead, collapsedByDefault }: { lead: Lead; collapsedByDefault: boolean }) {
+  const long = lead.message.length > LONG_ORIGINAL;
+  const [open, setOpen] = useState(!collapsedByDefault || !long);
   return (
-    <details open={defaultOpen} className="group mx-4 mb-1 rounded-(--tma-radius-section) bg-(--tma-page) [.tma-root[data-surface=grouped]_&]:bg-(--tma-section)">
-      <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 px-3.5 text-[14px] font-medium [&::-webkit-details-marker]:hidden">
-        <span className="min-w-0 truncate">Сообщение в группе «{lead.source}»</span>
-        <ChevronDown className="size-4 shrink-0 text-(--tma-hint) transition-transform group-open:rotate-180" aria-hidden />
-      </summary>
-      <p className="px-3.5 pb-3 text-[15px] leading-snug whitespace-pre-wrap [overflow-wrap:anywhere]">{lead.message}</p>
-    </details>
+    <div className="tma-tail-in w-fit max-w-[88%] self-start rounded-[18px] bg-(--tma-bubble-in) px-3 pt-1.5 pb-2" data-testid="original-message">
+      <p className="text-[14px] font-semibold text-(--tma-link)">Сообщение в группе «{lead.source}»</p>
+      <p className={cn("text-[16px] leading-snug whitespace-pre-wrap [overflow-wrap:anywhere]", !open && "line-clamp-3")}>{lead.message}</p>
+      {long ? (
+        <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="-mb-1 min-h-8 text-[14px] font-medium text-(--tma-link)">
+          {open ? "Свернуть" : "Показать полностью"}
+        </button>
+      ) : null}
+    </div>
   );
 }
 
 function MessageBubble({ message }: { message: LeadMessage }) {
   const ours = message.from === "us";
   return (
-    <Bubble align={ours ? "end" : "start"} variant="muted" className="max-w-[85%]" data-testid={`bubble-${message.status}`}>
+    <Bubble align={ours ? "end" : "start"} variant="muted" className={cn("max-w-[85%]", ours ? "self-end" : "self-start")} data-testid={`bubble-${message.status}`}>
       <BubbleContent
         className={cn(
           "rounded-[18px] px-3 py-1.5 text-[16px] leading-snug text-(--tma-text) [overflow-wrap:anywhere] whitespace-pre-wrap",
-          ours ? "tma-tail-out bg-(--tma-bubble-out)!" : "tma-tail-in bg-(--tma-bubble-in)!",
+          ours ? "tma-tail-out self-end bg-(--tma-bubble-out)!" : "tma-tail-in bg-(--tma-bubble-in)!",
           message.status === "failed" && "ring-1 ring-(--tma-destructive)",
         )}
       >

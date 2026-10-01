@@ -46,9 +46,6 @@ export function InboxScreen({
   const items = feed.data ? [...feed.data.items, ...(extra?.items ?? [])] : [];
   const cursor = extra ? extra.cursor : (feed.data?.nextCursor ?? null);
 
-  useEffect(() => {
-    if (feed.data) onCounts(feed.data.counts);
-  }, [feed.data, onCounts]);
 
   const loadMore = useCallback(async () => {
     if (!cursor || extra?.loading) return;
@@ -77,6 +74,10 @@ export function InboxScreen({
 
   const counts = feed.data?.counts;
   const unreadLeft = counts ? Math.max(0, counts.unread - items.filter((i) => i.unread && viewed.has(i.id)).length) : 0;
+  const hot = counts?.hot ?? 0;
+  useEffect(() => {
+    if (counts) onCounts({ hot, unread: unreadLeft });
+  }, [counts, hot, unreadLeft, onCounts]);
 
   return (
     <>
@@ -85,14 +86,14 @@ export function InboxScreen({
         meta={counts ? `${workspace.name} · ${unreadLeft ? `${unreadLeft} непрочитанных` : "всё прочитано"}` : workspace.name}
         action={<RefreshButton onClick={() => void feed.reload()} busy={feed.refreshing} />}
       />
-      <div className="overflow-x-auto px-4 pb-2 [scrollbar-width:none]">
+      <div className="overflow-x-auto px-3 pb-2 [scrollbar-width:none]">
         <ToggleGroup
           type="single"
           value={filter}
           onValueChange={(v) => v && setFilter(v as InboxFilter)}
           aria-label="Фильтр входящих"
           spacing={1}
-          className="gap-1 rounded-full bg-(--tma-fill) p-1"
+          className="gap-1"
         >
           {FILTERS.map((f) => {
             const n = f.id === "hot" ? counts?.hot : f.id === "unread" ? unreadLeft : undefined;
@@ -100,7 +101,7 @@ export function InboxScreen({
               <ToggleGroupItem
                 key={f.id}
                 value={f.id}
-                className="h-8 rounded-full px-3.5 text-[14px] font-medium text-(--tma-text) hover:bg-transparent hover:text-(--tma-text) data-[state=on]:bg-(--tma-section) data-[state=on]:font-semibold data-[state=on]:shadow-[0_1px_2px_rgb(0_0_0/0.12)]"
+                className="h-8 rounded-full px-3 text-[15px] font-medium text-(--tma-hint) hover:bg-transparent hover:text-(--tma-hint) data-[state=on]:bg-(--tma-fill) data-[state=on]:text-(--tma-text) data-[state=on]:hover:bg-(--tma-fill) data-[state=on]:hover:text-(--tma-text)"
               >
                 {f.label}
                 {n ? (
@@ -132,7 +133,7 @@ export function InboxScreen({
           </EmptyState>
         ) : null}
         {items.length > 0 ? (
-          <ul aria-label="Лиды и диалоги" className="pb-4">
+          <ul aria-label="Лиды и диалоги" className="pb-4 [&>li:last-child_[data-sep]]:border-b-0">
             {items.map((item) => (
               <li key={item.id}>
                 <InboxRowView item={item} unread={item.unread && !viewed.has(item.id)} onOpen={() => onOpen(item)} />
@@ -168,22 +169,18 @@ function InboxRowView({ item, unread, onOpen }: { item: InboxRow; unread: boolea
       data-testid="inbox-row"
       data-hot={hot || undefined}
       data-unread={unread || undefined}
-      className="group flex w-full gap-3 pl-4 text-left active:bg-(--tma-fill)"
+      className="flex w-full gap-3 pl-3 text-left active:bg-(--tma-fill)"
     >
       <span className="pt-2.5">
         <Avatar id={item.id} name={item.name} username={item.username} />
       </span>
-      <span className="flex min-w-0 flex-1 flex-col gap-0.5 border-b border-(--tma-separator) py-2.5 pr-4 group-last:border-b-0">
+      <span data-sep className="flex min-w-0 flex-1 flex-col gap-0.5 border-b border-(--tma-separator) py-2.5 pr-4">
         <span className="flex items-baseline gap-2">
           <span className={cn("min-w-0 truncate text-[16px]", unread ? "font-semibold" : "font-medium")}>{item.name || `@${item.username}`}</span>
           {hot ? <Flame className="size-4 shrink-0 translate-y-0.5 fill-current text-(--tma-accent)" aria-label="горячий лид" /> : null}
-          <span className={cn("tma-num ml-auto shrink-0 text-[13px]", unread ? "text-(--tma-link)" : "text-(--tma-hint)")}>{formatListTime(item.at)}</span>
+          <span className="tma-num ml-auto shrink-0 text-[14px] text-(--tma-hint)">{formatListTime(item.at)}</span>
         </span>
-        <span className="truncate text-[13px] text-(--tma-hint)">
-          {item.username ? `@${item.username}` : null}
-          {item.username && item.source ? " · " : null}
-          {item.source}
-        </span>
+        <span className="truncate text-[14px] text-(--tma-hint)">{item.source}</span>
         {hot ? <HotQuote item={item} unread={unread} /> : <PlainPreview item={item} unread={unread} />}
       </span>
     </button>

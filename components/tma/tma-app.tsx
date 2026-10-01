@@ -260,14 +260,14 @@ function OverviewHost({
 }) {
   const { client } = useTmaSession();
   const overview = useFeedQuery("overview", () => client.feed("overview"));
-  const surface = lead || tab === "inbox" ? "plain" : "grouped";
+  const surface = !lead && tab === "inbox" ? "plain" : "grouped";
 
   useEffect(() => {
     const root = document.querySelector<HTMLElement>(".tma-root");
     if (root) root.dataset.surface = surface;
   }, [surface]);
 
-  const unread = inboxCounts ? Math.max(0, inboxCounts.unread - viewed.size) : 0;
+  const unread = inboxCounts?.unread ?? 0;
   const badges = {
     inbox: { count: unread, tone: "info" as const },
     accounts: { count: overview.data?.accounts.problems ?? 0, tone: "danger" as const },

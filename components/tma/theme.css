@@ -25,8 +25,8 @@
   --tma-accent-ink: #1a1208;
   --tma-fill: color-mix(in srgb, var(--tma-hint) 14%, transparent);
   --tma-fill-strong: color-mix(in srgb, var(--tma-hint) 24%, transparent);
-  --tma-bubble-in: var(--tma-page);
-  --tma-bubble-out: color-mix(in srgb, var(--tma-button) 16%, var(--tma-bg));
+  --tma-bubble-in: var(--tma-section);
+  --tma-bubble-out: color-mix(in srgb, var(--tma-button) 20%, var(--tma-section));
   --tma-radius-section: 12px;
 
   /* shadcn tokens (components/ui/*) re-pointed at Telegram — restyle without editing components/ui. */
@@ -70,6 +70,40 @@
 
 .tma-root.dark {
   color-scheme: dark;
+}
+
+/*
+ * app/globals.css styles h1–h3 and form fields for the dark CRM with unlayered (and !important) rules that beat
+ * Tailwind utilities. Inside the mini app roll those back to the layered cascade so utilities decide.
+ */
+.tma-root :is(h1, h2, h3) {
+  margin: revert-layer;
+  color: revert-layer;
+  font-size: revert-layer;
+  font-weight: revert-layer;
+  line-height: revert-layer;
+  letter-spacing: revert-layer;
+}
+
+.tma-root textarea.tma-field {
+  background: var(--tma-section) !important;
+  color: var(--tma-text) !important;
+  border: 1px solid var(--tma-separator) !important;
+  border-radius: 20px !important;
+  padding: 9px 16px !important;
+  font-size: 16px !important;
+  line-height: 1.35 !important;
+  box-shadow: none !important;
+  resize: none;
+}
+
+.tma-root textarea.tma-field::placeholder {
+  color: var(--tma-hint);
+}
+
+.tma-root textarea.tma-field:focus-visible {
+  outline: none;
+  border-color: var(--tma-link) !important;
 }
 
 .tma-root[data-surface="grouped"] {
