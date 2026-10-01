@@ -107,3 +107,26 @@ Removed (unknown → 400): `preview_lead_core`, `train_from_hot`, `train_from_ig
 
 `tests/leads/**` (pure modules), `tests/leads-route.test.ts` (route + sqlite D1 fake),
 `tests/lead-scan-route.test.ts`, `tests/scan-leads.test.ts`, `tests/workspace-authz-map.test.ts`.
+
+## Evaluation
+
+`scripts/eval-lead-judge.mts` replays `tests/fixtures/lead-eval/messages.json` (60 messages: 30 `lead`,
+30 `not_lead`, each tagged `source` real|synthetic and a `category`) through `lib/leads/judge.ts::judgeMessages`
+with the real DeepSeek call (`lib/ai-client.ts::aiChatJson`). The card is `tests/fixtures/lead-eval/project.json`
+(stand `settings` subset) mapped by `lib/leads/projects.ts::defaultProjectFromSettings`; a message counts as
+predicted lead when `isLead && score >= minScore`, as in `pipeline.ts::runGroupScan`. Targets: recall ≥80 %,
+precision ≥70 % (exit 0 met, 1 below, 2 no key / bad input).
+
+```sh
+npx tsx --env-file=<stand .env with AI_API_KEY> scripts/eval-lead-judge.mts [--old-core <scratch lead-core.ts>]
+```
+
+Output: confusion matrix, recall, precision, misses; per-message verdicts in `artifacts/lead-eval/<date>.json`
+(untracked). `--old-core` scores the same messages with the removed regex core (`lib/lead-core.ts` from git
+history, `lead-filter` import made relative) for comparison.
+
+Fixture provenance: the 30 negatives are 27 real stand messages (old hot/warm/cold leads: seller questions,
+complaints, vacancies, spam, service ads, vendor research, news) and 3 synthetic hard negatives; the stand had
+no unambiguous real lead, so the 30 leads are synthetic. Names, usernames and links are replaced by
+placeholders. Run 2026-10-01 (deepseek-chat, 3 calls): new judge 30/0/0/30 (recall 100 %, precision 100 %;
+lead scores ≥80, negatives ≤20); old core recall 46.7 % (14/30), precision 82.4 %.
