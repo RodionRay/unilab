@@ -4863,6 +4863,8 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   display: grid;
   gap: 20px;
   min-width: 0;
+  /* the floating «Спросить UniLab» button sits over the last row: let the queue actions scroll clear of it */
+  padding-bottom: 104px;
 }
 .aiw .panel {
   min-width: 0;
@@ -4873,9 +4875,18 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   font-weight: 600;
   line-height: 1.35;
 }
-.aiw :where(button, a, input, textarea, [role="button"]):focus-visible {
+.aiw :where(button, a[href], input, textarea, select, summary, [role="button"], [role="tab"], [tabindex]:not([tabindex="-1"])):focus-visible {
   outline: 2px solid var(--spike-primary);
   outline-offset: 2px;
+}
+/* WCAG 2.5.8 floor for every standalone control; focus scrolling keeps clear of the sticky header and the floating assistant */
+.aiw :where(button, a[href], input:not([type="checkbox"]):not([type="radio"]), select, [role="button"], [role="tab"]) {
+  min-width: 24px;
+  min-height: 24px;
+}
+.aiw :where(button, a[href], input, textarea, select, summary, [role="button"], [role="tab"], [tabindex]) {
+  scroll-margin-top: 96px;
+  scroll-margin-bottom: 112px;
 }
 .aiw-help {
   margin: 0;
@@ -5026,9 +5037,10 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   margin-top: 16px;
 }
 .aiw-alert {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px 10px;
   padding: 10px 12px;
   border: 1px solid var(--spike-border);
   border-radius: 12px;
@@ -5038,8 +5050,7 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   margin-top: 1px;
 }
 .aiw-alert > button {
-  flex-shrink: 0;
-  margin-left: auto;
+  align-self: center;
 }
 .aiw-alert.is-warning {
   border-color: color-mix(in srgb, var(--spike-warning) 30%, transparent);
@@ -5068,6 +5079,9 @@ button[data-slot="button"][data-variant="ghost"]:hover {
 .aiw-page-error {
   align-items: center;
 }
+.aiw-page-error > svg {
+  align-self: start;
+}
 .aiw-ledger {
   display: grid;
   margin: 20px 0 0;
@@ -5082,10 +5096,10 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   grid-template-columns: minmax(0, 1fr) auto 16px;
   grid-template-areas: "label figures chev" "bar bar .";
   align-items: center;
-  gap: 6px 16px;
+  gap: 5px 16px;
   width: 100%;
-  min-height: 44px;
-  padding: 9px 8px;
+  min-height: 40px;
+  padding: 7px 8px;
   border: 0;
   border-radius: 10px;
   background: transparent;
@@ -5151,8 +5165,8 @@ button.aiw-row-main {
 .aiw-row-bar {
   grid-area: bar;
   display: block;
-  height: 6px;
-  border-radius: 3px;
+  height: 4px;
+  border-radius: 2px;
   background: rgba(255, 255, 255, 0.05);
   overflow: hidden;
 }
@@ -5410,11 +5424,10 @@ button.aiw-row-main {
   border-top: 1px solid var(--spike-border);
 }
 .aiw-draft-head > .min-w-0 {
-  flex: 1 1 220px;
+  flex: 1 1 0;
 }
 .aiw-draft-head {
   display: flex;
-  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
@@ -5425,8 +5438,23 @@ button.aiw-row-main {
   font-weight: 600;
   overflow-wrap: anywhere;
 }
-.aiw-link-btn {
+/* link-style action in a header: text aligns with the header edge, hit area grows into the padding */
+.aiw .aiw-link-btn {
   flex-shrink: 0;
+  height: auto;
+  min-height: 32px;
+  margin: -6px -8px 0 0;
+  padding: 6px 8px;
+  gap: 6px;
+  color: var(--spike-muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+.aiw .aiw-link-btn:hover {
+  background: transparent;
+  color: var(--spike-text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 .aiw-source {
   margin: 0;
@@ -5562,8 +5590,13 @@ button.aiw-row-main {
 }
 .aiw-chips:focus-within {
   border-color: var(--spike-border);
-  outline: 2px solid var(--spike-primary);
-  outline-offset: 1px;
+  outline: none;
+}
+/* `.kw-editor input` strips the outline with !important; the ring belongs on the focused input itself */
+.aiw-chips input:focus-visible {
+  outline: 2px solid var(--spike-primary) !important;
+  outline-offset: 2px;
+  border-radius: 6px;
 }
 .aiw-chips input:disabled {
   cursor: not-allowed;
@@ -5767,9 +5800,16 @@ button.aiw-row-main {
     --aiw-pad: 16px;
     gap: 16px;
   }
+  /* a global `input, textarea { font-size: .875rem !important }` would zoom iOS on focus */
   .aiw input,
-  .aiw textarea {
-    font-size: 16px;
+  .aiw textarea,
+  .aiw select {
+    font-size: 16px !important;
+  }
+  /* beats `button[data-slot="button"] { min-height: 40px }` */
+  .aiw .aiw-new-project,
+  .aiw .aiw-alert > button {
+    min-height: 44px;
   }
   .aiw-tab {
     min-height: 40px;
@@ -5779,7 +5819,7 @@ button.aiw-row-main {
     gap: 20px;
   }
   .aiw-row-main {
-    padding: 9px 4px;
+    padding: 7px 4px;
   }
   .aiw-row:not([data-tone="total"]):not([data-tone="lead"]) .aiw-row-main {
     padding-left: 12px;
@@ -5787,13 +5827,15 @@ button.aiw-row-main {
   .aiw-samples {
     padding-left: 12px;
   }
-  .aiw-inline,
-  .aiw-alert {
+  .aiw-inline {
     flex-wrap: wrap;
   }
+  .aiw-alert {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
   .aiw-alert > button {
-    margin-left: 28px;
-    margin-right: auto;
+    grid-column: 1 / -1;
+    width: 100%;
   }
   .aiw-draft-actions > button,
   .aiw-savebar .aiw-draft-actions > button,
