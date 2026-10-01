@@ -1,32 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  AI_REJECT_TTL_MS,
-  MAX_AI_REJECTS,
   MAX_LEAD_TOMBSTONES,
-  activeAiRejects,
   addLeadTombstone,
-  aiSettingsSignature,
-  decideScanLead,
   evaluateScanGate,
   keepServerOwnedFields,
-  rememberAiRejects,
 } from "@/lib/processes/scan-flow";
-import type { LeadCoreSettings } from "@/lib/lead-core";
 import { withDayLimitCooldown, withSpamblockStatus } from "@/lib/telegram-accounts";
-
-const settings: LeadCoreSettings = {
-  keywords:
-    "остатки, синхронизация, МойСклад, 1С, управление ценами, ответы на отзывы, автоматизация, несколько кабинетов, интеграция, ищу сервис, нужна crm, кто пользуется",
-  minusKeywords:
-    "вакансия, резюме, накрутка, матрица судьбы, таро, гадание, писать @, казино",
-  avoidTopics: "болтовня селлеров без запроса сервиса",
-  leadCriteria:
-    "Явно ищет сервис для учёта остатков, синхронизации заказов, цен, отзывов, нескольких кабинетов, интеграции с 1С или МойСклад",
-  hotSignals:
-    "ищу сервис, нужен сервис, кто пользуется, интеграция 1с, мойсклад, синхронизация остатков",
-  product:
-    "Uniseller — платформа для WB/Ozon: остатки, заказы, цены, отзывы, несколько кабинеты, 1С/МойСклад",
-};
 
 describe("скан · gate", () => {
   it("пропускает active", () => {
@@ -44,53 +23,6 @@ describe("скан · gate", () => {
     expect(evaluateScanGate({ status: "frozen" }).reason).toBe("cooldown");
     expect(evaluateScanGate({ status: "disconnected" }).reason).toBe("hard_dead");
     expect(evaluateScanGate(null).reason).toBe("missing");
-  });
-});
-
-describe("скан · отбор лидов (lead-core)", () => {
-  it("пропускает buyer+fit", () => {
-    const d = decideScanLead(
-      "Ищу сервис для синхронизации остатков WB и МойСклад, готовы на демо",
-      settings,
-    );
-    expect(d.pass).toBe(true);
-    expect(d.temperature).toBe("hot");
-  });
-
-  it("режет болтовню и минус-темы", () => {
-    expect(
-      decideScanLead(
-        "В отчете по остаткам отражаются остатки на Электросталь, они не сгорели или что?",
-        settings,
-      ).pass,
-    ).toBe(false);
-    expect(
-      decideScanLead(
-        "Занимаюсь разбором матрицы судьбы, есть отзывы) писать @dearkis2",
-        settings,
-      ).pass,
-    ).toBe(false);
-    expect(
-      decideScanLead("Селлерам отсрочка смертной казни на год 😅", settings).pass,
-    ).toBe(false);
-  });
-});
-
-describe("скан · память отказов AI (REQ-L11)", () => {
-  const now = Date.parse("2026-09-30T12:00:00.000Z");
-
-  it("помнит отказ до истечения TTL и забывает после", () => {
-    const mem = rememberAiRejects({}, ["10"], "sig", now);
-    expect(activeAiRejects(mem, "sig", now + AI_REJECT_TTL_MS - 1)).toHaveProperty("10");
-    expect(activeAiRejects(mem, "sig", now + AI_REJECT_TTL_MS + 1)).toEqual({});
-  });
-
-  it("сбрасывает память при смене настроек и держит потолок записей", () => {
-    const mem = rememberAiRejects({}, ["10"], "sig", now);
-    expect(activeAiRejects(mem, "other", now)).toEqual({});
-    expect(aiSettingsSignature({ product: "a" })).not.toBe(aiSettingsSignature({ product: "b" }));
-    const many = Array.from({ length: MAX_AI_REJECTS + 5 }, (_, i) => String(i));
-    expect(Object.keys(rememberAiRejects({}, many, "sig", now).until)).toHaveLength(MAX_AI_REJECTS);
   });
 });
 
@@ -121,5 +53,17 @@ describe("скан · tombstones и серверные поля (REQ-L6, REQ-L10
       { status: "working", senderId: "666", peerId: "777", mailingTaskId: "x", accountId: "acc" },
     );
     expect(merged).toEqual({ status: "working" });
+  });
+
+  it("lead core v2 (REQ-24): проект, оценка судьи, источник и вид авто-черновика лида, проект группы — серверные", () => {
+    const lead = keepServerOwnedFields(
+      "lead",
+      { projectId: "p1", score: 85, reason: "ищет сервис", sourceKind: "dm", draftKind: "dm_first", status: "new" },
+      { projectId: "p2", score: 1, reason: "x", sourceKind: "group", draftKind: "dm_continue", status: "working", draft: "текст" },
+    );
+    expect(lead).toEqual({ projectId: "p1", score: 85, reason: "ищет сервис", sourceKind: "dm", draftKind: "dm_first", status: "working", draft: "текст" });
+    expect(keepServerOwnedFields("lead", { status: "new" }, { status: "new", draftKind: "dm_first" })).toEqual({ status: "new" });
+    expect(keepServerOwnedFields("group", { projectId: "p1" }, { projectId: "p2", name: "G" })).toEqual({ projectId: "p1", name: "G" });
+    expect(keepServerOwnedFields("settings", { inboxPollCursor: 3, dmAiRejected: { sig: "s" } }, { name: "N" })).toEqual({ name: "N", inboxPollCursor: 3, dmAiRejected: { sig: "s" } });
   });
 });

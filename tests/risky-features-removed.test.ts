@@ -100,7 +100,7 @@ describe('рискованные функции Telegram удалены',()=>{
       const res=await GET();
       const kinds=new Set((await res.json() as {records:{kind:string}[]}).records.map(r=>r.kind));
 
-      expect(kinds).toEqual(new Set(['proxy','lead','settings']));
+      expect(kinds).toEqual(new Set(['proxy','lead','settings','project']));
       expect(rowCount('mailing_task')).toBe(1);
       expect(rowCount('audience_task')).toBe(1);
     });
