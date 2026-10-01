@@ -10,6 +10,13 @@ Private administration workspace for Telegram sources and sales leads.
 - OpenAI Responses API draft generation and manual editing/copying.
 - Russian responsive UI inspired by Air on Refero Styles.
 
+## Removed on purpose (2026-09-30)
+Features that get Telegram accounts banned are gone: mass group joining (join queue, "join all", auto-join
+from the catalog and the auto-rescan cron, auto-rejoin), account mixing (round-robin group assignment, switching
+to another farm account for joins, scans or DMs), audience collection, member inviting and mailings. Each group
+is joined manually, one at a time, by its assigned account. Old `audience_*`, `invite_task` and `mailing_task`
+records stay in D1 and are ignored. Spec: `docs/project/specs/remove-risky-tg.md`.
+
 ## Not implemented yet
 Telegram authorization / tdata import, joining groups, proxy connectivity checks, background message collection, automatic lead qualification and Telegram sending. These require a separate long-running Telegram connector; Sites has no raw TCP support. UI labels these limitations.
 
@@ -34,6 +41,7 @@ Telegram authorization / tdata import, joining groups, proxy connectivity checks
 - Limits: `TG_WORKER_MAX_CONCURRENCY` (default 4, excess → 429), `TG_WORKER_MAX_BODY_BYTES` (default 6000000 → 413), Python stdout 2 MB, account archives ≤5000 files / ≤200 MB unpacked. Proxy hosts resolving to loopback/private/link-local/CGNAT/multicast addresses are rejected.
 - Session archives are unpacked into a `0700` temp dir `uniseller-acc-*` created and always removed by Node (timeout → SIGTERM, SIGKILL after 5 s); stale dirs older than 10 minutes are purged on start.
 - Auto-rescan cron: the worker calls `APP_URL/api/cron/auto-rescan` with `Authorization: Bearer $CRON_SECRET` only if `APP_URL` is https or loopback. `CRON_SECRET` (≥32 chars, same value in the web app and the worker) is **required** for auto-rescan: without it the worker logs one warning at startup and skips every tick.
+- The auto-rescan cron route calls `/api/workspace` on `APP_URL` (set it in the web app env too), else on `127.0.0.1:<request port>` — never on the request Host header (`lib/security/self-origin.ts::selfOrigin`).
 - `npm run dev`: if `TG_WORKER_TOKEN` / `CRON_SECRET` are absent from env and `.env`, random per-run values are generated and passed to both processes (not written to `.env`).
 - Tests: `npx vitest run tests/tg-worker-server.test.ts`; Python guards: `telegram-worker/.venv/bin/python -m unittest discover -s telegram-worker/tests`.
 

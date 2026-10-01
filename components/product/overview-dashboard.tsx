@@ -69,27 +69,11 @@ export type OverviewChat={
   lastScanned:string;
 };
 
-export type OverviewJoinItem={
-  id:string;
-  name:string;
-  status:string;
-  waitSec?:number;
-};
-
 export type OverviewFarmStats={
-  audienceCollected:number;
-  audienceInvited:number;
-  inviteOrdinary:number;
-  inviteAdvanced:number;
-  mailingSent:number;
-  mailingFailed:number;
   accountsActive:number;
   accountsTotal:number;
   proxiesActive:number;
   proxiesTotal:number;
-  tasksOk:number;
-  tasksWarn:number;
-  tasksError:number;
 };
 
 function tempClass(t:LeadTemperature){
@@ -108,11 +92,10 @@ export function OverviewDashboard({
   telegramConnected,
   leads,
   chats,
-  joinQueue,
   freshCount,
   hotCount,
-  warmCount: _warmCount,
-  coldCount: _coldCount,
+  warmCount,
+  coldCount,
   draftCount,
   joinedChats,
   needJoin,
@@ -121,9 +104,6 @@ export function OverviewDashboard({
   onGoLeads,
   onGoChats,
   onGoAccounts,
-  onGoAudience,
-  onGoInvite,
-  onGoMailing,
   onGoProxies,
   onOpenLead,
   onSearchTopics,
@@ -133,7 +113,6 @@ export function OverviewDashboard({
   telegramConnected:boolean;
   leads:OverviewLead[];
   chats:OverviewChat[];
-  joinQueue:OverviewJoinItem[];
   freshCount:number;
   hotCount:number;
   warmCount:number;
@@ -146,9 +125,6 @@ export function OverviewDashboard({
   onGoLeads:(opts?:{groupId?:string;filter?:string})=>void;
   onGoChats:(filter?:'all'|'need'|'joined'|'pending'|'error')=>void;
   onGoAccounts:()=>void;
-  onGoAudience:()=>void;
-  onGoInvite:()=>void;
-  onGoMailing:()=>void;
   onGoProxies:()=>void;
   onOpenLead:(id:string)=>void;
   onSearchTopics:()=>void;
@@ -209,7 +185,6 @@ export function OverviewDashboard({
 
   const tableLeads=useMemo(()=>sortedLeads.slice(0,12),[sortedLeads]);
 
-  const joinActive=joinQueue.filter(q=>['queued','waiting','joining','scanning'].includes(q.status));
   const selectedChat=chats.find(c=>c.id===chatId);
   const visibleFresh=leads.filter(l=>{
     if(l.viewed)return false;
@@ -218,12 +193,8 @@ export function OverviewDashboard({
     return true;
   }).length;
 
-  const audienceRest=Math.max(0,farm.audienceCollected-farm.audienceInvited);
   const accountsProblem=Math.max(0,farm.accountsTotal-farm.accountsActive);
   const proxiesInactive=Math.max(0,farm.proxiesTotal-farm.proxiesActive);
-  const mailingTotal=farm.mailingSent+farm.mailingFailed;
-  const tasksTotal=farm.tasksOk+farm.tasksWarn+farm.tasksError;
-  const inviteTotal=farm.inviteOrdinary+farm.inviteAdvanced;
 
   return (
     <div className="studio-dash">
@@ -236,7 +207,7 @@ export function OverviewDashboard({
             <Users size={14}/>Новые ({freshCount})
           </Button>
           <Button size="sm" variant="outline" onClick={()=>onGoChats('need')} disabled={!needJoin}>
-            <Plug size={14}/>Вступить ({needJoin})
+            <Plug size={14}/>Ждут вступления ({needJoin})
           </Button>
           <Button size="sm" variant="outline" onClick={onOpenDrafts} disabled={!draftCount}>
             <MessageSquare size={14}/>Черновики ({draftCount})
@@ -254,33 +225,14 @@ export function OverviewDashboard({
 
       <div className="studio-metrics">
         <ArcStatCard
-          title="Аудитория"
-          value={farm.audienceCollected}
+          title="Новые лиды"
+          value={hotCount+warmCount+coldCount}
           loading={loading}
-          onClick={onGoAudience}
+          onClick={()=>onGoLeads()}
           segments={[
-            {value:farm.audienceInvited,color:'#ffa92c',labelColor:'#1a1208'},
-            {value:audienceRest,color:'rgba(255,255,255,0.14)',labelColor:'rgba(255,255,255,0.7)'},
-          ]}
-        />
-        <ArcStatCard
-          title="Приглашения"
-          value={inviteTotal}
-          loading={loading}
-          onClick={onGoInvite}
-          segments={[
-            {value:farm.inviteOrdinary,color:'#46caeb',labelColor:'#0b1a1f'},
-            {value:farm.inviteAdvanced,color:'rgba(70,202,235,0.35)',labelColor:'#dff6fb'},
-          ]}
-        />
-        <ArcStatCard
-          title="Рассылки"
-          value={mailingTotal}
-          loading={loading}
-          onClick={onGoMailing}
-          segments={[
-            {value:farm.mailingSent,color:'#ffa92c',labelColor:'#1a1208'},
-            {value:farm.mailingFailed,color:'#fb977d',labelColor:'#2a1210'},
+            {value:hotCount,color:'#fb977d',labelColor:'#2a1210'},
+            {value:warmCount,color:'#ffa92c',labelColor:'#1a1208'},
+            {value:coldCount,color:'#46caeb',labelColor:'#0b1a1f'},
           ]}
         />
         <ArcStatCard
@@ -301,17 +253,6 @@ export function OverviewDashboard({
           segments={[
             {value:farm.proxiesActive,color:'#4bd08b',labelColor:'#0d1f16'},
             {value:proxiesInactive,color:'rgba(255,255,255,0.14)',labelColor:'rgba(255,255,255,0.7)'},
-          ]}
-        />
-        <ArcStatCard
-          title="Задачи"
-          value={tasksTotal}
-          loading={loading}
-          onClick={onGoAudience}
-          segments={[
-            {value:farm.tasksOk,color:'#4bd08b',labelColor:'#0d1f16'},
-            {value:farm.tasksWarn,color:'#ffd58a',labelColor:'#1a1208'},
-            {value:farm.tasksError,color:'#fb977d',labelColor:'#2a1210'},
           ]}
         />
       </div>
@@ -363,7 +304,7 @@ export function OverviewDashboard({
                   <div className="min-w-0">
                     <strong className="truncate block">{c.name}</strong>
                     <span className="small-note">
-                      {c.queue?'В очереди':c.pending?'Заявка':c.joined?'Вступили':'Ждёт'}
+                      {c.queue?'Вступаем':c.pending?'Заявка':c.joined?'Вступили':'Ждёт'}
                       {c.hot?` · 🔥 ${c.hot}`:''}
                       {c.leads?` · ${c.leads}`:''}
                     </span>
@@ -377,22 +318,6 @@ export function OverviewDashboard({
                 <Button size="sm" variant="outline" onClick={()=>onGoLeads({groupId:chatId,filter:tempFilter==='all'?'all':tempFilter})}>
                   Лиды «{selectedChat?.name||'чат'}» <ArrowRight size={14}/>
                 </Button>
-              </div>
-            )}
-            {joinActive.length>0&&(
-              <div className="studio-queue">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-semibold">Очередь вступлений</span>
-                  <Badge variant="secondary">{joinActive.length}</Badge>
-                </div>
-                {joinActive.slice(0,3).map(q=>(
-                  <div className="studio-queue-row" key={q.id}>
-                    <span className="truncate">{q.name}</span>
-                    <span className="small-note">
-                      {q.status==='waiting'?`пауза ${q.waitSec||0}с`:q.status==='joining'?'вступаем':q.status==='scanning'?'скан':'очередь'}
-                    </span>
-                  </div>
-                ))}
               </div>
             )}
             <div className="studio-side-actions">

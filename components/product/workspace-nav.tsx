@@ -3,16 +3,13 @@
 import { useCallback, useEffect, useMemo, useState, type ComponentType } from "react";
 import {
   Bell,
-  Database,
   GripVertical,
   LayoutDashboard,
   MessageSquare,
   Radio,
-  Send,
   Settings,
   Shield,
   Sparkles,
-  UserPlus,
   UserRound,
   Users,
 } from "lucide-react";
@@ -23,9 +20,6 @@ export type NavName =
   | "Лиды"
   | "Переписки"
   | "Группы и каналы"
-  | "Сбор аудитории"
-  | "Инвайтинг"
-  | "Рассылка"
   | "Аккаунты"
   | "Прокси"
   | "AI-ассистент"
@@ -33,7 +27,7 @@ export type NavName =
   | "Уведомления"
   | "Сотрудники";
 
-type NavSection = "workspace" | "audience" | "connections";
+type NavSection = "workspace" | "connections";
 
 type NavDef = {
   name: NavName;
@@ -43,7 +37,6 @@ type NavDef = {
 
 const SECTION_LABEL: Record<NavSection, string> = {
   workspace: "Рабочее пространство",
-  audience: "Аудитория",
   connections: "Подключения",
 };
 
@@ -53,9 +46,6 @@ export const DEFAULT_NAV: NavDef[] = [
   { name: "Лиды", section: "workspace", Icon: Users },
   { name: "Переписки", section: "workspace", Icon: MessageSquare },
   { name: "Группы и каналы", section: "workspace", Icon: Radio },
-  { name: "Сбор аудитории", section: "audience", Icon: Database },
-  { name: "Инвайтинг", section: "audience", Icon: UserPlus },
-  { name: "Рассылка", section: "connections", Icon: Send },
   { name: "Аккаунты", section: "connections", Icon: Users },
   { name: "Прокси", section: "connections", Icon: Shield },
   { name: "AI-ассистент", section: "connections", Icon: Sparkles },
@@ -73,9 +63,6 @@ const VIEW_SLUG: Record<NavName, string> = {
   "Лиды": "leads",
   "Переписки": "chats",
   "Группы и каналы": "groups",
-  "Сбор аудитории": "audience",
-  "Инвайтинг": "invite",
-  "Рассылка": "mailing",
   "Аккаунты": "accounts",
   "Прокси": "proxies",
   "AI-ассистент": "ai",

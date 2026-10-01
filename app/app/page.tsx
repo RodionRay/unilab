@@ -1,19 +1,19 @@
 "use client";
 import {useState,useEffect,useCallback,useRef,useMemo,Suspense} from 'react';
 import {useSearchParams} from 'next/navigation';
-import {Users,Radio,Shield,Sparkles,Plus,ArrowRight,Search,ChevronRight,ExternalLink,Pencil,Trash2,Check,Upload,Plug,Loader2,LogOut,RefreshCw,X,CloudUpload,FileArchive,Ban,ImagePlus,UserRound,Shuffle,UserPlus,Database,ScrollText,History,FilterX,Send,MessageSquare,Timer,Network,Gauge,AlertTriangle,BarChart3,Folder,CircleX} from 'lucide-react';
+import {Users,Radio,Shield,Sparkles,Plus,ArrowRight,Search,ChevronRight,ExternalLink,Pencil,Trash2,Check,Upload,Plug,Loader2,LogOut,RefreshCw,X,CloudUpload,FileArchive,Ban,ImagePlus,UserRound,UserPlus,Database,ScrollText,History,FilterX,Send,MessageSquare,Timer,Network,Gauge,AlertTriangle,BarChart3,Folder,CircleX,ThumbsUp,ThumbsDown} from 'lucide-react';
 import {Button} from '@/components/ui/button';
 import {OverviewDashboard} from '@/components/product/overview-dashboard';
-import {LeadCorePanel} from '@/components/product/lead-core-panel';
+import {AiWorkspace} from '@/components/product/ai/ai-workspace';
+import {canSeeGroups,canSeeLeadText,isInConversations,projectIdOf,projectsFrom} from '@/components/product/ai/model';
+import {useActiveProject} from '@/components/product/ai/use-active-project';
 import {WorkspaceNav,parseWorkspaceView,persistWorkspaceView,readStoredWorkspaceView,WORKSPACE_VIEW_PARAM,type NavName} from '@/components/product/workspace-nav';
 import {NotificationsBell,NotificationsPanel} from '@/components/product/notifications-center';
 import {useWorkspaceNotices} from '@/hooks/useWorkspaceNotices';
-import {AudiencePanel,AudienceTaskFields} from '@/components/product/audience-panel';
-import {InvitePanel,InviteModePicker,InviteTaskFields} from '@/components/product/invite-panel';
-import {MailingPanel,MailingTaskFields,MailingDeliveriesView} from '@/components/product/mailing-panel';
 import {TaskLogDialog} from '@/components/product/task-log-dialog';
 import {EmployeesPanel} from '@/components/product/employees-panel';
-import {DEFAULT_DM_SOFT_CLOSE,DEFAULT_MAILING_TASK} from '@/lib/mailing';
+import {DEFAULT_DM_SOFT_CLOSE} from '@/lib/mailing';
+import {LIVE_JOIN_STATES,type LiveJoinState} from '@/lib/processes/join-flow';
 import {canAccessNav,type CrmAccess,type WorkspaceInvite,type WorkspaceMember} from '@/lib/staff-types';
 import {DEFAULT_NAV} from '@/components/product/workspace-nav';
 import {Input} from '@/components/ui/input';
@@ -28,6 +28,7 @@ import {Skeleton} from '@/components/ui/skeleton';
 import {Empty,EmptyHeader,EmptyTitle,EmptyDescription} from '@/components/ui/empty';
 import {Toaster} from 'sonner';
 import {toast} from '@/lib/workspace-notifications';
+import {markLeadOpened} from '@/lib/lead-conversation';
 import {SidebarProvider,Sidebar,SidebarHeader,SidebarContent,SidebarFooter,SidebarInset,SidebarTrigger} from '@/components/ui/sidebar';
 import {parseProxyLine,parseProxyLines,type ProxyProtocol} from '@/lib/proxy-line';
 import {accountPhoneKey,canonicalizeTgUrl,duplicateReason,findDuplicate,proxyIdentityKey,telegramEntityKey} from '@/lib/record-identity';
@@ -71,35 +72,37 @@ import {
   type LeadTemperature,
 } from '@/lib/lead-filter';
 import {
-  SUGGESTED_MINUS,
-  SUGGESTED_PLUS,
-  mergeKeywords,
-  unusedSuggestions,
-} from '@/lib/ai-keywords';
-import {
-  DEFAULT_AUDIENCE_TASK,
-  DEFAULT_INVITE_TASK,
-  displayTgHandle,
-  normalizeStatusFilters,
-  normalizeTgRef,
   parseGroupUrlLines,
   telegramMessageLink,
 } from '@/lib/audience-invite';
 import {useTableSort} from '@/hooks/useTableSort';
 import type {SortValueType} from '@/lib/table-sort';
+import {leadVisibleInTab} from '@/lib/lead-search';
 
-type Kind='account'|'proxy'|'group'|'lead'|'settings'|'audience_task'|'invite_task'|'mailing_task';
+/** `project` is read-only here: it is edited only through project_* actions, never generic save. */
+type Kind='account'|'proxy'|'group'|'lead'|'settings'|'project';
 type RecordItem={id:string;kind:Kind;data:any;hasSecret:boolean;created:string};
+type OnboardResult={
+  joined:'requested'|'already'|'joined';
+  scanned:number;
+  matched:number;
+  added:number;
+  aiUsed:boolean;
+  title:string;
+  metrics?:{rating?:number;leadsHot?:number}|null;
+  addedByTemp?:{hot?:number;warm?:number;cold?:number}|null;
+};
 
-const kinds:Record<string,Kind>={'Лиды':'lead','Переписки':'lead','Группы и каналы':'group','Сбор аудитории':'audience_task','Инвайтинг':'invite_task','Рассылка':'mailing_task','Аккаунты':'account','Прокси':'proxy','AI-ассистент':'settings'};
-const labels:Record<Kind,string>={account:'аккаунт',proxy:'прокси',group:'группу',lead:'лид',settings:'настройки AI',audience_task:'задачу сбора',invite_task:'задачу инвайта',mailing_task:'задачу рассылки'};
+const kinds:Record<string,Kind>={'Лиды':'lead','Переписки':'lead','Группы и каналы':'group','Аккаунты':'account','Прокси':'proxy','AI-ассистент':'settings'};
+const labels:Record<Kind,string>={account:'аккаунт',proxy:'прокси',group:'группу',lead:'лид',settings:'настройки AI',project:'проект'};
 const PROBLEM_ACCOUNT=new Set(['disconnected','unauthorized','frozen','spamblock','proxy_error','cooldown','inactive','setup','error']);
-const JOIN_BUSY=new Set(['queued','waiting','joining','scanning']);
+/** Живые состояния ручного вступления (вкладка вступает/сканирует); у фоновой очереди производителя больше нет. */
+const JOIN_ACTIVE_STATES=new Set<string>(LIVE_JOIN_STATES);
 const defaults:any={
-  account:{name:'',phone:'',proxyId:'',status:'setup',format:'manual',sessionMode:'keep',limits:{...DEFAULT_ACCOUNT_LIMITS,memberInvite:40},cooldownUntil:'',firstName:'',lastName:'',username:'',about:'',hasPhoto:false,error:''},
+  account:{name:'',phone:'',proxyId:'',status:'setup',format:'manual',sessionMode:'keep',limits:{...DEFAULT_ACCOUNT_LIMITS},cooldownUntil:'',firstName:'',lastName:'',username:'',about:'',hasPhoto:false,error:''},
   proxy:{name:'',host:'',port:'1080',protocol:'socks5',username:'',status:'inactive',exitIp:'',lastChecked:'',checkError:''},
   group:{name:'',url:'',accountId:'',status:'setup',error:'',membership:'none',joinedAt:'',joinState:'',joinStateAt:'',joinStateError:'',leadsTotal:0,leadsHot:0,leadsWarm:0,leadsCold:0,scanMatched:0,rating:0,lastScanned:'',scanLog:[]},
-  lead:{name:'',message:'',source:'Вручную',status:'new',temperature:'warm',draft:'',tgMsgId:'',groupId:'',reason:'',viewed:false,viewedAt:'',excludeFromTraining:false,senderId:'',senderUsername:'',senderAccessHash:'',messageKind:'',peerId:'',replyToMsgId:'',replies:[],conversationOpen:false,conversationAt:'',incomingLastText:'',needsManager:false,mailingTaskId:'',accountId:''},
+  lead:{name:'',message:'',source:'Вручную',status:'new',temperature:'warm',draft:'',tgMsgId:'',groupId:'',reason:'',viewed:false,viewedAt:'',excludeFromTraining:false,senderId:'',senderUsername:'',senderAccessHash:'',messageKind:'',peerId:'',replyToMsgId:'',replies:[],conversationOpen:false,conversationAt:'',incomingLastText:'',needsManager:false,accountId:''},
   settings:{
     name:'Мой бизнес',
     model:'deepseek-chat',
@@ -137,11 +140,20 @@ AI будет использовать этот текст для отбора �
     notifyBotToken:'',
     notifyChatId:'',
   },
-  audience_task:{...DEFAULT_AUDIENCE_TASK},
-  invite_task:{...DEFAULT_INVITE_TASK},
-  mailing_task:{...DEFAULT_MAILING_TASK},
 };
-const viewCopy:Record<string,string>={'Обзор':'Лиды, чаты и статус подключений — всё важное на одном экране.','Уведомления':'Журнал событий кабинета: сканы, вступления, рассылки, ошибки и сохранения.','Лиды':'Новые запросы: просмотренные скрываются из общей сетки.','Переписки':'Ответы клиентов: откройте диалог — он уйдёт в «Просмотренные». Новый ответ клиента снова в «Новые».','Группы и каналы':'Поиск тем под AI → вступление → реальные лиды из чатов.','Сбор аудитории':'Аккаунт → источник → фильтры → база участников для инвайтинга.','Инвайтинг':'Приглашение собранной аудитории в вашу группу: обычный и продвинутый режим.','Рассылка':'Личные сообщения базе или лидам: смешанные аккаунты, Spintax или уникальные AI-тексты, полный лог доставок.','Аккаунты':'Статусы, дневные лимиты, отлёжка, прокси и группы — всё по каждому аккаунту.','Прокси':'host:port:user:password — список или по одному.','AI-ассистент':'Ядро поиска лидов, продукт, плюс/минус слова, обучение и обход групп.','Сотрудники':'Роли, доступы к разделам CRM и приглашения коллег по ссылке.','Настройки':'Глубина скана, профиль кабинета и уведомления о лидах в Telegram-бота.'};
+const viewCopy:Record<string,string>={'Обзор':'Лиды, чаты и статус подключений — всё важное на одном экране.','Уведомления':'Журнал событий кабинета: сканы, вступления, ошибки и сохранения.','Лиды':'Новые запросы: просмотренные скрываются из общей сетки.','Переписки':'Ответы клиентов: откройте диалог — он уйдёт в «Просмотренные». Новый ответ клиента снова в «Новые».','Группы и каналы':'Поиск тем под AI → вступление → реальные лиды из чатов.','Аккаунты':'Статусы, дневные лимиты, отлёжка, прокси и группы — всё по каждому аккаунту.','Прокси':'host:port:user:password — список или по одному.','AI-ассистент':'Куда уходят сообщения из чатов проекта, черновики на одобрение и описание проекта для AI.','Сотрудники':'Роли, доступы к разделам CRM и приглашения коллег по ссылке.','Настройки':'Глубина скана, профиль кабинета и уведомления о лидах в Telegram-бота.'};
+
+/** Дневные лимиты AI владельца (docs/leads-pipeline.md): оценки сообщений и черновики. */
+const DEFAULT_JUDGE_DAILY_CAP=3000;
+const DEFAULT_DRAFT_DAILY_CAP=200;
+const MAX_DAILY_CAP=100000;
+function clampCap(v:unknown,fallback:number):number{
+  const n=Math.round(Number(v));
+  return Number.isFinite(n)&&n>0?Math.min(MAX_DAILY_CAP,n):fallback;
+}
+
+/** Ответ POST /api/staff: ошибка или счётчики операции. */
+type StaffActionResponse={error?:string;url?:string;removed?:number;members?:number;invites?:number};
 
 async function api(body?:unknown){
   const r=await fetch('/api/workspace',body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{cache:'no-store'});
@@ -161,7 +173,7 @@ function cleanGroupSaveData(data:Record<string,unknown>){
   const joinStateError=
     err==null||typeof err==='object'?'':String(err).slice(0,500);
   const joinState=String(data.joinState||'');
-  const okState=['','queued','waiting','joining','scanning'].includes(joinState)?joinState:'';
+  const okState=JOIN_ACTIVE_STATES.has(joinState)?joinState:'';
   return{
     ...data,
     joinState:okState,
@@ -258,44 +270,6 @@ function groupRatingStars(rating:number){
   return <span className="group-rating" aria-label={`Рейтинг ${n} из 5`}>{'★'.repeat(n)}{'☆'.repeat(5-n)}</span>;
 }
 
-function parseKeywordList(value:string){
-  return String(value||'').split(/[,;\n]+/).map(s=>s.trim()).filter(Boolean);
-}
-
-function KeywordChips({value,onChange,variant,placeholder}:{value:string;onChange:(v:string)=>void;variant:'plus'|'minus';placeholder?:string}){
-  const [draft,setDraft]=useState('');
-  const items=parseKeywordList(value);
-  const commit=(raw:string)=>{
-    const next=raw.split(/[,;\n]+/).map(s=>s.trim()).filter(Boolean);
-    if(!next.length)return;
-    const set=new Set(items.map(s=>s.toLowerCase()));
-    const merged=[...items];
-    for(const t of next){if(!set.has(t.toLowerCase())){set.add(t.toLowerCase());merged.push(t)}}
-    onChange(merged.join(', '));
-    setDraft('');
-  };
-  return (
-    <div className="kw-editor" onClick={e=>{(e.currentTarget.querySelector('input') as HTMLInputElement|null)?.focus()}}>
-      {items.map(t=>(
-        <span className={`kw ${variant}`} key={t}>
-          {t}
-          <button type="button" aria-label={`Удалить ${t}`} onClick={e=>{e.stopPropagation();onChange(items.filter(x=>x!==t).join(', '))}}><X size={12}/></button>
-        </span>
-      ))}
-      <input
-        value={draft}
-        placeholder={items.length?placeholder||'Enter или запятая':'Введите и Enter'}
-        onChange={e=>setDraft(e.target.value)}
-        onKeyDown={e=>{
-          if(e.key==='Enter'||e.key===','){e.preventDefault();commit(draft)}
-          if(e.key==='Backspace'&&!draft&&items.length)onChange(items.slice(0,-1).join(', '));
-        }}
-        onBlur={()=>{if(draft.trim())commit(draft)}}
-      />
-    </div>
-  );
-}
-
 function groupAlreadyIn(item:RecordItem){
   const d=item.data||{};
   if(d.membership==='joined'||d.membership==='pending')return true;
@@ -314,8 +288,6 @@ function groupNeedsJoin(item:RecordItem){
 function groupStatusLabel(item:RecordItem){
   const d=item.data||{};
   const js=String(d.joinState||'');
-  if(js==='queued')return {label:'В очереди',tone:'warning' as const};
-  if(js==='waiting')return {label:'Пауза',tone:'warning' as const};
   if(js==='joining')return {label:'Вступаем…',tone:'warning' as const};
   if(js==='scanning')return {label:'Скан…',tone:'warning' as const};
   const s=String(d.status||'setup');
@@ -326,36 +298,10 @@ function groupStatusLabel(item:RecordItem){
   return {label:'Ждёт вступления',tone:'neutral' as const};
 }
 
-const JOIN_ACTIVE_STATES=new Set(['queued','waiting','joining','scanning']);
-
 function formatGroupSyncAt(raw:string){
   const t=Date.parse(raw||'');
   if(!Number.isFinite(t))return '';
   return new Date(t).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
-}
-
-const JOIN_QUEUE_KEY='unilab.joinQueue.v1';
-type JoinQItem={id:string;name:string;status:'queued'|'waiting'|'joining'|'scanning'|'done'|'error'|'need_url';waitSec?:number;waitTotal?:number;error?:string;added?:number};
-
-function loadJoinQueue():{queue:JoinQItem[];work:{id:string;name:string}[]}{
-  try{
-    const raw=localStorage.getItem(JOIN_QUEUE_KEY);
-    if(!raw)return {queue:[],work:[]};
-    const parsed=JSON.parse(raw);
-    const queue=Array.isArray(parsed.queue)?parsed.queue:[];
-    const work=Array.isArray(parsed.work)?parsed.work:[];
-    // старше 6 часов — мусор
-    if(parsed.updatedAt&&Date.now()-Number(parsed.updatedAt)>6*60*60*1000)return {queue:[],work:[]};
-    return {queue,work};
-  }catch{return {queue:[],work:[]}}
-}
-
-function saveJoinQueue(queue:JoinQItem[],work:{id:string;name:string}[]){
-  try{
-    const active=queue.some(q=>['queued','waiting','joining','scanning'].includes(q.status))||work.length>0;
-    if(!active){localStorage.removeItem(JOIN_QUEUE_KEY);return}
-    localStorage.setItem(JOIN_QUEUE_KEY,JSON.stringify({queue,work,updatedAt:Date.now()}));
-  }catch{/* */}
 }
 
 function statusBadge(status:string,kind?:Kind){
@@ -441,9 +387,6 @@ function AccountLimitsCell({data}:{data:any}){
       <span className={over(u.messages,u.messageLimit)?'is-over':''} title="Личные сообщения">
         <Send size={13}/><em>{fmt(u.messages,u.messageLimit)}</em>
       </span>
-      <span className={over(u.memberInvites,u.memberInviteLimit)?'is-over':''} title="Инвайты людей · чат-лимит">
-        <MessageSquare size={13}/><em>{fmt(u.memberInvites,u.memberInviteLimit||u.chatLimit)}</em>
-      </span>
     </div>
   );
 }
@@ -456,7 +399,6 @@ function WorkspaceHome(){
   const [groupImportOpen,setGroupImportOpen]=useState(false);
   const [groupImportText,setGroupImportText]=useState('');
   const [groupImportAccountId,setGroupImportAccountId]=useState('');
-  const [groupImportJoin,setGroupImportJoin]=useState(true);
   const [accountImportOpen,setAccountImportOpen]=useState(false),[accountImportProxyId,setAccountImportProxyId]=useState(''),[accountImportNames,setAccountImportNames]=useState<string[]>([]);
   const [accountImportFiles,setAccountImportFiles]=useState<File[]>([]);
   const [accountImportSessionMode,setAccountImportSessionMode]=useState<SessionMode>('keep');
@@ -476,22 +418,20 @@ function WorkspaceHome(){
   const [catalogSearching,setCatalogSearching]=useState(false);
   const [catalogHits,setCatalogHits]=useState<CatalogHit[]>([]);
   const [catalogSearchTick,setCatalogSearchTick]=useState(0);
-  const [onboardAfterSave,setOnboardAfterSave]=useState(false);
   const [aiMeta,setAiMeta]=useState<{provider?:string;hasEnvKey?:boolean}|null>(null);
-  const [lastLeadFunnel,setLastLeadFunnel]=useState<{worker?:number;core?:number;matched?:number;added?:number}|null>(null);
   const [leadGroupFilter,setLeadGroupFilter]=useState('all');
-  const [leadSelected,setLeadSelected]=useState<string[]>([]);
   const [groupFilter,setGroupFilter]=useState<'all'|'need'|'joined'|'pending'|'error'>('all');
   const [groupSelected,setGroupSelected]=useState<string[]>([]);
   const [bulkAccountId,setBulkAccountId]=useState('');
-  const [mixAccountIds,setMixAccountIds]=useState<string[]>([]);
-  const [accountPicker,setAccountPicker]=useState<null|{mode:'single'|'mix'|'row';groupId?:string}>(null);
+  const [accountPicker,setAccountPicker]=useState<null|{mode:'single'|'row';groupId?:string}>(null);
   const [accountPickerQuery,setAccountPickerQuery]=useState('');
   const [accountPickerDraft,setAccountPickerDraft]=useState<string[]>([]);
   const [genSettings,setGenSettings]=useState({
     scanDepthDays:7,
     autoRescanEnabled:true,
     autoRescanMinutes:30,
+    judgeDailyCap:DEFAULT_JUDGE_DAILY_CAP,
+    draftDailyCap:DEFAULT_DRAFT_DAILY_CAP,
     profileName:'',
     profileAbout:'',
     profileContact:'',
@@ -507,11 +447,9 @@ function WorkspaceHome(){
   const [bulkProxyMix,setBulkProxyMix]=useState(false);
   const [bulkDeleteOpen,setBulkDeleteOpen]=useState(false);
   const [bulkLimitsOpen,setBulkLimitsOpen]=useState(false);
-  const [bulkLimits,setBulkLimits]=useState({
+  const [bulkLimits,setBulkLimits]=useState<{invite:number;message:number}>({
     invite:TELEGRAM_RECOMMENDED_LIMITS.invite,
     message:TELEGRAM_RECOMMENDED_LIMITS.message,
-    chat:TELEGRAM_RECOMMENDED_LIMITS.chat,
-    memberInvite:TELEGRAM_RECOMMENDED_LIMITS.memberInvite,
   });
   const [farmAbout,setFarmAbout]=useState('');
   const [farmFirstName,setFarmFirstName]=useState('');
@@ -521,31 +459,19 @@ function WorkspaceHome(){
   const [farmLogoPreview,setFarmLogoPreview]=useState('');
   const [chatMode,setChatMode]=useState<'dm'|'chat'>('dm');
   const [chatText,setChatText]=useState('');
-  const [joinProgress,setJoinProgress]=useState<{current:number;total:number;waitSec:number;name:string}|null>(null);
-  const [joinQueue,setJoinQueue]=useState<JoinQItem[]>([]);
   const [autoRescanRunning,setAutoRescanRunning]=useState(false);
-  const [audienceSearch,setAudienceSearch]=useState('');
-  const [inviteSearch,setInviteSearch]=useState('');
-  const [mailingSearch,setMailingSearch]=useState('');
   const [staffMembers,setStaffMembers]=useState<WorkspaceMember[]>([]);
   const [staffInvites,setStaffInvites]=useState<WorkspaceInvite[]>([]);
   const [workspaceMeta,setWorkspaceMeta]=useState<{isOwner:boolean;role:string;access:CrmAccess;ownerId:string}|null>(null);
   const [meInfo,setMeInfo]=useState<{userId:string;email:string;name:string}|null>(null);
-  const [inviteWizardStep,setInviteWizardStep]=useState<1|2>(1);
-  const [taskLog,setTaskLog]=useState<{title:string;log:any[];taskId?:string}|null>(null);
-  const [mailingDeliveries,setMailingDeliveries]=useState<{title:string;deliveries:any[]}|null>(null);
-  const taskPollLock=useRef(false);
-  const recordsRef=useRef<RecordItem[]>([]);
+  const [taskLog,setTaskLog]=useState<{title:string;log:any[]}|null>(null);
+  const inboxPollLock=useRef(false);
   const busyRef=useRef(false);
-  const autoRescanLock=useRef(false);
-  const joinRunnerLock=useRef(false);
-  const autoRescanPending=useRef(false);
-  const joinWorkRef=useRef<{id:string;name:string}[]>([]);
-  const joinQueueRef=useRef<JoinQItem[]>([]);
-  const joinResumeDone=useRef(false);
-  /** Задачи, которые пользователь только что поставил на паузу — poller не трогает до play */
-  const pausedTasksRef=useRef(new Set<string>());
+  // Одно ручное вступление за раз: параллельные клики по группам одного аккаунта обходили бы темп.
+  const joinLock=useRef(false);
+  const [joinInFlight,setJoinInFlight]=useState(false);
   const lastInboxPollAt=useRef(0);
+  const replySendKeyRef=useRef<{leadId:string;mode:string;text:string;key:string}|null>(null);
 
   const refreshStaff=useCallback(async()=>{
     try{
@@ -554,7 +480,7 @@ function WorkspaceHome(){
         if(r.status===403){setStaffMembers([]);setStaffInvites([]);return}
         return;
       }
-      const data=await r.json();
+      const data=(await r.json()) as {members?:WorkspaceMember[];invites?:typeof staffInvites};
       setStaffMembers(data.members||[]);
       setStaffInvites(data.invites||[]);
     }catch{/* */}
@@ -590,45 +516,19 @@ function WorkspaceHome(){
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[]);
   useEffect(()=>{persistWorkspaceView(view)},[view]);
-  useEffect(()=>{recordsRef.current=records},[records]);
   useEffect(()=>{busyRef.current=busy},[busy]);
-
-  function replaceTaskData(id:string,data:Record<string,unknown>){
-    const apply=(prev:RecordItem[])=>prev.map(x=>x.id===id?{...x,data}:x);
-    setRecords(apply);
-    recordsRef.current=apply(recordsRef.current);
-  }
-
-  function applyTickTask(id:string,task:Record<string,unknown>|undefined){
-    if(!task)return;
-    const cur=recordsRef.current.find(x=>x.id===id);
-    // Устаревший tick после паузы не должен вернуть «running» в UI
-    if(cur?.data.status==='paused'&&task.status==='running')return;
-    if(pausedTasksRef.current.has(id)&&task.status==='running')return;
-    replaceTaskData(id,task);
-  }
-
-  useEffect(()=>{joinQueueRef.current=joinQueue;saveJoinQueue(joinQueue,joinWorkRef.current)},[joinQueue]);
 
   function patchGroupLocal(id:string,patch:Record<string,unknown>){
     setRecords(prev=>prev.map(r=>r.id===id&&r.kind==='group'?{...r,data:{...r.data,...patch}}:r));
   }
 
-  async function persistJoinState(id:string,joinState:''|'queued'|'waiting'|'joining'|'scanning',joinStateError=''){
+  async function persistJoinState(id:string,joinState:''|LiveJoinState,joinStateError=''){
     const joinStateAt=joinState?new Date().toISOString():'';
     const err=String(joinStateError||'').slice(0,500);
     patchGroupLocal(id,{joinState,joinStateAt,joinStateError:err});
     try{await api({action:'set_group_join_state',id,joinState,joinStateError:err})}catch{/* сеть — UI уже обновлён */}
   }
 
-  function setJoinQueueSync(updater:(prev:JoinQItem[])=>JoinQItem[]){
-    setJoinQueue(prev=>{
-      const next=updater(prev);
-      joinQueueRef.current=next;
-      saveJoinQueue(next,joinWorkRef.current);
-      return next;
-    });
-  }
   useEffect(()=>{
     if(view!=='Группы и каналы')return;
     let cancelled=false;
@@ -645,30 +545,12 @@ function WorkspaceHome(){
     const usable=list('account').filter(a=>isAccountWorkable(a.data));
     if(!bulkAccountId&&usable[0]?.id)setBulkAccountId(usable[0].id);
     if(bulkAccountId&&!usable.some(a=>a.id===bulkAccountId))setBulkAccountId(usable[0]?.id||'');
-    if(!mixAccountIds.length&&usable.length)setMixAccountIds(usable.map(a=>a.id));
-    else if(mixAccountIds.length){
-      const next=mixAccountIds.filter(id=>usable.some(a=>a.id===id));
-      if(next.length!==mixAccountIds.length)setMixAccountIds(next.length?next:usable.map(a=>a.id));
-    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[records]);
-  const navigate=(name:NavName)=>{setView(name);setQuery('');setFilter('all');setLeadGroupFilter('all');setLeadSelected([]);setAccountSelected([]);setGroupFilter('all');setGroupSelected([]);setAudienceSearch('');setInviteSearch('');setMailingSearch('')};
-  const openTask=(kind:'audience_task'|'invite_task'|'mailing_task',item?:RecordItem)=>{
-    setInviteWizardStep(item?2:1);
-    setModal({kind,item});
-    const data={...defaults[kind],...item?.data};
-    if(kind==='audience_task'){
-      const statusFilters=normalizeStatusFilters(data.statusFilters,data.statusFilter);
-      data.statusFilters=statusFilters;
-      data.statusFilter=statusFilters.length===1?statusFilters[0]:'all';
-    }
-    setForm(data);
-    setFormError('');
-  };
+  const navigate=(name:NavName)=>{setView(name);setQuery('');setFilter('all');setLeadGroupFilter('all');setAccountSelected([]);setGroupFilter('all');setGroupSelected([])};
   const goLeads=(opts?:{groupId?:string;filter?:string})=>{
     setView('Лиды');
     setQuery('');
-    setLeadSelected([]);
     setLeadGroupFilter(opts?.groupId||'all');
     setFilter(opts?.filter||'all');
   };
@@ -684,7 +566,7 @@ function WorkspaceHome(){
       const taken=list('account').map(r=>String(r.data.username||''));
       data.username=generateTelegramUsername(taken);
     }
-    setModal({kind,item});setForm(data);setSecret('');setClearSecret(false);setFormError('');setProxyPaste('');setOnboardAfterSave(false);
+    setModal({kind,item});setForm(data);setSecret('');setClearSecret(false);setFormError('');setProxyPaste('');
   };
 
   useEffect(()=>{
@@ -706,11 +588,16 @@ function WorkspaceHome(){
 
   const list=(kind:Kind)=>records.filter(r=>r.kind===kind);
   const settings=list('settings')[0];
+  const projects=useMemo(()=>projectsFrom(records),[records]);
+  const [activeProjectId,setActiveProjectId]=useActiveProject(projects,!loading);
+  const [leadProjectScope,setLeadProjectScope]=useState<'active'|'all'>('active');
+  const leadInScope=(r:RecordItem)=>leadProjectScope==='all'||!projects.length||projectIdOf(r.data,projects)===activeProjectId;
   const aiKeyReady=!!(settings?.hasSecret||aiMeta?.hasEnvKey);
   const freshLeads=list('lead').filter(r=>!r.data.viewed&&!r.data.excludeFromTraining);
   const viewedLeads=list('lead').filter(r=>!!r.data.viewed&&!r.data.excludeFromTraining);
   const excludedLeads=list('lead').filter(r=>!!r.data.excludeFromTraining);
-  const chatLeads=list('lead').filter(r=>(!!r.data.draft||!!r.data.conversationOpen)&&!r.data.excludeFromTraining);
+  // Auto drafts (draftKind) wait in the AI page queue; «Переписки» = open conversations + manual drafts (REQ-20).
+  const chatLeads=list('lead').filter(r=>isInConversations(r.data));
   const freshChats=chatLeads.filter(r=>!r.data.viewed);
   const viewedChats=chatLeads.filter(r=>!!r.data.viewed);
 
@@ -738,11 +625,8 @@ function WorkspaceHome(){
     const needManager=list('lead').filter(r=>!!r.data.needsManager&&!r.data.excludeFromTraining).length;
     const groups=list('group').filter(r=>{
       const d=r.data||{};
-      return d.status==='error'||d.membership==='pending'||JOIN_BUSY.has(String(d.joinState||''));
+      return d.status==='error'||d.membership==='pending'||JOIN_ACTIVE_STATES.has(String(d.joinState||''));
     }).length;
-    const audienceBusy=list('audience_task').filter(r=>r.data.status==='running'||r.data.status==='scheduled').length;
-    const inviteBusy=list('invite_task').filter(r=>r.data.status==='running'||r.data.status==='scheduled').length;
-    const mailingBusy=list('mailing_task').filter(r=>r.data.status==='running'||r.data.status==='scheduled'||r.data.status==='error').length;
     const accounts=list('account').filter(r=>{
       const st=String(r.data.status||'');
       return PROBLEM_ACCOUNT.has(st);
@@ -753,9 +637,6 @@ function WorkspaceHome(){
       'Лиды':freshLeads.length,
       'Переписки':needManager,
       'Группы и каналы':groups,
-      'Сбор аудитории':audienceBusy,
-      'Инвайтинг':inviteBusy,
-      'Рассылка':mailingBusy,
       'Аккаунты':accounts,
       'Прокси':proxies,
       'AI-ассистент':aiKeyReady?0:1,
@@ -771,6 +652,8 @@ function WorkspaceHome(){
       scanDepthDays:Math.max(1,Math.min(90,Number(d.scanDepthDays)||7)),
       autoRescanEnabled:d.autoRescanEnabled!==false,
       autoRescanMinutes:Math.max(5,Math.min(180,Number(d.autoRescanMinutes)||30)),
+      judgeDailyCap:clampCap(d.judgeDailyCap,DEFAULT_JUDGE_DAILY_CAP),
+      draftDailyCap:clampCap(d.draftDailyCap,DEFAULT_DRAFT_DAILY_CAP),
       profileName:String(d.profileName||''),
       profileAbout:String(d.profileAbout||''),
       profileContact:String(d.profileContact||''),
@@ -778,192 +661,36 @@ function WorkspaceHome(){
       notifyBotToken:String(d.notifyBotToken||''),
       notifyChatId:String(d.notifyChatId||''),
     });
-  },[settings?.id,settings?.data?.scanDepthDays,settings?.data?.autoRescanEnabled,settings?.data?.autoRescanMinutes,settings?.data?.profileName,settings?.data?.profileAbout,settings?.data?.profileContact,settings?.data?.notifyEnabled,settings?.data?.notifyBotToken,settings?.data?.notifyChatId]);
+  },[settings?.id,settings?.data?.scanDepthDays,settings?.data?.autoRescanEnabled,settings?.data?.autoRescanMinutes,settings?.data?.judgeDailyCap,settings?.data?.draftDailyCap,settings?.data?.profileName,settings?.data?.profileAbout,settings?.data?.profileContact,settings?.data?.notifyEnabled,settings?.data?.notifyBotToken,settings?.data?.notifyChatId]);
 
   // Автообход лидов крутит tg-worker → /api/cron/auto-rescan (24/7, без открытого кабинета).
   // Здесь только кнопка «Собрать лиды» и отображение статуса.
 
-  /** Poller: сбор аудитории + инвайтинг пока кабинет открыт */
+  /** Poller: ответы клиентов в личке, пока кабинет открыт */
   useEffect(()=>{
     if(!telegramConnected)return;
     const tick=async()=>{
-      if(taskPollLock.current)return;
-      // autoRescan/join не стопят тики задач — иначе сбор/инвайт простаивают минутами
-      const snap=recordsRef.current;
-      const runningAudience=snap.filter(r=>r.kind==='audience_task'&&(r.data.status==='running'||r.data.status==='scheduled')&&!pausedTasksRef.current.has(r.id));
-      const runningInvite=snap.filter(r=>r.kind==='invite_task'&&(r.data.status==='running'||r.data.status==='scheduled')&&!pausedTasksRef.current.has(r.id));
-      const runningMailing=snap.filter(r=>r.kind==='mailing_task'&&(r.data.status==='running'||r.data.status==='scheduled')&&!pausedTasksRef.current.has(r.id));
-      taskPollLock.current=true;
+      if(inboxPollLock.current)return;
+      // Скрытые вкладки не опрашивают входящие; параллельные опросы сервер отсекает lease
+      if(document.visibilityState!=='visible')return;
+      if(Date.now()-lastInboxPollAt.current<=15_000)return;
+      inboxPollLock.current=true;
       try{
-        if(runningAudience.length||runningInvite.length||runningMailing.length){
-        for(const t of runningAudience){
-          try{
-            const r=await api({action:'tick_audience',id:t.id});
-            if(r.busy||r.skipped)continue;
-            applyTickTask(t.id,r.task);
-            if(r.joined)toast.message(`${displayTgHandle(t.data.url||'')}: вступили в источник`);
-            if(r.task?.status==='completed')toast.success(`Сбор завершён: ${displayTgHandle(t.data.url||'')} · ${r.task.collected||0}`);
-            if(r.task?.status==='paused'&&r.task?.error)toast.error(String(r.task.error).slice(0,120));
-          }catch(e){toast.error(`Сбор: ${String((e as Error).message||e).slice(0,100)}`)}
+        lastInboxPollAt.current=Date.now();
+        const inbox=await api({action:'poll_dm_replies'});
+        if(inbox?.opened>0){
+          toast.success(`Клиент ответил — откройте «Переписки»: ${inbox.names?.slice(0,3).join(', ')||inbox.opened}`);
+          await refresh();
         }
-        for(const t of runningInvite){
-          try{
-            const r=await api({action:'tick_invite',id:t.id});
-            if(r.busy||r.skipped||r.waiting)continue;
-            applyTickTask(t.id,r.task);
-            if(r.completed)toast.success(`Инвайт завершён: ${displayTgHandle(t.data.targetUrl||'')}`);
-          }catch(e){toast.error(`Инвайт: ${String((e as Error).message||e).slice(0,100)}`)}
-        }
-        for(const t of runningMailing){
-          try{
-            const r=await api({action:'tick_mailing',id:t.id});
-            // skipped/busy — не затираем локальный running устаревшим paused
-            if(r.skipped||r.busy||r.waiting)continue;
-            applyTickTask(t.id,r.task);
-            if(r.stopped){
-              toast.error(r.task?.error||`Рассылка остановлена: ${t.data.name||''}`);
-            }else if(r.completed){
-              toast.success(`Рассылка завершена: ${t.data.name||''} · ${r.task?.sentTotal||0}`);
-            }
-          }catch(e){toast.error(`Рассылка: ${String((e as Error).message||e).slice(0,100)}`)}
-        }
-        }
-        try{
-          if(Date.now()-lastInboxPollAt.current>15_000){
-            lastInboxPollAt.current=Date.now();
-            const inbox=await api({action:'poll_dm_replies'});
-            if(inbox?.opened>0){
-              toast.success(`Клиент ответил — откройте «Переписки»: ${inbox.names?.slice(0,3).join(', ')||inbox.opened}`);
-              await refresh();
-            }
-          }
-        }catch{/* */}
-      }finally{
-        taskPollLock.current=false;
+      }catch{/* следующий тик повторит */}
+      finally{
+        inboxPollLock.current=false;
       }
     };
     const id=window.setInterval(()=>{void tick()},5_000);
     const first=window.setTimeout(()=>{void tick()},1_000);
     return()=>{window.clearInterval(id);window.clearTimeout(first)};
-  },[telegramConnected]);
-
-  async function startAudienceTask(id:string){
-    if(!telegramConnected){toast.error('Запустите: npm run dev');return}
-    if(busyRef.current)return;
-    pausedTasksRef.current.delete(id);
-    setBusy(true);busyRef.current=true;
-    try{
-      const started=await api({action:'start_audience',id});
-      if(started.task)replaceTaskData(id,started.task);
-      toast.success('Сбор аудитории запущен');
-      void api({action:'tick_audience',id}).then(r=>{applyTickTask(id,r.task)}).catch(()=>{/* poller повторит */});
-    }catch(e){toast.error((e as Error).message)}finally{setBusy(false);busyRef.current=false}
-  }
-  async function pauseAudienceTask(id:string){
-    if(busyRef.current)return;
-    pausedTasksRef.current.add(id);
-    const cur=recordsRef.current.find(x=>x.id===id);
-    if(cur)replaceTaskData(id,{...cur.data,status:'paused',nextAt:'',error:''});
-    setBusy(true);busyRef.current=true;
-    try{
-      const r=await api({action:'pause_audience',id});
-      if(r.task)replaceTaskData(id,r.task);
-      toast.message('Сбор на паузе');
-    }catch(e){
-      pausedTasksRef.current.delete(id);
-      toast.error((e as Error).message);
-      await refresh();
-    }finally{setBusy(false);busyRef.current=false}
-  }
-  async function exportAudienceTask(id:string){
-    setBusy(true);busyRef.current=true;
-    try{
-      const r=await api({action:'export_audience',id,format:'csv'});
-      const blob=new Blob([r.csv||''],{type:'text/csv;charset=utf-8'});
-      const a=document.createElement('a');
-      a.href=URL.createObjectURL(blob);
-      a.download=`audience-${id.slice(0,8)}.csv`;
-      a.click();
-      URL.revokeObjectURL(a.href);
-      toast.success(`Экспорт: ${r.count||0} записей`);
-    }catch(e){toast.error((e as Error).message)}finally{setBusy(false);busyRef.current=false}
-  }
-  async function startInviteTask(id:string){
-    if(!telegramConnected){toast.error('Запустите: npm run dev');return}
-    if(busyRef.current)return;
-    pausedTasksRef.current.delete(id);
-    setBusy(true);busyRef.current=true;
-    try{
-      const started=await api({action:'start_invite',id});
-      if(started.task)replaceTaskData(id,started.task);
-      toast.success(started.already?'Инвайтинг уже запущен':'Инвайтинг запущен');
-      void api({action:'tick_invite',id}).then(r=>{applyTickTask(id,r.task)}).catch(()=>{/* poller повторит */});
-    }catch(e){toast.error((e as Error).message)}finally{setBusy(false);busyRef.current=false}
-  }
-  async function pauseInviteTask(id:string){
-    if(busyRef.current)return;
-    pausedTasksRef.current.add(id);
-    const cur=recordsRef.current.find(x=>x.id===id);
-    if(cur)replaceTaskData(id,{...cur.data,status:'paused',nextAt:'',tickLockUntil:'',error:''});
-    setBusy(true);busyRef.current=true;
-    try{
-      const r=await api({action:'pause_invite',id});
-      if(r.task)replaceTaskData(id,r.task);
-      toast.message('Инвайт на паузе');
-    }catch(e){
-      pausedTasksRef.current.delete(id);
-      toast.error((e as Error).message);
-      await refresh();
-    }finally{setBusy(false);busyRef.current=false}
-  }
-  async function startMailingTask(id:string){
-    if(!telegramConnected){toast.error('Запустите: npm run dev');return}
-    if(busyRef.current)return;
-    pausedTasksRef.current.delete(id);
-    setBusy(true);busyRef.current=true;
-    try{
-      const started=await api({action:'start_mailing',id});
-      if(started.task)replaceTaskData(id,started.task);
-      if(started.task?.status==='paused'){
-        toast.error(started.task.error||'Рассылка сразу остановилась — смотрите лог');
-        setTaskLog({title:started.task.name||'Рассылка',log:started.task.log||[],taskId:id});
-        return;
-      }
-      toast.success(started.already?'Рассылка уже запущена':'Рассылка запущена');
-      try{
-        const r=await api({action:'tick_mailing',id});
-        applyTickTask(id,r.task);
-        if(r.stopped){
-          toast.error(r.task?.error||'Рассылка остановлена — откройте лог');
-          setTaskLog({title:r.task?.name||'Рассылка',log:r.task?.log||[],taskId:id});
-        }else if(r.needAi){
-          toast.message('Ждём AI-тексты для рассылки…');
-        }else if(r.sent){
-          toast.success(`Отправлено: ${r.sent}`);
-        }else if(r.completed){
-          toast.success('Рассылка завершена');
-        }
-      }catch(e){
-        toast.error(`Тик рассылки: ${(e as Error).message}`);
-      }
-    }catch(e){toast.error((e as Error).message)}finally{setBusy(false);busyRef.current=false}
-  }
-  async function pauseMailingTask(id:string){
-    if(busyRef.current)return;
-    pausedTasksRef.current.add(id);
-    const cur=recordsRef.current.find(x=>x.id===id);
-    if(cur)replaceTaskData(id,{...cur.data,status:'paused',nextAt:'',tickLockUntil:'',error:''});
-    setBusy(true);busyRef.current=true;
-    try{
-      const r=await api({action:'pause_mailing',id});
-      if(r.task)replaceTaskData(id,r.task);
-      toast.message('Рассылка на паузе');
-    }catch(e){
-      pausedTasksRef.current.delete(id);
-      toast.error((e as Error).message);
-      await refresh();
-    }finally{setBusy(false);busyRef.current=false}
-  }
+  },[telegramConnected,refresh]);
 
   /** Скан сразу после вступления: ретраи при лаге Telegram (need_join). */
   async function scanAfterJoin(id:string,name:string){
@@ -983,359 +710,7 @@ function WorkspaceHome(){
     throw lastErr||new Error(`${name}: скан не удался после вступления`);
   }
 
-  /** Ожидание холда с обновлением очереди на UI + сервере. */
-  async function holdJoin(sec:number,id:string,name:string){
-    const total=Math.max(1,sec);
-    setJoinQueueSync(prev=>prev.map(q=>q.id===id?{...q,status:'waiting',waitSec:total,waitTotal:total,name}:q));
-    void persistJoinState(id,'waiting');
-    setJoinProgress({current:0,total:1,waitSec:total,name});
-    for(let left=total;left>0;left--){
-      await sleep(1000);
-      setJoinQueueSync(prev=>prev.map(q=>q.id===id?{...q,waitSec:left-1,status:left-1<=0?'queued':'waiting'}:q));
-      setJoinProgress({current:0,total:1,waitSec:left-1,name});
-    }
-    void persistJoinState(id,'queued');
-    setJoinProgress(null);
-  }
-
-  /** Вступление с учётом отлежки (сервер + ожидание waitSec). */
-  async function joinGroupPaced(id:string,name?:string){
-    for(let attempt=0;attempt<8;attempt++){
-      try{
-        setJoinQueueSync(prev=>prev.map(q=>q.id===id?{...q,status:'joining'}:q));
-        void persistJoinState(id,'joining');
-        const res=await api({action:'join_group',id});
-        if(res.rotatedAccount)toast.message('Ферма: сменили аккаунт — дневной лимит или пауза');
-        return res;
-      }catch(e){
-        const err=e as Error & {data?:any;status?:number};
-        if(err.data?.farmExhausted||err.data?.limitReached)throw err;
-        const wait=Number(err.data?.waitSec||0);
-        if(wait>0&&(err.data?.pace||err.data?.flood||err.status===429)){
-          toast.message(`Холд ${Math.ceil(wait/60)} мин — антибан`);
-          await holdJoin(Math.min(wait,JOIN_GAP_DEFAULT_SEC+120),id,name||'Группа');
-          continue;
-        }
-        throw e;
-      }
-    }
-    throw new Error('Не удалось вступить: превышено число попыток ожидания');
-  }
-
-  /** Фоновая очередь: вступление → холд → скан. Состояние в БД (переживает F5). */
-  async function startBackgroundJoins(items:{id:string;name:string}[],opts?:{resume?:boolean}){
-    if(!items.length)return;
-    try{await api({action:'heal_group_join_state'})}catch{/* */}
-    if(!telegramConnected){
-      toast.error('Запустите: npm run dev');
-      return;
-    }
-    let toAdd=items.filter(i=>{
-      if(!i.id)return false;
-      const g=list('group').find(x=>x.id===i.id)||records.find(x=>x.id===i.id);
-      if(g&&groupAlreadyIn(g)){
-        if(String(g.data.joinState||'')){
-          patchGroupLocal(g.id,{joinState:'',joinStateAt:'',joinStateError:''});
-          void persistJoinState(g.id,'');
-        }
-        return false;
-      }
-      return true;
-    });
-    if(!toAdd.length){
-      if(!opts?.resume)toast.message('Эти группы уже покрыты — вступление не нужно');
-      return;
-    }
-    if(!opts?.resume){
-      try{
-        const enq=await api({action:'enqueue_joins',groupIds:toAdd.map(i=>i.id)});
-        if(Array.isArray(enq.items)){
-          toAdd=enq.items.map((i:{id:string;name:string})=>({id:i.id,name:i.name||'Группа'}));
-          if(!toAdd.length){
-            toast.message('Эти группы уже покрыты — вступление не нужно');
-            return;
-          }
-        }
-      }catch(e){
-        toast.error((e as Error).message||'Не удалось поставить в очередь');
-        return;
-      }
-    }
-    const pending=joinWorkRef.current;
-    const seen=new Set(pending.map(p=>p.id));
-    const fresh=toAdd.filter(i=>i.id&&!seen.has(i.id));
-    for(const i of fresh){pending.push(i);seen.add(i.id)}
-    if(!fresh.length){
-      if(joinRunnerLock.current)toast.message('Эти группы уже в очереди вступлений');
-      return;
-    }
-    setJoinQueueSync(prev=>{
-      const byId=new Map(prev.map(q=>[q.id,q]));
-      for(const i of fresh){
-        if(!byId.has(i.id)||['done','error','need_url'].includes(byId.get(i.id)!.status)){
-          byId.set(i.id,{id:i.id,name:i.name,status:'queued'});
-        }
-      }
-      return [...byId.values()];
-    });
-    for(const i of fresh){
-      patchGroupLocal(i.id,{joinState:'queued',joinStateAt:new Date().toISOString(),joinStateError:''});
-    }
-    if(!opts?.resume)navigate('Группы и каналы');
-    if(joinRunnerLock.current){
-      toast.message(`В очередь +${fresh.length}`);
-      return;
-    }
-    joinRunnerLock.current=true;
-    if(!opts?.resume)toast.message(`Вступаем: ${fresh.length} · пауза ~${Math.round(JOIN_GAP_DEFAULT_SEC/60)} мин между чатами одного аккаунта`);
-    else toast.message(`Продолжаем вступление: ${fresh.length} в очереди`);
-    let onboarded=0,leads=0,failed=0;
-    try{
-      while(joinWorkRef.current.length){
-        const g=joinWorkRef.current.shift()!;
-        saveJoinQueue(joinQueueRef.current,joinWorkRef.current);
-        try{
-          const cur=list('group').find(x=>x.id===g.id)||records.find(x=>x.id===g.id);
-          if(cur&&groupAlreadyIn(cur)){
-            const pending=cur.data.membership==='pending'||cur.data.status==='pending';
-            patchGroupLocal(g.id,{
-              joinState:'',
-              joinStateAt:'',
-              joinStateError:'',
-              membership:pending?'pending':'joined',
-              status:pending?'pending':'active',
-              joinedAt:cur.data.joinedAt||new Date().toISOString(),
-            });
-            setJoinQueueSync(prev=>prev.map(q=>q.id===g.id?{...q,status:'done',error:'Уже в группе'}:q));
-            void persistJoinState(g.id,'');
-            onboarded++;
-            continue;
-          }
-          setJoinQueueSync(prev=>prev.map(q=>q.id===g.id?{...q,status:'joining',name:g.name,error:undefined}:q));
-          const join=await joinGroupPaced(g.id,g.name);
-          const joinKind=String(join.result?.join||'');
-          const joinedOk=!!join.ok||joinKind==='already'||joinKind==='requested';
-          if(!joinedOk){
-            throw new Error(join.result?.error||join.error||'Не удалось вступить в группу');
-          }
-          if(join.group){
-            patchGroupLocal(g.id,{...join.group,joinState:'',joinStateAt:'',joinStateError:''});
-          }else if(joinKind==='requested'){
-            patchGroupLocal(g.id,{status:'pending',membership:'pending',error:'',joinState:'',joinStateAt:'',joinStateError:''});
-          }else{
-            patchGroupLocal(g.id,{status:'active',membership:'joined',joinedAt:new Date().toISOString(),error:'',joinState:'',joinStateAt:'',joinStateError:''});
-          }
-          if(joinKind==='requested'){
-            setJoinQueueSync(prev=>prev.map(q=>q.id===g.id?{...q,status:'done',error:'Заявка отправлена'}:q));
-            toastOnboard(g.name,{joined:'requested',scanned:0,matched:0,added:0,aiUsed:false,title:''});
-            onboarded++;
-            await refresh();
-          }else{
-            setJoinQueueSync(prev=>prev.map(q=>q.id===g.id?{...q,status:'scanning'}:q));
-            void persistJoinState(g.id,'scanning');
-            let scan:any;
-            try{
-              scan=await scanAfterJoin(g.id,g.name);
-            }catch(scanErr){
-              const scanData=(scanErr as Error & {data?:any})?.data;
-              // Soft need_join только при soft/preserved от API (не любой needJoin)
-              const keepJoined=!!scanData?.soft||!!scanData?.preserved;
-              void persistJoinState(g.id,'');
-              if(keepJoined){
-                patchGroupLocal(g.id,{
-                  status:'active',
-                  membership:'joined',
-                  joinedAt:new Date().toISOString(),
-                  joinState:'',
-                  joinStateAt:'',
-                  joinStateError:'',
-                  error:'',
-                });
-                setJoinQueueSync(prev=>prev.map(q=>q.id===g.id?{...q,status:'done',error:`Вступили · скан в автообходе`}:q));
-                toast.message(`${g.name}: вступили, скан подхватит автообход`);
-                onboarded++;
-              }else{
-                patchGroupLocal(g.id,{
-                  status:'setup',
-                  membership:'none',
-                  joinedAt:'',
-                  joinState:'queued',
-                  joinStateAt:new Date().toISOString(),
-                  joinStateError:String(scanData?.error||(scanErr as Error).message||'').slice(0,200),
-                  error:String(scanData?.error||(scanErr as Error).message||'').slice(0,200),
-                });
-                setJoinQueueSync(prev=>prev.map(q=>q.id===g.id?{...q,status:'error',error:String(scanData?.error||'нужно вступить снова').slice(0,120)}:q));
-                toast.message(`${g.name}: скан не подтвердил членство — снова в очередь`);
-              }
-              await refresh();
-              continue;
-            }
-            const added=scan.added||0;
-            leads+=added;
-            onboarded++;
-            patchGroupLocal(g.id,{joinState:'',joinStateAt:'',joinStateError:''});
-            setJoinQueueSync(prev=>prev.map(q=>q.id===g.id?{...q,status:'done',added}:q));
-            toastOnboard(g.name,{
-              joined:joinKind==='already'?'already':'joined',
-              scanned:scan.scanned||0,
-              matched:scan.matched??added,
-              added,
-              aiUsed:!!scan.aiUsed,
-              title:scan.title||'',
-              metrics:scan.metrics||null,
-              addedByTemp:scan.addedByTemp||null,
-            });
-            await refresh();
-          }
-        }catch(err){
-          const data=(err as Error & {data?:any}).data;
-          failed++;
-          const msg=(err as Error).message;
-          setJoinQueueSync(prev=>prev.map(q=>q.id===g.id?{...q,status:'error',error:msg}:q));
-          patchGroupLocal(g.id,{status:'error',error:msg,joinState:'',joinStateAt:'',joinStateError:msg});
-          void persistJoinState(g.id,'',msg);
-          toast.error(`${g.name}: ${msg}`);
-          await refresh();
-          if(data?.farmExhausted){
-            toast.error('Ферма: дневной лимит на всех аккаунтах — очередь вступлений остановлена');
-            for(const rest of joinWorkRef.current){
-              setJoinQueueSync(prev=>prev.map(q=>q.id===rest.id?{...q,status:'error',error:'Лимит фермы'}:q));
-              void persistJoinState(rest.id,'','Лимит фермы');
-            }
-            joinWorkRef.current=[];
-            break;
-          }
-        }
-        if(joinWorkRef.current.length){
-          const next=joinWorkRef.current[0];
-          const prevAcc=list('group').find(x=>x.id===g.id)?.data.accountId
-            || records.find(x=>x.id===g.id)?.data.accountId;
-          const nextAcc=list('group').find(x=>x.id===next.id)?.data.accountId
-            || records.find(x=>x.id===next.id)?.data.accountId;
-          if(prevAcc&&nextAcc&&prevAcc===nextAcc){
-            await holdJoin(JOIN_GAP_DEFAULT_SEC,next.id,next.name);
-          }else if(prevAcc&&nextAcc&&prevAcc!==nextAcc){
-            await holdJoin(8,next.id,next.name);
-          }else{
-            await holdJoin(JOIN_GAP_DEFAULT_SEC,next.id,next.name);
-          }
-        }
-      }
-      if(onboarded)toast.success(`Готово: ${onboarded} групп, +${leads} лидов${failed?` · ошибок ${failed}`:''}`);
-      else if(failed)toast.error(`Не удалось подключить: ${failed}`);
-    }finally{
-      joinRunnerLock.current=false;
-      setJoinProgress(null);
-      saveJoinQueue(joinQueueRef.current,joinWorkRef.current);
-      if(autoRescanPending.current&&telegramConnected&&settings?.data.autoRescanEnabled!==false){
-        autoRescanPending.current=false;
-        window.setTimeout(()=>{
-          if(joinRunnerLock.current||autoRescanLock.current)return;
-          void (async()=>{
-            autoRescanLock.current=true;
-            setAutoRescanRunning(true);
-            try{
-              const r=await rescanAllGroups({quiet:true});
-              try{await api({action:'mark_auto_rescan'})}catch{/* */}
-              if(r.added>0)toast.success(`Автообход: +${r.added} лидов`);
-            }catch{/* */}
-            finally{
-              autoRescanLock.current=false;
-              setAutoRescanRunning(false);
-            }
-          })();
-        },8_000);
-      }
-    }
-  }
-
-  // Восстановление очереди после F5 из БД (+ localStorage как запасной)
-  useEffect(()=>{
-    if(loading||joinResumeDone.current||joinRunnerLock.current)return;
-    const fromDb=records
-      .filter(r=>r.kind==='group'&&JOIN_ACTIVE_STATES.has(String(r.data.joinState||''))&&!groupAlreadyIn(r))
-      .map(r=>({id:r.id,name:String(r.data.name||'Группа')}));
-    // Сбросить залипший joinState у уже вступивших (иначе UI крутит «В очереди»)
-    for(const r of records){
-      if(r.kind!=='group')continue;
-      if(!JOIN_ACTIVE_STATES.has(String(r.data.joinState||'')))continue;
-      if(!groupAlreadyIn(r))continue;
-      patchGroupLocal(r.id,{joinState:'',joinStateAt:'',joinStateError:''});
-      void persistJoinState(r.id,'');
-    }
-    const saved=loadJoinQueue();
-    const fromLs=saved.work.length
-      ?saved.work
-      :saved.queue.filter(q=>JOIN_ACTIVE_STATES.has(q.status)).map(q=>({id:q.id,name:q.name}));
-    const byId=new Map<string,{id:string;name:string}>();
-    for(const i of [...fromDb,...fromLs]){if(i.id)byId.set(i.id,i)}
-    const pendingWork=[...byId.values()];
-    if(!pendingWork.length){
-      if(records.some(r=>r.kind==='group'))joinResumeDone.current=true;
-      return;
-    }
-    const queueUi:JoinQItem[]=pendingWork.map(w=>{
-      const g=records.find(r=>r.id===w.id);
-      const st=(g?.data.joinState||'queued') as JoinQItem['status'];
-      return {id:w.id,name:w.name,status:JOIN_ACTIVE_STATES.has(st)?st:'queued'};
-    });
-    setJoinQueue(prev=>prev.length?prev:queueUi);
-    if(!telegramConnected)return;
-    joinResumeDone.current=true;
-    joinWorkRef.current=[];
-    void startBackgroundJoins(pendingWork,{resume:true});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[telegramConnected,loading,records]);
-
-  /** Автопочинка: frozen/offline аккаунты → живые + вступление (чтобы лиды не останавливались). */
-  useEffect(()=>{
-    if(!telegramConnected||loading)return;
-    let cancelled=false;
-    const heal=async()=>{
-      if(joinRunnerLock.current||busyRef.current)return;
-      try{
-        const r=await api({action:'heal_dead_group_accounts'});
-        if(cancelled)return;
-        if(r.reassigned>0&&Array.isArray(r.items)&&r.items.length){
-          toast.message(`Автосмена аккаунтов: ${r.reassigned} групп → вступление`);
-          await refresh();
-          void startBackgroundJoins(r.items.map((i:{id:string;name?:string})=>({id:i.id,name:i.name||'Группа'})));
-        }else if(Array.isArray(r.items)&&r.items.length){
-          await refresh();
-          void startBackgroundJoins(r.items.map((i:{id:string;name?:string})=>({id:i.id,name:i.name||'Группа'})));
-        }
-      }catch{/* */}
-    };
-    const first=window.setTimeout(()=>{void heal()},8_000);
-    const id=window.setInterval(()=>{void heal()},5*60_000);
-    return()=>{cancelled=true;window.clearTimeout(first);window.clearInterval(id)};
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[telegramConnected,loading]);
-
-  /** Вступление + скан лидов по сохранённой группе. */
-  async function onboardGroup(id:string,name?:string){
-    if(!telegramConnected)throw new Error('Запустите: npm run dev');
-    const join=await joinGroupPaced(id,name);
-    if(join.result?.join==='requested'){
-      return {joined:'requested' as const,scanned:0,matched:0,added:0,aiUsed:false,title:''};
-    }
-    if(!join.ok&&join.result?.join!=='already'){
-      throw new Error(join.result?.error||join.error||'Не удалось вступить в группу');
-    }
-    const scan=await scanAfterJoin(id,name||'Группа');
-    return {
-      joined:(join.result?.join==='already'?'already':'joined') as 'already'|'joined',
-      scanned:scan.scanned||0,
-      matched:scan.matched??scan.added??0,
-      added:scan.added||0,
-      aiUsed:!!scan.aiUsed,
-      title:scan.title||'',
-      metrics:scan.metrics||null,
-      addedByTemp:scan.addedByTemp||null,
-    };
-  }
-
-  function toastOnboard(name:string,r:Awaited<ReturnType<typeof onboardGroup>>){
+  function toastOnboard(name:string,r:OnboardResult){
     if(r.joined==='requested'){
       toast.message(`${name}: заявка на вступление отправлена — скан после одобрения`);
       return;
@@ -1347,70 +722,13 @@ function WorkspaceHome(){
   async function save(e:React.FormEvent){
     e.preventDefault();if(!modal)return;setBusy(true);setFormError('');
     try{
-      const shouldOnboard=modal.kind==='group'&&!!form.accountId&&!!form.url&&!isCatalogPlaceholderUrl(form.url)&&(onboardAfterSave||!modal.item);
+      const readyToJoin=modal.kind==='group'&&!!form.accountId&&!!form.url&&!isCatalogPlaceholderUrl(form.url);
       if(modal.kind==='group'&&isCatalogPlaceholderUrl(form.url||'')){
         setFormError('Это шаблон каталога. Вставьте реальную ссылку t.me/… или инвайт.');
         setBusy(false);
         return;
       }
-      if(modal.kind==='audience_task'){
-        if(!form.url?.trim()){setFormError('Укажите источник (@ или t.me/…)');setBusy(false);return}
-        if(!form.accountIds?.length){setFormError('Выберите хотя бы один аккаунт');setBusy(false);return}
-      }
-      if(modal.kind==='invite_task'){
-        if(!form.targetUrl?.trim()){setFormError('Укажите целевую группу');setBusy(false);return}
-        if(!form.audienceTaskId){setFormError('Выберите базу аудитории');setBusy(false);return}
-        if(!form.accountIds?.length){setFormError('Выберите хотя бы один аккаунт');setBusy(false);return}
-      }
-      if(modal.kind==='mailing_task'){
-        if(!form.accountIds?.length){setFormError('Выберите хотя бы один аккаунт');setBusy(false);return}
-        if(form.sourceKind==='audience'&&!form.audienceTaskId){setFormError('Выберите базу аудитории');setBusy(false);return}
-        if(form.contentMode==='template'&&!String(form.templateText||'').trim()){setFormError('Укажите текст или Spintax');setBusy(false);return}
-        if(form.deliveryMode==='chat'&&form.sourceKind!=='leads'){setFormError('Режим «в чат» только для лидов');setBusy(false);return}
-      }
-      const rescanAfter=modal.kind==='settings'&&!!form._rescanAfterSave;
-      const autoStartAudience=modal.kind==='audience_task'&&form.autoStart!==false;
-      const autoStartInvite=modal.kind==='invite_task'&&form.autoStart!==false;
-      const autoStartMailing=modal.kind==='mailing_task'&&form.autoStart!==false;
       const payload={...form};
-      if(modal.kind==='audience_task'){
-        payload.url=normalizeTgRef(payload.url||'');
-        payload.name=payload.name||displayTgHandle(payload.url);
-        const statusFilters=normalizeStatusFilters(payload.statusFilters,payload.statusFilter);
-        payload.statusFilters=statusFilters;
-        payload.statusFilter=statusFilters.length===1?statusFilters[0]:'all';
-        if(!modal.item)payload.status=autoStartAudience?'scheduled':'draft';
-        // Журнал на сервере; с формы не гоняем 100+ строк (ломало save: «Проверьте поля: log»).
-        if(modal.item)delete payload.log;
-        else payload.log=[];
-      }
-      if(modal.kind==='invite_task'){
-        payload.targetUrl=normalizeTgRef(payload.targetUrl||'');
-        payload.name=payload.name||displayTgHandle(payload.targetUrl);
-        if(!modal.item)payload.status=autoStartInvite?'scheduled':'draft';
-        if(modal.item)delete payload.log;
-        else payload.log=[];
-      }
-      if(modal.kind==='mailing_task'){
-        payload.name=payload.name||(payload.sourceKind==='leads'?'Рассылка лидам':'Рассылка аудитории');
-        if(payload.sourceKind==='leads')payload.audienceTaskId=payload.audienceTaskId||'';
-        if(!modal.item)payload.status=autoStartMailing?'scheduled':'draft';
-        if(modal.item){
-          delete payload.log;
-          delete payload.deliveries;
-          delete payload.deliveredKeys;
-          delete payload.deferredUntil;
-          delete payload.aiPool;
-        }else{
-          payload.log=[];
-        }
-      }
-      if(modal.kind==='settings'){
-        delete payload._rescanAfterSave;
-        payload.provider='deepseek';
-        payload.model='deepseek-chat';
-        payload.apiBase='https://api.deepseek.com';
-      }
       // Telegram about ≤70; логин без @
       if(modal.kind==='account'){
         if(payload.about)payload.about=String(payload.about).slice(0,70);
@@ -1421,8 +739,6 @@ function WorkspaceHome(){
         if(payload.phone&&!/^\+/.test(String(payload.phone)))payload.phone=`+${String(payload.phone).replace(/\D/g,'')}`;
       }
       if(modal.kind==='group')payload.url=canonicalizeTgUrl(payload.url||'');
-      if(modal.kind==='audience_task')payload.url=canonicalizeTgUrl(payload.url||'');
-      if(modal.kind==='invite_task')payload.targetUrl=canonicalizeTgUrl(payload.targetUrl||'');
       const dup=findDuplicate(modal.kind,payload,records.filter(r=>r.kind===modal.kind),modal.item?.id);
       if(dup){
         setFormError(duplicateReason(modal.kind,payload,dup.data)||'Такая запись уже есть');
@@ -1430,20 +746,15 @@ function WorkspaceHome(){
         return;
       }
       // Аккаунт: сначала кабинет (быстро). @username в Telegram — фоном, иначе UI зависает на воркере/автообходе.
-      const saved=await api({action:'save',kind:modal.kind,id:modal.item?.id,data:payload,secret:modal.kind==='settings'?'':secret,clearSecret:modal.kind==='settings'?false:clearSecret,provisionUsername:false});
-      const groupId=saved.id||modal.item?.id;
+      const saved=await api({action:'save',kind:modal.kind,id:modal.item?.id,data:payload,secret,clearSecret,provisionUsername:false,...(modal.kind==='group'&&!modal.item?.id&&activeProjectId?{projectId:activeProjectId}:{})});
       const newAccountId=!modal.item&&modal.kind==='account'?String(saved.id||''):'';
       const desiredNick=String(payload.username||saved.username||'').replace(/^@/,'');
-      setModal(null);setSecret('');setOnboardAfterSave(false);
-      if(shouldOnboard&&groupId){
+      setModal(null);setSecret('');
+      if(modal.kind==='group'){
         await refresh();
-        toast.success('Группа сохранена — подключение в фоне');
-        void startBackgroundJoins([{id:groupId,name:form.name||'Группа'}]);
-      }else if(rescanAfter){
-        await refresh();
-        toast.success('Настройки сохранены — запускаем обход');
-        const r=await rescanAllGroups({force:true});
-        toast.success(`Обход: ${r.scanned} групп, +${r.added} лидов`);
+        toast.success(readyToJoin&&!groupAlreadyIn({id:'',kind:'group',data:payload,hasSecret:false,created:''})
+          ?'Группа сохранена — нажмите «Вступить» в строке группы'
+          :'Изменения сохранены');
       }else if(modal.kind==='account'){
         await refresh();
         if(newAccountId&&secret){
@@ -1458,29 +769,6 @@ function WorkspaceHome(){
             }catch(e){toast.error(`Ник не записался: ${(e as Error).message.slice(0,160)}`)}
           })();
         }else toast.success(modal.item?.hasSecret?'Аккаунт сохранён в кабинете':'Аккаунт сохранён');
-      }else if(modal.kind==='audience_task'){
-        const taskId=saved.id||modal.item?.id;
-        await refresh();
-        setInviteWizardStep(1);
-        if(autoStartAudience&&taskId){
-          toast.success('Задача сохранена — запускаем сбор');
-          void startAudienceTask(taskId);
-        }else toast.success('Задача сбора сохранена');
-      }else if(modal.kind==='invite_task'){
-        const taskId=saved.id||modal.item?.id;
-        await refresh();
-        setInviteWizardStep(1);
-        if(autoStartInvite&&taskId){
-          toast.success('Задача сохранена — запускаем инвайт');
-          void startInviteTask(taskId);
-        }else toast.success('Задача инвайта сохранена');
-      }else if(modal.kind==='mailing_task'){
-        const taskId=saved.id||modal.item?.id;
-        await refresh();
-        if(autoStartMailing&&taskId){
-          toast.success('Задача сохранена — запускаем рассылку');
-          void startMailingTask(taskId);
-        }else toast.success('Задача рассылки сохранена');
       }else{
         await refresh();
         toast.success('Изменения сохранены');
@@ -1494,7 +782,6 @@ function WorkspaceHome(){
       await refresh();
       setDeleting(null);
       if(deleting.kind==='group'&&r.leadsRemoved)toast.success(`Группа удалена · лидов снято: ${r.leadsRemoved}`);
-      else if(deleting.kind==='audience_task'&&r.usersRemoved)toast.success(`База удалена · участников: ${r.usersRemoved}`);
       else toast.success('Запись удалена');
     }
     catch(e){toast.error((e as Error).message)}finally{setBusy(false)}
@@ -1515,34 +802,56 @@ function WorkspaceHome(){
     setDetail(item);
     setChatMode('dm');
     setChatText(item.data.draft||'');
-    const alreadyViewed=!!item.data.viewed;
-    const needsManager=!!item.data.needsManager;
-    if(alreadyViewed&&!needsManager)return;
-    const viewedAt=item.data.viewedAt||new Date().toISOString();
-    setRecords(prev=>prev.map(r=>r.id===item.id?{...r,data:{...r.data,viewed:true,viewedAt,needsManager:false}}:r));
-    setDetail(d=>d&&d.id===item.id?{...d,data:{...d.data,viewed:true,viewedAt,needsManager:false}}:d);
+    const patch=markLeadOpened(item.data,new Date().toISOString());
+    if(!patch)return;
+    const before={viewed:item.data.viewed,viewedAt:item.data.viewedAt,needsManager:item.data.needsManager};
+    setRecords(prev=>prev.map(r=>r.id===item.id?{...r,data:{...r.data,...patch}}:r));
+    setDetail(d=>d&&d.id===item.id?{...d,data:{...d.data,...patch}}:d);
     try{
       await api({action:'mark_lead_viewed',id:item.id});
-    }catch{/* не блокируем просмотр */}
+    }catch(e){
+      // Просмотр не блокируем, но и не показываем «просмотрено», если сервер не записал (403 у наблюдателя)
+      setRecords(prev=>prev.map(r=>r.id===item.id?{...r,data:{...r.data,...before}}:r));
+      setDetail(d=>d&&d.id===item.id?{...d,data:{...d.data,...before}}:d);
+      toast.error(`Отметка «просмотрено» не сохранена: ${(e as Error).message}`);
+    }
   }
 
-  async function sendLeadReply(){
+  /** Один ключ на одно сообщение: повтор после таймаута узнаётся сервером и не уходит дублем. */
+  function replySendKey(leadId:string,mode:string,text:string){
+    const cur=replySendKeyRef.current;
+    if(cur&&cur.leadId===leadId&&cur.mode===mode&&cur.text===text)return cur.key;
+    const key=crypto.randomUUID();
+    replySendKeyRef.current={leadId,mode,text,key};
+    return key;
+  }
+
+  async function sendLeadReply(force=false){
     if(!detail||!chatText.trim())return;
     if(!telegramConnected){toast.error('Запустите: npm run dev');return}
+    const text=chatText.trim();
+    const mode=chatMode;
+    const clientMsgId=replySendKey(detail.id,mode,text);
     setBusy(true);
     try{
-      const r=await api({action:'send_lead_message',id:detail.id,mode:chatMode,text:chatText.trim()});
-      const next={...detail,data:r.lead||{...detail.data,draft:chatText,replies:[...(detail.data.replies||[]),{text:chatText,mode:chatMode,at:new Date().toISOString(),ok:true,error:'',link:r.link||'',messageId:r.messageId||''}]}};
-      setDetail(next);
+      const r=await api({action:'send_lead_message',id:detail.id,mode,text,clientMsgId,force});
+      if(r.lead)setDetail({...detail,data:r.lead});
       await refresh();
       toast.success(
-        chatMode==='dm'
+        mode==='dm'
           ?'Отправлено в личку'
           :(r.link?'Отправлено в чат — ссылка на ответ сохранена':'Отправлено в чат'),
       );
+      replySendKeyRef.current=null;
       setChatText('');
     }catch(e){
-      toast.error((e as Error).message);
+      const err=e as Error&{status?:number;data?:{unknown?:boolean;lead?:RecordItem['data']}};
+      if(err.data?.lead)setDetail({...detail,data:err.data.lead});
+      if(err.data?.unknown){
+        toast.error(err.message,{action:{label:'Отправить ещё раз',onClick:()=>{void sendLeadReply(true)}}});
+      }else{
+        toast.error(err.message);
+      }
       await refresh();
     }finally{setBusy(false)}
   }
@@ -1550,40 +859,31 @@ function WorkspaceHome(){
   async function rescanAllGroups(opts?:{quiet?:boolean;force?:boolean;limit?:number}){
     const quiet=!!opts?.quiet;
     const pack=await api({action:'rescan_groups',force:!!opts?.force,limit:opts?.limit??40});
-    // Автопочинка мёртвых аккаунтов → очередь вступлений
-    if(Array.isArray(pack.rejoinItems)&&pack.rejoinItems.length){
-      const items=pack.rejoinItems.map((i:{id:string;name?:string})=>({id:i.id,name:i.name||'Группа'}));
-      if(Number(pack.reassigned)>0){
-        if(!quiet)toast.message(`Переназначили ${pack.reassigned} групп (мёртвый аккаунт) — вступаем`);
-        else toast.message(`Авто: ${pack.reassigned} групп на живые аккаунты → вступление`);
-      }
-      void startBackgroundJoins(items);
-    }
     const ids:string[]=pack.groupIds||[];
     const minutes=Number(pack.rescanMinutes)||Number(settings?.data.autoRescanMinutes)||30;
-    if(!ids.length){
-      if(!quiet&&!(pack.rejoinItems||[]).length)toast.message(`Нет групп к обходу (лимит: раз в ${minutes} мин)`);
-      return {scanned:0,added:0,skipped:true,due:Number(pack.total)||0,reassigned:Number(pack.reassigned)||0};
+    // Аккаунт группы недоступен: сервер пропускает скан и не подставляет другой аккаунт.
+    const unavailable=Number(pack.unavailableTotal)||0;
+    if(!quiet&&unavailable){
+      const first=Array.isArray(pack.unavailable)&&pack.unavailable[0]?.name?` («${pack.unavailable[0].name}»${unavailable>1?' и др.':''})`:'';
+      toast.error(`Аккаунт недоступен — скан пропущен: ${unavailable} групп${first}. Назначьте рабочий аккаунт.`);
     }
-    let added=0,scanned=0;
-    const rejoin: {id:string;name:string}[]=[];
+    if(!ids.length){
+      if(!quiet&&!unavailable)toast.message(`Нет групп к обходу (лимит: раз в ${minutes} мин)`);
+      return {scanned:0,added:0,skipped:true,due:Number(pack.total)||0};
+    }
+    let added=0,scanned=0,needJoin=0;
     const scanErrors:string[]=[];
     for(const id of ids){
-      if(!opts?.force&&(busyRef.current||joinRunnerLock.current))break;
+      if(!opts?.force&&busyRef.current)break;
       try{
         const r=await api({action:'scan_group',id,force:!!opts?.force});
         if(r.skipped)continue;
-        if(r.rejoinItem?.id){
-          if(r.soft||r.preserved)continue;
-          rejoin.push({id:r.rejoinItem.id,name:r.rejoinItem.name||'Группа'});
-          continue;
-        }
         scanned++;
         added+=r.added||0;
       }catch(err){
         const data=(err as any)?.data;
-        if(data?.rejoinItem?.id){
-          // Soft/preserved — не перекидываем в очередь вступлений
+        // Членство потеряно (409 needJoin): сами не вступаем — группа ждёт ручного «Вступить».
+        if(data?.needJoin){
           if(data?.soft||data?.preserved){
             if(data?.usernameMissing&&!quiet){
               const msg=String(data?.error||(err as Error).message||'').slice(0,120);
@@ -1591,7 +891,7 @@ function WorkspaceHome(){
             }
             continue;
           }
-          rejoin.push({id:data.rejoinItem.id,name:data.rejoinItem.name||'Группа'});
+          needJoin++;
           continue;
         }
         if(data?.usernameMissing||data?.skipped){
@@ -1603,25 +903,13 @@ function WorkspaceHome(){
         if(msg&&!scanErrors.includes(msg))scanErrors.push(msg);
       }
     }
-    if(rejoin.length)void startBackgroundJoins(rejoin);
+    if(!quiet&&needJoin)toast.message(`Нужно вступить заново: ${needJoin} групп — «Вступить» в строке группы`);
     if(!quiet&&scanErrors.length){
       const head=scanErrors[0];
       toast.error(scanErrors.length>1?`Скан: ${head} · ещё ${scanErrors.length-1}`:`Скан: ${head}`);
     }
-    if(scanned>0||added>0)await refresh();
-    return {scanned,added,due:Number(pack.total)||ids.length,reassigned:Number(pack.reassigned)||0};
-  }
-
-  async function rebuildProduct(){
-    setBusy(true);
-    try{
-      const notes=settings?.data.productNotes||form.productNotes||'';
-      await api({action:'rebuild_product',notes});
-      toast.success('Описание продукта пересобрано');
-      const r=await rescanAllGroups({force:true});
-      toast.success(`Обход групп: ${r.scanned}, новых лидов: ${r.added}`);
-    }catch(e){toast.error((e as Error).message)}
-    finally{setBusy(false)}
+    if(scanned>0||added>0||needJoin>0)await refresh();
+    return {scanned,added,due:Number(pack.total)||ids.length};
   }
 
   async function saveGeneralSettings(){
@@ -1633,6 +921,8 @@ function WorkspaceHome(){
         scanDepthDays:Math.max(1,Math.min(90,Number(genSettings.scanDepthDays)||7)),
         autoRescanEnabled:!!genSettings.autoRescanEnabled,
         autoRescanMinutes:Math.max(5,Math.min(180,Number(genSettings.autoRescanMinutes)||30)),
+        judgeDailyCap:clampCap(genSettings.judgeDailyCap,DEFAULT_JUDGE_DAILY_CAP),
+        draftDailyCap:clampCap(genSettings.draftDailyCap,DEFAULT_DRAFT_DAILY_CAP),
         profileName:String(genSettings.profileName||'').slice(0,120),
         profileAbout:String(genSettings.profileAbout||'').slice(0,500),
         profileContact:String(genSettings.profileContact||'').slice(0,200),
@@ -1663,74 +953,16 @@ function WorkspaceHome(){
     finally{setBusy(false)}
   }
 
-  async function setLeadTrainingExclude(item:RecordItem,exclude:boolean){
+  /** «Хороший лид» / «Не лид»: the lead text becomes a judge example of its project (REQ-21); stop words stay untouched. */
+  async function leadFeedback(item:RecordItem,verdict:'good'|'bad'){
     setBusy(true);
     try{
-      const r=await api({action:'set_lead_training_exclude',id:item.id,exclude});
-      const next=r.lead||{...item.data,excludeFromTraining:exclude,viewed:exclude?true:item.data.viewed};
-      setRecords(prev=>prev.map(row=>row.id===item.id?{...row,data:{...row.data,...next}}:row));
-      setDetail(d=>d&&d.id===item.id?{...d,data:{...d.data,...next}}:d);
-      setLeadSelected(prev=>prev.filter(id=>id!==item.id));
-      toast.success(exclude?'Лид исключён из обучения и следующих поисков':'Лид снова учитывается');
-    }catch(e){toast.error((e as Error).message)}
-    finally{setBusy(false)}
-  }
-
-  /** Не лид → сразу стоп-слова в минус + исключить из учёта */
-  async function rejectLeadToStopwords(item:RecordItem){
-    setBusy(true);
-    try{
-      const r=await api({action:'reject_lead_stopwords',id:item.id});
-      await refresh();
-      const added=Array.isArray(r.minusAdded)?r.minusAdded.filter(Boolean):[];
-      if(added.length){
-        toast.success(`В стоп-слова AI: ${added.slice(0,6).join(', ')}${added.length>6?'…':''}`);
-      }else{
-        toast.message('Лид скрыт. Новых стоп-слов не вышло (уже были в минусе).');
+      const r=await api({action:'lead_feedback',id:item.id,verdict});
+      if(r.lead){
+        setRecords(prev=>prev.map(row=>row.id===item.id?{...row,data:{...row.data,...r.lead}}:row));
+        setDetail(d=>d&&d.id===item.id?{...d,data:{...d.data,...r.lead}}:d);
       }
-      setDetail(null);
-    }catch(e){toast.error((e as Error).message)}
-    finally{setBusy(false)}
-  }
-
-  async function bulkExcludeSelected(exclude=true){
-    if(!leadSelected.length)return;
-    setBusy(true);
-    try{
-      const r=await api({action:'bulk_set_lead_training_exclude',ids:leadSelected,exclude});
-      const selected=new Set(leadSelected);
-      const now=new Date().toISOString();
-      setRecords(prev=>prev.map(row=>{
-        if(!selected.has(row.id)||row.kind!=='lead')return row;
-        return {...row,data:{...row.data,excludeFromTraining:exclude,...(exclude&&!row.data.viewed?{viewed:true,viewedAt:now}:{})}};
-      }));
-      setDetail(d=>d&&selected.has(d.id)?{...d,data:{...d.data,excludeFromTraining:exclude,...(exclude?{viewed:true}:{})}}:d);
-      setLeadSelected([]);
-      toast.success(exclude?`Исключено из обучения: ${r.updated||leadSelected.length}`:`Снято исключение: ${r.updated||leadSelected.length}`);
-    }catch(e){toast.error((e as Error).message)}
-    finally{setBusy(false)}
-  }
-
-  function toggleLeadSelected(id:string,on:boolean){
-    setLeadSelected(prev=>on?Array.from(new Set([...prev,id])):prev.filter(x=>x!==id));
-  }
-
-  async function trainFromHot(){
-    setBusy(true);
-    try{
-      const r=await api({action:'train_from_hot'});
-      await refresh();
-      toast.success(`Обучение: +${r.plusAdded||0} плюс, +${r.minusAdded||0} минус по ${r.trainedOn} горячим`);
-    }catch(e){toast.error((e as Error).message)}
-    finally{setBusy(false)}
-  }
-
-  async function trainFromIgnored(){
-    setBusy(true);
-    try{
-      const r=await api({action:'train_from_ignored'});
-      await refresh();
-      toast.success(`Стоп-слова: +${r.minusAdded||0} из ${r.trainedOn} игнорированных`);
+      toast.success(verdict==='good'?'Добавили в примеры хороших лидов проекта':'Добавили в примеры «не лид» проекта');
     }catch(e){toast.error((e as Error).message)}
     finally{setBusy(false)}
   }
@@ -1903,7 +1135,7 @@ function WorkspaceHome(){
               status:'setup',
               format:parsed.format,
               sessionMode:accountImportSessionMode,
-              limits:{...DEFAULT_ACCOUNT_LIMITS,memberInvite:40},
+              limits:{...DEFAULT_ACCOUNT_LIMITS},
               cooldownUntil:'',
               firstName:'',lastName:'',username,about:'',hasPhoto:false,error:'',
             },
@@ -2033,8 +1265,6 @@ function WorkspaceHome(){
     const limits={
       invite:Math.max(0,Math.min(10000,Number(bulkLimits.invite)||0)),
       message:Math.max(0,Math.min(10000,Number(bulkLimits.message)||0)),
-      chat:Math.max(0,Math.min(10000,Number(bulkLimits.chat)||0)),
-      memberInvite:Math.max(0,Math.min(10000,Number(bulkLimits.memberInvite)||0)),
     };
     setBusy(true);
     let ok=0;
@@ -2052,7 +1282,7 @@ function WorkspaceHome(){
       await refresh();
       setBulkLimitsOpen(false);
       setAccountSelected([]);
-      toast.success(`Лимиты: инвайт ${limits.invite} · ЛС ${limits.message} · чат ${limits.chat} · участники ${limits.memberInvite} · ${ok} акк.`);
+      toast.success(`Лимиты: вступления ${limits.invite} · ЛС ${limits.message} · ${ok} акк.`);
     }catch(e){toast.error((e as Error).message)}
     finally{setBusy(false)}
   }
@@ -2061,8 +1291,6 @@ function WorkspaceHome(){
     setBulkLimits({
       invite:TELEGRAM_RECOMMENDED_LIMITS.invite,
       message:TELEGRAM_RECOMMENDED_LIMITS.message,
-      chat:TELEGRAM_RECOMMENDED_LIMITS.chat,
-      memberInvite:TELEGRAM_RECOMMENDED_LIMITS.memberInvite,
     });
     setBulkLimitsOpen(true);
   }
@@ -2242,19 +1470,15 @@ function WorkspaceHome(){
     setForm({...defaults.group,...item.data,url:''});
     setSecret('');
     setClearSecret(false);
-    setOnboardAfterSave(true);
-    setFormError('Вставьте реальную ссылку t.me/… или инвайт. После сохранения — вступление и скан лидов.');
+    setFormError('Вставьте реальную ссылку t.me/… или инвайт. После сохранения нажмите «Вступить» в строке группы.');
   }
 
-  function openAccountPicker(mode:'single'|'mix'|'row',groupId?:string){
+  function openAccountPicker(mode:'single'|'row',groupId?:string){
     setAccountPickerQuery('');
     const usable=list('account').filter(a=>isAccountWorkable(a.data));
     if(mode==='single'){
       const cur=bulkAccountId&&usable.some(a=>a.id===bulkAccountId)?bulkAccountId:(usable[0]?.id||'');
       setAccountPickerDraft(cur?[cur]:[]);
-    }else if(mode==='mix'){
-      const cur=mixAccountIds.filter(id=>usable.some(a=>a.id===id));
-      setAccountPickerDraft(cur.length?cur:usable.map(a=>a.id));
     }else{
       const gid=groupId?String(list('group').find(g=>g.id===groupId)?.data.accountId||''):'';
       const ok=gid&&usable.some(a=>a.id===gid)?[gid]:[];
@@ -2276,13 +1500,6 @@ function WorkspaceHome(){
       }
       return;
     }
-    if(accountPicker.mode==='mix'){
-      if(accountPickerDraft.length<1){toast.message('Выберите хотя бы один аккаунт');return}
-      setMixAccountIds(accountPickerDraft);
-      setAccountPicker(null);
-      toast.message(`Для смеси: ${accountPickerDraft.length} акк. · нажмите «Применить смесь»`);
-      return;
-    }
     if(accountPicker.mode==='row'&&accountPicker.groupId){
       const id=accountPickerDraft[0]||'';
       setBusy(true);
@@ -2301,19 +1518,17 @@ function WorkspaceHome(){
     }
   }
 
-  async function assignAccountsToGroups(mode:'single'|'mix',groupIds:string[],accountIds:string[]){
+  async function assignAccountToGroups(groupIds:string[],accountId:string){
     if(!groupIds.length){toast.message('Выберите группы');return}
-    if(!accountIds.length){toast.error('Выберите аккаунт');return}
+    if(!accountId){toast.error('Выберите аккаунт');return}
     setBusy(true);
     try{
-      const r=await api({action:'assign_group_accounts',mode,groupIds,accountIds});
+      const r=await api({action:'assign_group_accounts',mode:'single',groupIds,accountIds:[accountId]});
       await refresh();
       setGroupSelected([]);
       const skipped=Number(r.skipped)||0;
       if(!r.updated&&skipped){
-        toast.message(`Уже вступившие (${skipped}) не трогали — смесь только для групп без вступления`);
-      }else if(mode==='mix'){
-        toast.success(`Смешали ${r.updated} групп на ${accountIds.length} акк.${skipped?` · ${skipped} вступивших без изменений`:''}`);
+        toast.message(`Уже вступившие (${skipped}) не трогали — аккаунт меняется только у групп без вступления`);
       }else{
         toast.success(`Назначен аккаунт на ${r.updated} групп${skipped?` · ${skipped} вступивших без изменений`:''}`);
       }
@@ -2333,7 +1548,77 @@ function WorkspaceHome(){
       return;
     }
     if(!telegramConnected){toast.error('Запустите: npm run dev');return}
-    void startBackgroundJoins([{id:item.id,name:item.data.name||'Группа'}]);
+    // Одна группа за клик, без очереди и ожиданий в браузере: отказ сервера (темп, дневной лимит) показываем как есть.
+    if(joinLock.current){toast.message('Дождитесь окончания текущего вступления');return}
+    joinLock.current=true;
+    setJoinInFlight(true);
+    const name=String(item.data.name||'Группа');
+    try{
+      await persistJoinState(item.id,'joining');
+      const join=await api({action:'join_group',id:item.id});
+      const joinKind=String(join.result?.join||'');
+      if(!join.ok&&joinKind!=='already'&&joinKind!=='requested'){
+        throw new Error(join.result?.error||join.error||'Не удалось вступить в группу');
+      }
+      if(joinKind==='requested'){
+        await persistJoinState(item.id,'');
+        toastOnboard(name,{joined:'requested',scanned:0,matched:0,added:0,aiUsed:false,title:''});
+        return;
+      }
+      await persistJoinState(item.id,'scanning');
+      try{
+        const scan=await scanAfterJoin(item.id,name);
+        toastOnboard(name,{
+          joined:joinKind==='already'?'already':'joined',
+          scanned:scan.scanned||0,
+          matched:scan.matched??scan.added??0,
+          added:scan.added||0,
+          aiUsed:!!scan.aiUsed,
+          title:scan.title||'',
+          metrics:scan.metrics||null,
+          addedByTemp:scan.addedByTemp||null,
+        });
+      }catch(scanErr){
+        const scanData=(scanErr as Error & {data?:any}).data;
+        if(scanData?.soft||scanData?.preserved)toast.message(`${name}: вступили, скан подхватит автообход`);
+        else toast.error(`${name}: вступили, но скан не прошёл — ${String(scanData?.error||(scanErr as Error).message||'').slice(0,140)}`);
+      }
+      await persistJoinState(item.id,'');
+    }catch(e){
+      const msg=(e as Error).message;
+      await persistJoinState(item.id,'',msg);
+      toast.error(`${name}: ${msg}`);
+    }finally{
+      try{await refresh()}finally{
+        joinLock.current=false;
+        setJoinInFlight(false);
+      }
+    }
+  }
+
+  /** Вступить в обсуждение уже вступленного канала: тот же гейт темпа и дневного лимита на сервере. */
+  async function joinDiscussion(item:RecordItem){
+    if(!telegramConnected){toast.error('Запустите: npm run dev');return}
+    if(joinLock.current){toast.message('Дождитесь окончания текущего вступления');return}
+    joinLock.current=true;
+    setJoinInFlight(true);
+    const name=String(item.data.name||'Группа');
+    try{
+      const join=await api({action:'join_group',id:item.id,target:'discussion'});
+      const joinKind=String(join.result?.join||'');
+      if(!join.ok&&joinKind!=='already'){
+        throw new Error(join.result?.error||join.error||'Не удалось вступить в обсуждение');
+      }
+      if(joinKind==='requested')toast.message(`${name}: заявка в обсуждение отправлена`);
+      else toast.success(`${name}: ${joinKind==='already'?'уже в обсуждении':'вступили в обсуждение'} — следующий скан возьмёт комментарии`);
+    }catch(e){
+      toast.error(`${name}: ${(e as Error).message}`);
+    }finally{
+      try{await refresh()}finally{
+        joinLock.current=false;
+        setJoinInFlight(false);
+      }
+    }
   }
 
   async function scanGroup(item:RecordItem){
@@ -2348,18 +1633,12 @@ function WorkspaceHome(){
     try{
       const res=await api({action:'scan_group',id:item.id});
       await refresh();
-      if(res.funnel)setLastLeadFunnel(res.funnel);
-      else if(res.workerRaw!=null||res.prefilter!=null){
-        setLastLeadFunnel({worker:res.workerRaw,core:res.prefilter,matched:res.matched,added:res.added});
-      }
       if(res.skipped){
         toast.message(res.message||`Скан по настройкам: раз в ${settings?.data.autoRescanMinutes||30} мин`);
         return;
       }
       toast.success(
-        res.funnel
-          ?`Скан: worker ${res.funnel.worker} → ядро ${res.funnel.core} → +${res.added}${res.aiUsed?' (AI)':''}`
-          :`Скан: ${res.scanned} → +${res.added} лидов${res.aiUsed?' (AI)':''}${res.metrics?` · ★${res.metrics.rating} · горячие ${res.metrics.leadsHot||0}`:''}`,
+        `Скан: прочитано ${res.fetched??res.scanned??0}, AI оценил ${res.judged??0} → +${res.added??0} лидов${res.judgeError?` · ошибок AI ${res.judgeError}`:''}`,
       );
     }catch(e){
       const msg=(e as Error).message;
@@ -2390,7 +1669,7 @@ function WorkspaceHome(){
     setBusy(true);
     try{
       const accountId=catalogAccountId||list('account').filter(a=>isAccountWorkable(a.data))[0]?.id||'';
-      const r=await api({action:'import_catalog',accountId:accountId||undefined});
+      const r=await api({action:'import_catalog',accountId:accountId||undefined,projectId:activeProjectId||undefined});
       await refresh();
       const added=Number(r.added)||0;
       const skipped=Number(r.skipped)||0;
@@ -2405,14 +1684,12 @@ function WorkspaceHome(){
   function openManualGroup(){
     navigate('Группы и каналы');
     open('group');
-    setOnboardAfterSave(true);
   }
 
   function openMassGroups(){
     navigate('Группы и каналы');
     setGroupImportText('');
     setFormError('');
-    setGroupImportJoin(true);
     setGroupImportAccountId(bulkAccountId||list('account').filter(a=>isAccountWorkable(a.data))[0]?.id||'');
     setGroupImportOpen(true);
   }
@@ -2420,8 +1697,6 @@ function WorkspaceHome(){
   async function importGroupsMass(){
     const parsed=parseGroupUrlLines(groupImportText);
     if(!parsed.length){setFormError('Не нашёл ни одной ссылки t.me / @username');return}
-    if(groupImportJoin&&!groupImportAccountId){setFormError('Выберите аккаунт для вступления');return}
-    if(groupImportJoin&&!telegramConnected){setFormError('Запустите: npm run dev');return}
     setBusy(true);
     setFormError('');
     try{
@@ -2429,39 +1704,23 @@ function WorkspaceHome(){
         const k=telegramEntityKey(r.data.url);
         return [k,r] as const;
       }).filter(([k])=>k));
-      const toJoin:{id:string;name:string}[]=[];
       let added=0,skipped=0;
       for(const g of parsed){
         const key=telegramEntityKey(g.url);
         const existing=key?byUrl.get(key):undefined;
         if(existing){
           skipped++;
-          if(groupImportAccountId&&groupImportJoin){
-            const nextData=cleanGroupSaveData({
-              ...existing.data,
-              accountId:groupImportAccountId,
-              name:existing.data.name||g.name,
-              joinState:'',
-              joinStateAt:'',
-              joinStateError:'',
-            });
-            if(existing.data.accountId!==groupImportAccountId){
-              await api({action:'save',kind:'group',id:existing.id,data:nextData});
-            }
-            if(!(existing.data.membership==='joined'||existing.data.joinedAt)){
-              toJoin.push({id:existing.id,name:String(nextData.name||g.name)});
-            }
-          }
           continue;
         }
         try{
           const saved=await api({
             action:'save',
             kind:'group',
+            projectId:activeProjectId||undefined,
             data:{
               name:g.name,
               url:canonicalizeTgUrl(g.url),
-              accountId:groupImportJoin?groupImportAccountId:'',
+              accountId:groupImportAccountId,
               status:'setup',
               error:'',
               membership:'none',
@@ -2472,7 +1731,6 @@ function WorkspaceHome(){
           if(saved.id){
             added++;
             if(key)byUrl.set(key,{id:saved.id,kind:'group',data:{name:g.name,url:g.url,accountId:groupImportAccountId},hasSecret:false,created:''} as RecordItem);
-            if(groupImportJoin&&groupImportAccountId)toJoin.push({id:saved.id,name:g.name});
           }
         }catch(e){
           const err=e as Error & {status?:number};
@@ -2483,12 +1741,7 @@ function WorkspaceHome(){
       setGroupImportOpen(false);
       setGroupImportText('');
       await refresh();
-      if(toJoin.length){
-        void startBackgroundJoins(toJoin);
-        toast.success(`Добавлено ${added} · вступаем ${toJoin.length}${skipped?` · уже были ${skipped}`:''}`);
-      }else{
-        toast.success(`Добавлено ${added}${skipped?` · пропущено (уже есть) ${skipped}`:''}`);
-      }
+      toast.success(`Добавлено ${added}${skipped?` · пропущено (уже есть) ${skipped}`:''}`);
     }catch(e){setFormError((e as Error).message)}
     finally{setBusy(false)}
   }
@@ -2509,54 +1762,30 @@ function WorkspaceHome(){
     setCatalogSearchTick(t=>t+1);
   }
 
-  /** Сохранить чаты каталога в «Группы и каналы». join=true — сразу фоновое вступление. */
-  async function saveCatalogGroupsToDb(overrideIds?:string[],opts?:{join?:boolean}){
-    const selectedIds=overrideIds?.length?overrideIds:catalogSelected;
-    const picks=GROUP_CATALOG.filter(g=>selectedIds.includes(g.id));
+  /** Сохранить чаты каталога в «Группы и каналы» без вступления: вступают по кнопке «Вступить» в строке группы. */
+  async function saveCatalogGroupsToDb(ids:string[]):Promise<{added:number;ready:number}|null>{
+    const picks=GROUP_CATALOG.filter(g=>ids.includes(g.id));
     const ready=picks.filter(g=>g.verified&&g.url&&!isCatalogPlaceholderUrl(g.url));
-    const needLink=picks.filter(g=>!g.verified||!g.url||isCatalogPlaceholderUrl(g.url));
-    if(!ready.length&&!needLink.length){toast.message('Выберите чаты со ссылкой');return}
-    const doJoin=!!opts?.join;
-    if(doJoin){
-      if(!catalogAccountId){toast.error('Сначала выберите аккаунт слева/сверху');return}
-      if(!telegramConnected){toast.error('Запустите: npm run dev');return}
-    }
-    if(!ready.length){
-      toast.message('Нет чатов со ссылкой');
-      return;
-    }
+    if(!ready.length){toast.message('Нет чатов со ссылкой');return null}
     setBusy(true);
     try{
       const byUrl=new Map(list('group').map(r=>{
         const k=telegramEntityKey(r.data.url);
         return [k,r as RecordItem] as const;
       }).filter(([k])=>k));
-      const toJoin:{id:string;name:string}[]=[];
       let added=0;
       const accountId=catalogAccountId||'';
       for(const g of ready){
         const key=telegramEntityKey(g.url);
         const existing=key?byUrl.get(key):undefined;
         if(existing){
-          const nextData=cleanGroupSaveData({
-            ...existing.data,
-            accountId:accountId||existing.data.accountId||'',
-            name:existing.data.name||g.name,
-            url:existing.data.url||canonicalizeTgUrl(g.url),
-            joinState:'',
-            joinStateAt:'',
-            joinStateError:'',
-          });
-          if(accountId&&(existing.data.accountId!==accountId||existing.data.status!=='active')){
-            await api({action:'save',kind:'group',id:existing.id,data:nextData});
-          }
-          if(doJoin&&!(existing.data.status==='active'&&(existing.data.joinedAt||existing.data.membership==='joined'))){
-            toJoin.push({id:existing.id,name:String(nextData.name||g.name)});
+          if(accountId&&!existing.data.accountId){
+            await api({action:'save',kind:'group',id:existing.id,data:cleanGroupSaveData({...existing.data,accountId})});
           }
           continue;
         }
         try{
-          const saved=await api({action:'save',kind:'group',data:cleanGroupSaveData({
+          const saved=await api({action:'save',kind:'group',projectId:activeProjectId||undefined,data:cleanGroupSaveData({
             name:g.name,
             url:canonicalizeTgUrl(g.url),
             accountId,
@@ -2576,76 +1805,44 @@ function WorkspaceHome(){
             lastScanned:'',
           })});
           added++;
-          if(saved.id){
-            if(doJoin)toJoin.push({id:saved.id,name:g.name});
-            if(key)byUrl.set(key,{id:saved.id,kind:'group',data:{name:g.name,url:g.url,accountId,status:'setup'},hasSecret:false,created:''});
-          }
+          if(saved.id&&key)byUrl.set(key,{id:saved.id,kind:'group',data:{name:g.name,url:g.url,accountId,status:'setup'},hasSecret:false,created:''});
         }catch(e){
           const err=e as Error & {status?:number};
           if(err.status===409)continue;
           throw e;
         }
       }
-      setCatalogSelected(prev=>prev.filter(id=>!selectedIds.includes(id)));
+      setCatalogSelected(prev=>prev.filter(id=>!ids.includes(id)));
       await refresh();
-      if(doJoin&&toJoin.length){
-        setCatalogOpen(false);
-        void startBackgroundJoins(toJoin);
-        toast.message(`Сразу вступаем: ${toJoin.length} чат(ов) в фоне`);
-      }else if(doJoin&&ready.length&&!needLink.length){
-        toast.message('Выбранные чаты уже подключены');
-        setCatalogOpen(false);
-      }else if(!doJoin){
-        toast.success(added?`В базу добавлено: ${added}`:`Уже в базе · показано ${ready.length}`);
-        navigate('Группы и каналы');
-        setCatalogOpen(false);
-      }
-      if(needLink.length&&doJoin){
-        setJoinQueue(prev=>[
-          ...prev,
-          ...needLink.map((g,i)=>({id:`need-${Date.now()}-${i}-${g.id}`,name:g.name,status:'need_url' as const})),
-        ]);
-        if(!toJoin.length){
-          setCatalogOpen(false);
-          setForm({...defaults.group,name:needLink[0].name,url:'',accountId:catalogAccountId,status:'setup',error:''});
-          setModal({kind:'group'});
-          setOnboardAfterSave(true);
-          setFormError('');
-          toast.message(`Для «${needLink[0].name}» нужна ссылка t.me — после сохранения вступим сами`);
-        }
-      }
-    }catch(e){toast.error((e as Error).message)}
+      return {added,ready:ready.length};
+    }catch(e){toast.error((e as Error).message);return null}
     finally{setBusy(false)}
   }
 
-  async function addCatalogGroups(overrideIds?:string[]){
-    return saveCatalogGroupsToDb(overrideIds,{join:true});
+  async function addCatalogGroupsToDb(ids:string[]){
+    const r=await saveCatalogGroupsToDb(ids);
+    if(!r)return;
+    toast.success(r.added?`В базу добавлено: ${r.added}`:`Уже в базе · показано ${r.ready}`);
+    navigate('Группы и каналы');
+    setCatalogOpen(false);
   }
 
-  /** Клик по чату в каталоге = сразу вступить (без отдельной кнопки на карточке группы). */
-  function joinCatalogNow(catalogId:string){
-    if(!catalogAccountId){toast.error('Выберите аккаунт для вступления');return}
-    if(!telegramConnected){toast.error('Запустите: npm run dev');return}
-    void addCatalogGroups([catalogId]);
+  async function addCatalogGroupToDb(catalogId:string){
+    const r=await saveCatalogGroupsToDb([catalogId]);
+    if(!r)return;
+    toast.success(r.added?'Чат в базе — «Вступить» в разделе «Группы и каналы»':'Этот чат уже в базе');
   }
 
   const currentKind=kinds[view];
   const displayed=records.filter(r=>{
     if(r.kind!==(currentKind||'lead'))return false;
-    if(view==='Переписки'&&!r.data.draft&&!r.data.conversationOpen)return false;
-    if(currentKind==='lead'&&(view==='Лиды'||view==='Переписки')){
-      if(filter==='ignored'){
-        if(!r.data.excludeFromTraining)return false;
-      }else if(r.data.excludeFromTraining){
-        return false;
-      }else if(filter==='viewed'){
-        if(!r.data.viewed)return false;
-      }else if(r.data.viewed){
-        return false;
-      }
+    if(view==='Переписки'&&!isInConversations(r.data))return false;
+    const leadTabs=currentKind==='lead'&&(view==='Лиды'||view==='Переписки');
+    if(leadTabs){
+      if(!leadVisibleInTab(r.data,filter))return false;
+      if(view==='Лиды'&&!leadInScope(r))return false;
       if(view==='Лиды'&&leadGroupFilter!=='all'&&r.data.groupId!==leadGroupFilter)return false;
-    }
-    if(filter!=='all'&&filter!=='viewed'&&filter!=='ignored'){
+    }else if(filter!=='all'&&filter!=='viewed'&&filter!=='ignored'){
       if(currentKind==='lead'){
         if(filter==='hot'||filter==='warm'||filter==='cold'){
           if((r.data.temperature||'warm')!==filter)return false;
@@ -2734,7 +1931,7 @@ function WorkspaceHome(){
   });
 
   const change=(key:string,value:string)=>setForm((f:any)=>({...f,[key]:value}));
-  const changeLimit=(key:'invite'|'message'|'chat'|'memberInvite',value:string)=>setForm((f:any)=>({...f,limits:{...(f.limits||DEFAULT_ACCOUNT_LIMITS),[key]:value}}));
+  const changeLimit=(key:'invite'|'message',value:string)=>setForm((f:any)=>({...f,limits:{...(f.limits||DEFAULT_ACCOUNT_LIMITS),[key]:value}}));
   const field=(key:string,label:string,type='text',placeholder='')=><label className="field">{label}<Input type={type} value={form[key]??''} placeholder={placeholder} onChange={e=>change(key,e.target.value)} required={!['username','source','firstName','lastName','about','projectUrl','audience'].includes(key)} maxLength={key==='phone'?16:key==='projectUrl'?500:250}/></label>;
 
   useEffect(()=>{
@@ -2827,17 +2024,10 @@ function WorkspaceHome(){
   );
 
   const renderLeads=(items:RecordItem[])=>{
-    const allOn=items.length>0&&items.every(r=>leadSelected.includes(r.id));
     return items.length?(
     <>
       <div className="leads-list-cols">
-        <label className="inline-flex items-center justify-center">
-          <Checkbox
-            checked={allOn}
-            onCheckedChange={v=>setLeadSelected(v===true?items.map(r=>r.id):[])}
-            aria-label="Выбрать все лиды"
-          />
-        </label>
+        <span aria-hidden/>
         <SortHeaderButton columnKey="name" sortKey={sortKey} sortDir={sortDir} onSort={onSort}>Лид</SortHeaderButton>
         <SortHeaderButton columnKey="temperature" sortKey={sortKey} sortDir={sortDir} onSort={onSort}>Темп.</SortHeaderButton>
         <SortHeaderButton columnKey="status" sortKey={sortKey} sortDir={sortDir} onSort={onSort}>Статус</SortHeaderButton>
@@ -2845,13 +2035,7 @@ function WorkspaceHome(){
         <SortHeaderButton columnKey="created" sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="justify-self-end">Дата</SortHeaderButton>
       </div>
       {items.map(r=>(
-    <div className={`lead-row ${leadSelected.includes(r.id)?'selected':''} ${r.data.excludeFromTraining?'ignored':''}`} key={r.id}>
-      <Checkbox
-        checked={leadSelected.includes(r.id)}
-        onCheckedChange={v=>toggleLeadSelected(r.id,v===true)}
-        aria-label={`Выбрать ${r.data.name}`}
-        className="mt-1 shrink-0"
-      />
+    <div className={`lead-row ${r.data.excludeFromTraining?'ignored':''}`} key={r.id}>
       <button className="text-left flex-1 min-w-0" onClick={()=>openLead(r)}>
         <div className="flex gap-3 items-center flex-wrap">
           <span className="row-title">{r.data.name}</span>
@@ -2860,6 +2044,8 @@ function WorkspaceHome(){
           {r.data.needsManager&&<span className="badge warning">Клиент ответил</span>}
           {!r.data.needsManager&&r.data.conversationOpen&&<span className="badge success">Переписка</span>}
           {r.data.excludeFromTraining&&<span className="badge neutral">Не для обучения</span>}
+          {r.data.feedback==='good'&&<span className="badge success">Отмечен: хороший</span>}
+          {r.data.feedback==='bad'&&<span className="badge neutral">Отмечен: не лид</span>}
         </div>
         <p className="mt-2 text-[14px] leading-6 line-clamp-2 muted">
           {r.data.incomingLastText||r.data.message}
@@ -2872,28 +2058,12 @@ function WorkspaceHome(){
       </button>
       <div className="flex flex-col gap-1 shrink-0">
         <Button variant="ghost" onClick={()=>openLead(r)}>Открыть<ChevronRight size={16}/></Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={busy}
-          title={r.data.excludeFromTraining?'Вернуть в учёт':'Не учитывать в обучении'}
-          onClick={()=>setLeadTrainingExclude(r,!r.data.excludeFromTraining)}
-        >
-          <Ban size={15}/>
-          {r.data.excludeFromTraining?'Вернуть':'Не учитывать'}
+        <Button variant="ghost" size="sm" disabled={busy} aria-pressed={r.data.feedback==='good'} title="Добавить в примеры хороших лидов проекта" onClick={()=>void leadFeedback(r,'good')}>
+          <ThumbsUp size={15}/>Хороший лид
         </Button>
-        {!r.data.excludeFromTraining&&(
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={busy}
-            title="Не лид → стоп-слова"
-            onClick={()=>rejectLeadToStopwords(r)}
-          >
-            <FilterX size={15}/>
-            Стоп
-          </Button>
-        )}
+        <Button variant="ghost" size="sm" disabled={busy} aria-pressed={r.data.feedback==='bad'} title="Добавить в примеры «не лид» проекта" onClick={()=>void leadFeedback(r,'bad')}>
+          <ThumbsDown size={15}/>Не лид
+        </Button>
       </div>
     </div>
   ))}
@@ -2923,10 +2093,7 @@ function WorkspaceHome(){
         </Empty>
       );
     }
-    const inQueue=new Set([
-      ...joinQueue.filter(q=>JOIN_ACTIVE_STATES.has(q.status)).map(q=>q.id),
-      ...items.filter(r=>JOIN_ACTIVE_STATES.has(String(r.data.joinState||''))).map(r=>r.id),
-    ]);
+    const joinActive=new Set(items.filter(r=>JOIN_ACTIVE_STATES.has(String(r.data.joinState||''))).map(r=>r.id));
     const allSelected=items.length>0&&items.every(r=>groupSelected.includes(r.id));
     return (
       <div className="groups-list">
@@ -2943,13 +2110,13 @@ function WorkspaceHome(){
         {items.map(r=>{
           const st=groupStatusLabel(r);
           const accountName=records.find(x=>x.id===r.data.accountId)?.data.name||'';
-          const queued=inQueue.has(r.id);
-          const canJoin=groupNeedsJoin(r)&&!queued;
+          const inFlight=joinActive.has(r.id);
+          const canJoin=groupNeedsJoin(r)&&!inFlight;
           const joined=r.data.membership==='joined'||!!r.data.joinedAt;
           const syncAt=formatGroupSyncAt(String(r.data.lastScanned||''));
           const err=r.data.status==='error'?shortErr(r.data.error||r.data.joinStateError||''):'';
           return (
-            <div className={`groups-row ${queued?'is-queue':''} ${groupSelected.includes(r.id)?'is-selected':''}`} key={r.id}>
+            <div className={`groups-row ${inFlight?'is-queue':''} ${groupSelected.includes(r.id)?'is-selected':''}`} key={r.id}>
               <label className="groups-check">
                 <Checkbox checked={groupSelected.includes(r.id)} onCheckedChange={v=>toggleGroupSelected(r.id,v===true)} aria-label={`Выбрать ${r.data.name}`}/>
               </label>
@@ -2978,35 +2145,42 @@ function WorkspaceHome(){
               </div>
               <div className="groups-actions">
                 {canJoin&&(
-                  <Button size="sm" disabled={busy||!telegramConnected||!r.data.accountId} onClick={()=>joinGroup(r)}>
+                  <Button size="sm" disabled={busy||joinInFlight||!telegramConnected||!r.data.accountId} onClick={()=>joinGroup(r)}>
                     <Plug size={14}/>Вступить
                   </Button>
                 )}
                 {r.data.status==='pending'&&(
                   <Button size="sm" variant="outline" disabled={busy||!telegramConnected} onClick={()=>scanGroup(r)}>Проверить</Button>
                 )}
+                {r.data.needDiscussionJoin&&joined&&!canJoin&&(
+                  <Button size="sm" disabled={busy||joinInFlight||!telegramConnected||!r.data.accountId} onClick={()=>joinDiscussion(r)} aria-label="Вступить в обсуждение" title="Вступить в обсуждение">
+                    <Plug size={14}/>Обсуждение
+                  </Button>
+                )}
                 {joined&&!canJoin&&r.data.status!=='pending'&&(
                   <Button size="sm" variant="outline" disabled={busy||!telegramConnected} onClick={()=>scanGroup(r)}>
                     <Search size={14}/>Скан
                   </Button>
                 )}
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8"
-                  title="История переобхода"
-                  aria-label="История переобхода"
-                  onClick={()=>setTaskLog({
-                    title:r.data.name||'Группа',
-                    log:Array.isArray(r.data.scanLog)&&r.data.scanLog.length
-                      ?r.data.scanLog
-                      :[{at:r.data.lastScanned||new Date().toISOString(),level:'info',text:r.data.lastScanned?'Последний скан зафиксирован, детальный журнал появится после следующего переобхода':'Переобходов ещё не было'}],
-                  })}
-                >
-                  <ScrollText size={14}/>
-                </Button>
-                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={()=>open('group',r)} aria-label="Изменить"><Pencil size={14}/></Button>
-                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={()=>setDeleting(r)} aria-label="Удалить"><Trash2 size={14}/></Button>
+                <div className="groups-tools">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8"
+                    title="История переобхода"
+                    aria-label="История переобхода"
+                    onClick={()=>setTaskLog({
+                      title:r.data.name||'Группа',
+                      log:Array.isArray(r.data.scanLog)&&r.data.scanLog.length
+                        ?r.data.scanLog
+                        :[{at:r.data.lastScanned||new Date().toISOString(),level:'info',text:r.data.lastScanned?'Последний скан зафиксирован, детальный журнал появится после следующего переобхода':'Переобходов ещё не было'}],
+                    })}
+                  >
+                    <ScrollText size={14}/>
+                  </Button>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={()=>open('group',r)} aria-label="Изменить"><Pencil size={14}/></Button>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={()=>setDeleting(r)} aria-label="Удалить"><Trash2 size={14}/></Button>
+                </div>
               </div>
             </div>
           );
@@ -3016,7 +2190,6 @@ function WorkspaceHome(){
   };
 
   const allLeads=list('lead').filter(r=>!r.data.excludeFromTraining);
-  const draftLeads=list('lead').filter(r=>(!!r.data.draft||!!r.data.conversationOpen)&&!r.data.excludeFromTraining);
   const groupsAll=list('group');
   const groupsJoined=groupsAll.filter(g=>g.data.membership==='joined'||!!g.data.joinedAt);
   const groupsNeedJoin=groupsAll.filter(groupNeedsJoin);
@@ -3025,37 +2198,6 @@ function WorkspaceHome(){
   const accountsUsableOpts=accountsActive.map(r=>({id:r.id,name:r.data.name,data:r.data}));
   const proxiesAll=list('proxy');
   const proxiesActive=proxiesAll.filter(p=>p.data.status==='active');
-  const audienceTasks=list('audience_task');
-  const inviteTasks=list('invite_task');
-  const mailingTasks=list('mailing_task');
-  const audienceCollected=audienceTasks.reduce((n,r)=>n+Number(r.data.collected||0),0);
-  const audienceInvited=inviteTasks.reduce((n,r)=>n+Number(r.data.done||0),0);
-  const inviteOrdinary=inviteTasks.filter(r=>r.data.mode!=='advanced').reduce((n,r)=>n+Number(r.data.done||0),0);
-  const inviteAdvanced=inviteTasks.filter(r=>r.data.mode==='advanced').reduce((n,r)=>n+Number(r.data.done||0),0);
-  const mailingSent=mailingTasks.reduce((n,r)=>n+Number(r.data.sentTotal||0),0);
-  const mailingFailed=mailingTasks.reduce((n,r)=>n+Number(r.data.failed||0),0);
-  let tasksOk=0,tasksWarn=0,tasksError=0;
-  for(const r of [...audienceTasks,...inviteTasks,...mailingTasks]){
-    const st=String(r.data.status||'');
-    if(st==='error')tasksError++;
-    else if(st==='completed'||st==='running')tasksOk++;
-    else tasksWarn++;
-  }
-  const farmStats={
-    audienceCollected,
-    audienceInvited:Math.min(audienceInvited,audienceCollected||audienceInvited),
-    inviteOrdinary,
-    inviteAdvanced,
-    mailingSent,
-    mailingFailed,
-    accountsActive:accountsActive.length,
-    accountsTotal:accountsAll.length,
-    proxiesActive:proxiesActive.length,
-    proxiesTotal:proxiesAll.length,
-    tasksOk,
-    tasksWarn,
-    tasksError,
-  };
   const hotN=allLeads.filter(r=>r.data.temperature==='hot'&&!r.data.viewed).length;
   const warmN=allLeads.filter(r=>r.data.temperature==='warm'&&!r.data.viewed).length;
   const coldN=allLeads.filter(r=>r.data.temperature==='cold'&&!r.data.viewed).length;
@@ -3093,7 +2235,7 @@ function WorkspaceHome(){
       status:String(r.data.status||'new'),
       viewed:!!r.data.viewed,
       groupId:String(r.data.groupId||''),
-                      draft:!!r.data.draft||!!r.data.conversationOpen,
+      draft:isInConversations(r.data),
     };
   });
 
@@ -3168,9 +2310,9 @@ function WorkspaceHome(){
                     disabled={busy}
                     onClick={()=>void importFullCatalogToDb()}
                   >Залить каталог ({catalogStats().uniqueUrls})</Button>
-                  <Button onClick={openCatalog}><Search size={16}/>Поиск по темам</Button>
+                  <Button onClick={()=>openCatalog()}><Search size={16}/>Поиск по темам</Button>
                 </>
-              ):view==='Настройки'||view==='Сбор аудитории'||view==='Инвайтинг'||view==='Рассылка'||view==='Уведомления'||view==='Сотрудники'?null:(
+              ):view==='Настройки'||view==='Уведомления'||view==='Сотрудники'||view==='AI-ассистент'?null:(
                 <Button onClick={()=>open(currentKind||'group',currentKind==='settings'?settings:undefined)}>
                   {currentKind==='settings'?<><Plus size={16}/>Настроить AI</>:currentKind==='account'?<><Plus size={16}/>Добавить аккаунты</>:<><Plus size={16}/>Добавить {labels[currentKind||'group']}</>}
                 </Button>
@@ -3178,7 +2320,7 @@ function WorkspaceHome(){
             </div>
           </div>
 
-          {error&&(
+          {error&&!(view==='AI-ассистент'&&!records.length)&&(
             <div role="alert" className="error-banner">
               {error}
               <Button variant="ghost" onClick={refresh}>Повторить</Button>
@@ -3196,82 +2338,27 @@ function WorkspaceHome(){
               telegramConnected={telegramConnected}
               leads={overviewLeads}
               chats={overviewChats}
-              joinQueue={joinQueue.map(q=>({id:q.id,name:q.name,status:q.status,waitSec:q.waitSec}))}
               freshCount={freshLeads.length}
               hotCount={hotN}
               warmCount={warmN}
               coldCount={coldN}
-              draftCount={draftLeads.length}
+              draftCount={chatLeads.length}
               joinedChats={groupsJoined.length}
               needJoin={groupsNeedJoin.length}
-              farm={farmStats}
+              farm={{
+                accountsActive:accountsActive.length,
+                accountsTotal:accountsAll.length,
+                proxiesActive:proxiesActive.length,
+                proxiesTotal:proxiesAll.length,
+              }}
               onRefresh={()=>{void refresh()}}
               onGoLeads={goLeads}
               onGoChats={goChats}
               onGoAccounts={()=>navigate('Аккаунты')}
-              onGoAudience={()=>navigate('Сбор аудитории')}
-              onGoInvite={()=>navigate('Инвайтинг')}
-              onGoMailing={()=>navigate('Рассылка')}
               onGoProxies={()=>navigate('Прокси')}
               onOpenLead={(id)=>{const item=records.find(r=>r.id===id);if(item)void openLead(item)}}
               onSearchTopics={()=>{goChats();openCatalog()}}
               onOpenDrafts={()=>navigate('Переписки')}
-            />
-          )}
-
-          {view==='Сбор аудитории'&&(
-            <AudiencePanel
-              tasks={list('audience_task').map(r=>({id:r.id,created:r.created,data:r.data}))}
-              accounts={list('account').map(r=>({id:r.id,data:r.data}))}
-              search={audienceSearch}
-              onSearch={setAudienceSearch}
-              busy={busy}
-              onCreate={()=>openTask('audience_task')}
-              onPlay={id=>void startAudienceTask(id)}
-              onPause={id=>void pauseAudienceTask(id)}
-              onEdit={item=>openTask('audience_task',records.find(r=>r.id===item.id))}
-              onDelete={item=>setDeleting(records.find(r=>r.id===item.id)||null)}
-              onExport={id=>void exportAudienceTask(id)}
-              onLog={item=>setTaskLog({title:displayTgHandle(item.data.url||item.data.name||''),log:item.data.log||[],taskId:item.id})}
-            />
-          )}
-
-          {view==='Инвайтинг'&&(
-            <InvitePanel
-              tasks={list('invite_task').map(r=>({id:r.id,created:r.created,data:r.data}))}
-              audienceTasks={list('audience_task').map(r=>({id:r.id,data:r.data}))}
-              search={inviteSearch}
-              onSearch={setInviteSearch}
-              busy={busy}
-              onCreate={()=>openTask('invite_task')}
-              onPlay={id=>void startInviteTask(id)}
-              onPause={id=>void pauseInviteTask(id)}
-              onEdit={item=>openTask('invite_task',records.find(r=>r.id===item.id))}
-              onDelete={item=>setDeleting(records.find(r=>r.id===item.id)||null)}
-              onLog={item=>setTaskLog({title:displayTgHandle(item.data.targetUrl||item.data.name||''),log:item.data.log||[],taskId:item.id})}
-              onStats={item=>setTaskLog({title:`Статистика · ${displayTgHandle(item.data.targetUrl||'')}`,log:[
-                {at:new Date().toISOString(),level:'info',text:`Приглашено: ${item.data.done||0} / ${item.data.total||0}`},
-                {at:new Date().toISOString(),level:'info',text:`Режим: ${item.data.mode||'ordinary'}`},
-                {at:new Date().toISOString(),level:'info',text:`Сегодня: ${item.data.invitedToday||0}${item.data.dailyLimitEnabled?` (лимит ${item.data.dailyLimit})`:''}`},
-                ...(item.data.log||[]),
-              ]})}
-            />
-          )}
-
-          {view==='Рассылка'&&(
-            <MailingPanel
-              tasks={list('mailing_task').map(r=>({id:r.id,created:r.created,data:r.data}))}
-              audienceTasks={list('audience_task').map(r=>({id:r.id,data:r.data}))}
-              search={mailingSearch}
-              onSearch={setMailingSearch}
-              busy={busy}
-              onCreate={()=>openTask('mailing_task')}
-              onPlay={id=>void startMailingTask(id)}
-              onPause={id=>void pauseMailingTask(id)}
-              onEdit={item=>openTask('mailing_task',records.find(r=>r.id===item.id))}
-              onDelete={item=>setDeleting(records.find(r=>r.id===item.id)||null)}
-              onLog={item=>setTaskLog({title:item.data.name||'Рассылка',log:item.data.log||[],taskId:item.id})}
-              onStats={item=>setMailingDeliveries({title:item.data.name||'Рассылка',deliveries:item.data.deliveries||[]})}
             />
           )}
 
@@ -3290,7 +2377,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'create_invite',...input})});
-                    const data=await r.json();
+                    const data=(await r.json()) as StaffActionResponse;
                     if(!r.ok)throw new Error(data.error||'Не удалось создать приглашение');
                     await refreshStaff();
                     toast.success('Ссылка-приглашение создана');
@@ -3302,7 +2389,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'revoke_invite',id})});
-                    const data=await r.json();
+                    const data=(await r.json()) as StaffActionResponse;
                     if(!r.ok)throw new Error(data.error||'Не удалось отозвать');
                     await refreshStaff();
                     toast.success('Приглашение отозвано');
@@ -3313,7 +2400,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'revoke_invites',ids})});
-                    const data=await r.json();
+                    const data=(await r.json()) as StaffActionResponse;
                     if(!r.ok)throw new Error(data.error||'Не удалось отозвать');
                     await refreshStaff();
                     toast.success(`Отозвано: ${data.removed||ids.length}`);
@@ -3324,7 +2411,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'update_member',...input})});
-                    const data=await r.json();
+                    const data=(await r.json()) as StaffActionResponse;
                     if(!r.ok)throw new Error(data.error||'Не удалось сохранить');
                     await refreshStaff();
                     toast.success('Доступы обновлены');
@@ -3335,7 +2422,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'remove_member',id})});
-                    const data=await r.json();
+                    const data=(await r.json()) as StaffActionResponse;
                     if(!r.ok)throw new Error(data.error||'Не удалось удалить');
                     await refreshStaff();
                     toast.success('Сотрудник удалён');
@@ -3346,7 +2433,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'remove_members',ids})});
-                    const data=await r.json();
+                    const data=(await r.json()) as StaffActionResponse;
                     if(!r.ok)throw new Error(data.error||'Не удалось удалить');
                     await refreshStaff();
                     toast.success(`Удалено: ${data.removed||ids.length}`);
@@ -3357,7 +2444,7 @@ function WorkspaceHome(){
                   setBusy(true);
                   try{
                     const r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'clear_all'})});
-                    const data=await r.json();
+                    const data=(await r.json()) as StaffActionResponse;
                     if(!r.ok)throw new Error(data.error||'Не удалось очистить');
                     await refreshStaff();
                     toast.success(`Удалено сотрудников: ${data.members||0}, приглашений: ${data.invites||0}`);
@@ -3368,7 +2455,7 @@ function WorkspaceHome(){
             )
           )}
 
-          {view!=='Обзор'&&view!=='Уведомления'&&view!=='AI-ассистент'&&view!=='Настройки'&&view!=='Сбор аудитории'&&view!=='Инвайтинг'&&view!=='Рассылка'&&view!=='Сотрудники'&&<>
+          {view!=='Обзор'&&view!=='Уведомления'&&view!=='AI-ассистент'&&view!=='Настройки'&&view!=='Сотрудники'&&<>
             <div className="toolbar">
               <div className="relative w-full sm:w-80">
                 <Search className="absolute left-3 top-2.5 text-[var(--spike-muted)]" size={16}/>
@@ -3376,7 +2463,7 @@ function WorkspaceHome(){
               </div>
               {view==='Переписки'?(
                 <div className="flex flex-wrap items-center gap-3">
-                  <Tabs value={filter==='viewed'?'viewed':'all'} onValueChange={(v)=>{setFilter(v);setLeadSelected([])}}>
+                  <Tabs value={filter==='viewed'?'viewed':'all'} onValueChange={(v)=>setFilter(v)}>
                     <TabsList>
                       <TabsTrigger value="all">Новые{freshChats.length?` (${freshChats.length})`:''}</TabsTrigger>
                       <TabsTrigger value="viewed">Просмотренные{viewedChats.length?` (${viewedChats.length})`:''}</TabsTrigger>
@@ -3403,16 +2490,35 @@ function WorkspaceHome(){
                     <RefreshCw size={15} className={autoRescanRunning?'animate-spin':''}/>
                     {autoRescanRunning?'Сбор…':'Собрать лиды'}
                   </Button>
+                  {projects.length>0&&(
+                    <Select
+                      value={leadProjectScope==='all'?'all':activeProjectId}
+                      onValueChange={v=>{
+                        setLeadGroupFilter('all');
+                        if(v==='all'){setLeadProjectScope('all');return}
+                        setLeadProjectScope('active');
+                        setActiveProjectId(v);
+                      }}
+                    >
+                      <SelectTrigger className="w-[220px]" aria-label="Проект"><SelectValue placeholder="Проект"/></SelectTrigger>
+                      <SelectContent>
+                        {projects.map(p=>(
+                          <SelectItem key={p.id} value={p.id}>{p.data.name}</SelectItem>
+                        ))}
+                        <SelectItem value="all">Все проекты</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  )}
                   <Select value={leadGroupFilter} onValueChange={setLeadGroupFilter}>
-                    <SelectTrigger className="w-[220px]"><SelectValue placeholder="Группа"/></SelectTrigger>
+                    <SelectTrigger className="w-[220px]" aria-label="Группа"><SelectValue placeholder="Группа"/></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">Все группы</SelectItem>
-                      {list('group').map(g=>(
+                      {list('group').filter(g=>leadProjectScope==='all'||!projects.length||projectIdOf(g.data,projects)===activeProjectId).map(g=>(
                         <SelectItem key={g.id} value={g.id}>{g.data.name}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
-                  <Tabs value={filter} onValueChange={(v)=>{setFilter(v);setLeadSelected([])}}>
+                  <Tabs value={filter} onValueChange={(v)=>setFilter(v)}>
                     <TabsList>
                       <TabsTrigger value="all">Все</TabsTrigger>
                       <TabsTrigger value="hot">Горячие</TabsTrigger>
@@ -3471,81 +2577,11 @@ function WorkspaceHome(){
                     : 'Источники сообщений.'}
               </div>
             )}
-            {currentKind==='group'&&joinQueue.length>0&&(
-              <div className="join-queue" role="status" aria-live="polite">
-                <div className="join-queue-head">
-                  <div>
-                    <h3>Очередь вступлений</h3>
-                    <p className="small-note mt-1">Антиспам ~{Math.round(JOIN_GAP_DEFAULT_SEC/60)} мин между чатами. Очередь сохраняется на сервере — можно обновлять страницу.</p>
-                  </div>
-                  <div className="flex gap-2 flex-wrap items-center">
-                    <span className="badge neutral">{joinQueue.filter(q=>q.status==='done').length}/{joinQueue.length}</span>
-                    {joinQueue.every(q=>q.status==='done'||q.status==='error'||q.status==='need_url')&&(
-                      <Button size="sm" variant="outline" onClick={()=>{setJoinQueue([]);joinWorkRef.current=[];localStorage.removeItem(JOIN_QUEUE_KEY)}}>Скрыть</Button>
-                    )}
-                  </div>
-                </div>
-                <div className="join-queue-list">
-                  {joinQueue.map(q=>{
-                    const label=
-                      q.status==='queued'?'В очереди':
-                      q.status==='waiting'?`Пауза ${q.waitSec||0} с`:
-                      q.status==='joining'?'Вступаем…':
-                      q.status==='scanning'?'Скан лидов…':
-                      q.status==='done'?(q.added!=null?`Готово · +${q.added}`:(q.error||'Готово')):
-                      q.status==='need_url'?'Нужна ссылка t.me':
-                      'Ошибка';
-                    const pct=q.status==='waiting'&&q.waitTotal?Math.round(((q.waitTotal-(q.waitSec||0))/q.waitTotal)*100):q.status==='done'?100:q.status==='joining'||q.status==='scanning'?55:0;
-                    return (
-                      <div className={`join-queue-row ${q.status}`} key={q.id}>
-                        <strong>{q.name}</strong>
-                        <span className="badge">{label}</span>
-                        {(q.error&&q.status==='error')&&<span className="jq-meta">{q.error}</span>}
-                        {q.status==='waiting'&&(
-                          <div className="join-hold-bar" aria-hidden><span style={{width:`${pct}%`}}/></div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-            {currentKind==='group'&&joinProgress&&!joinQueue.length&&(
-              <div className="status-note" role="status">
-                Отлежка: «{joinProgress.name}» · ~{Math.ceil(joinProgress.waitSec/60)} мин ({joinProgress.waitSec} с)
-              </div>
-            )}
             {currentKind==='lead'&&(
               <div className="status-note">
                 «Собрать лиды» — принудительный обход. Автообход круглосуточно через Telegram-воркер из npm run dev (каждые {settings?.data.autoRescanMinutes||30} мин на группу)
                 {settings?.data.lastAutoRescanAt?` · последний ${new Date(settings.data.lastAutoRescanAt).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}`:''}
                 {autoRescanRunning?' · идёт…':''}.
-              </div>
-            )}
-            {currentKind==='lead'&&leadSelected.length>0&&(
-              <div className="lead-bulk-bar">
-                <span>Выбрано: <strong>{leadSelected.length}</strong></span>
-                <div className="flex flex-wrap gap-2">
-                  <Button size="sm" disabled={busy} onClick={()=>bulkExcludeSelected(true)}>
-                    <Ban size={14}/>Не учитывать в обучении
-                  </Button>
-                  {filter==='ignored'&&(
-                    <Button size="sm" variant="outline" disabled={busy} onClick={()=>bulkExcludeSelected(false)}>
-                      Вернуть в учёт
-                    </Button>
-                  )}
-                  <Button size="sm" variant="outline" disabled={busy} onClick={()=>setLeadSelected(sortedList.map(r=>r.id))}>
-                    Выбрать все
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={()=>setLeadSelected([])}>Снять</Button>
-                </div>
-              </div>
-            )}
-            {currentKind==='lead'&&!leadSelected.length&&sortedList.length>0&&(
-              <div className="lead-bulk-hint">
-                <Button size="sm" variant="outline" onClick={()=>setLeadSelected(sortedList.map(r=>r.id))}>
-                  Выбрать все ({sortedList.length})
-                </Button>
               </div>
             )}
             {accountCheckProgress&&currentKind==='account'&&(
@@ -3578,7 +2614,7 @@ function WorkspaceHome(){
                 <div className="groups-page">
                   <div className="groups-top">
                     <div className="groups-top-actions">
-                      <Button onClick={openCatalog} disabled={busy}><Search size={15}/>Найти темы</Button>
+                      <Button onClick={()=>openCatalog()} disabled={busy}><Search size={15}/>Найти темы</Button>
                       <Button variant="outline" onClick={openManualGroup}><Plus size={15}/>Ссылка</Button>
                       <Button variant="outline" onClick={openMassGroups} disabled={busy}><Upload size={15}/>Массово</Button>
                       <Button
@@ -3624,21 +2660,9 @@ function WorkspaceHome(){
                       >
                         <History size={15}/>История
                       </Button>
-                      {list('group').filter(groupNeedsJoin).length>0&&(
-                        <Button
-                          variant="outline"
-                          disabled={!telegramConnected||busy}
-                          onClick={()=>{
-                            const pending=list('group').filter(groupNeedsJoin);
-                            void startBackgroundJoins(pending.map(g=>({id:g.id,name:g.data.name||'Группа'})));
-                          }}
-                        >
-                          <Plug size={14}/>Вступить во все ({list('group').filter(groupNeedsJoin).length})
-                        </Button>
-                      )}
                     </div>
                     <p className="groups-hint">
-                      Отметьте группы → назначьте аккаунт → «Вступить». Пауза одного аккаунта ~{Math.round(JOIN_GAP_DEFAULT_SEC/60)} мин.
+                      Назначьте аккаунт → «Вступить» в строке группы. Одна группа за раз, пауза одного аккаунта ~{Math.round(JOIN_GAP_DEFAULT_SEC/60)} мин.
                       {settings?.data?.lastAutoRescanAt?` · автообход ${new Date(settings.data.lastAutoRescanAt).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}`:''}
                       {autoRescanRunning?' · идёт сейчас…':''}
                     </p>
@@ -3673,7 +2697,7 @@ function WorkspaceHome(){
                         </>
                       ):(
                         <>
-                          <span className="muted text-sm">Чекбоксы слева — массовые действия</span>
+                          <span className="muted text-sm">Отметьте группы, чтобы назначить им аккаунт</span>
                           {sortedList.length>0&&(
                             <Button size="sm" variant="outline" onClick={()=>setGroupSelected(sortedList.map(r=>r.id))}>
                               Выбрать все ({sortedList.length})
@@ -3693,44 +2717,10 @@ function WorkspaceHome(){
                         size="sm"
                         variant="outline"
                         disabled={busy||!bulkAccountId||!groupSelected.length}
-                        onClick={()=>assignAccountsToGroups('single',groupSelected,[bulkAccountId])}
+                        onClick={()=>void assignAccountToGroups(groupSelected,bulkAccountId)}
                       >
                         Назначить
                       </Button>
-                      <Button size="sm" variant="outline" disabled={busy||accountsActive.length<2} onClick={()=>openAccountPicker('mix')}>
-                        <Shuffle size={14}/>Смешать
-                      </Button>
-                      {mixAccountIds.length>=2&&(
-                        <Button
-                          size="sm"
-                          disabled={busy}
-                          onClick={()=>{
-                            const targets=groupSelected.length
-                              ?list('group').filter(g=>groupSelected.includes(g.id)&&groupNeedsJoin(g))
-                              :list('group').filter(groupNeedsJoin);
-                            if(!targets.length){
-                              toast.message('Нет групп, ждущих вступления — уже вступившие смесь не трогает');
-                              return;
-                            }
-                            void assignAccountsToGroups('mix',targets.map(g=>g.id),mixAccountIds);
-                          }}
-                        >
-                          Применить смесь{groupSelected.length?` · ${groupSelected.length}`:''}
-                        </Button>
-                      )}
-                      {groupSelected.length>0&&(
-                        <Button
-                          size="sm"
-                          disabled={!telegramConnected||busy}
-                          onClick={()=>{
-                            const items=list('group').filter(g=>groupSelected.includes(g.id)&&groupNeedsJoin(g));
-                            if(!items.length){toast.message('Нет групп, ждущих вступления');return}
-                            void startBackgroundJoins(items.map(g=>({id:g.id,name:g.data.name||'Группа'})));
-                          }}
-                        >
-                          <Plug size={14}/>Вступить
-                        </Button>
-                      )}
                     </div>
                   </div>
 
@@ -3883,7 +2873,6 @@ function WorkspaceHome(){
                                     {at:new Date().toISOString(),level:'info',text:`Статус: ${ACCOUNT_STATUS_LABELS[rowStatus as AccountStatus]||rowStatus}`},
                                     {at:new Date().toISOString(),level:'info',text:`Вступления сегодня: ${usage.joins}/${usage.inviteLimit||'∞'}`},
                                     {at:new Date().toISOString(),level:'info',text:`Сообщения сегодня: ${usage.messages}/${usage.messageLimit||'∞'}`},
-                                    {at:new Date().toISOString(),level:'info',text:`Инвайты людей: ${usage.memberInvites}/${usage.memberInviteLimit||'∞'}`},
                                     {at:new Date().toISOString(),level:coolLeft?'warn':'info',text:coolLeft?`Отлёжка ещё ${coolLeft} (${cooldownLabel(r.data.cooldownUntil)})`:'Отлёжка отключена'},
                                     {at:new Date().toISOString(),level:'info',text:proxy?`Прокси: ${proxyDisplayLabel(proxy.data)} (${proxy.data.status||'?'})`:'Прокси не назначен'},
                                     {at:new Date().toISOString(),level:'info',text:linkedGroups.length?`Групп: ${linkedGroups.map(g=>g.data.name||'—').join(', ')}`:'Групп не назначено'},
@@ -3985,169 +2974,27 @@ function WorkspaceHome(){
           </>}
 
           {view==='AI-ассистент'&&(
-            <div className="ai-layout">
-              <div className="min-w-0 space-y-5">
-                <LeadCorePanel
-                  aiQualify={(settings?.data.aiQualify??true)!==false}
-                  lastFunnel={lastLeadFunnel}
-                  settings={{
-                    keywords:settings?.data.keywords||defaults.settings.keywords,
-                    minusKeywords:settings?.data.minusKeywords||defaults.settings.minusKeywords,
-                    avoidTopics:settings?.data.avoidTopics||defaults.settings.avoidTopics,
-                    leadCriteria:settings?.data.leadCriteria||defaults.settings.leadCriteria,
-                    hotSignals:settings?.data.hotSignals||defaults.settings.hotSignals,
-                    product:settings?.data.product||defaults.settings.product,
-                  }}
-                />
-                <section className="panel">
-                  <div className="flex justify-between items-start gap-4 mb-5 flex-wrap">
-                    <div className="title-icon">
-                      <div className="icon-box"><Sparkles size={22}/></div>
-                      <div>
-                        <h2 className="m-0">{settings?.data.name||defaults.settings.name}</h2>
-                        <p className="small-note mt-1">DeepSeek встроен · контекст для лидов и черновиков</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className={`badge ${aiKeyReady?'success':'warning'}`}>{aiKeyReady?'DeepSeek подключён':'Нет AI_API_KEY в .env'}</span>
-                      <Button variant="outline" size="sm" onClick={()=>open('settings',settings)}><Pencil size={14}/>{settings?'Изменить':'Настроить'}</Button>
-                    </div>
-                  </div>
-                  {(settings?.data.projectUrl||defaults.settings.projectUrl)&&(
-                    <p className="mb-4"><a className="text-[var(--spike-primary)] font-medium" href={settings?.data.projectUrl||defaults.settings.projectUrl} target="_blank" rel="noreferrer">{settings?.data.projectUrl||defaults.settings.projectUrl}<ExternalLink className="inline ml-1" size={14}/></a></p>
-                  )}
-                  <div className="ai-block">
-                    <div className="flex justify-between gap-3 items-start flex-wrap mb-2">
-                      <h3 style={{marginBottom:0}}>Продукт и оффер</h3>
-                      <Button size="sm" variant="outline" disabled={busy||!aiKeyReady} onClick={rebuildProduct}><RefreshCw size={14}/>Пересобрать и обойти группы</Button>
-                    </div>
-                    <p className="whitespace-pre-wrap">{settings?.data.product||defaults.settings.product}</p>
-                  </div>
-                  <div className="ai-filter-grid mt-5">
-                    <div className="ai-filter-card">
-                      <h3>Аудитория</h3>
-                      <p className="text-sm leading-6">{settings?.data.audience||defaults.settings.audience}</p>
-                    </div>
-                    <div className="ai-filter-card">
-                      <h3>Критерии лида</h3>
-                      <p className="text-sm leading-6">{settings?.data.leadCriteria||defaults.settings.leadCriteria}</p>
-                    </div>
-                    <div className="ai-filter-card">
-                      <h3>Боли</h3>
-                      <p className="text-sm leading-6">{settings?.data.pains||defaults.settings.pains}</p>
-                    </div>
-                    <div className="ai-filter-card">
-                      <h3>Ценность</h3>
-                      <p className="text-sm leading-6">{settings?.data.valueProps||defaults.settings.valueProps}</p>
-                    </div>
-                  </div>
-                  <div className="ai-filter-grid mt-4">
-                    <div className="ai-filter-card">
-                      <h3>Тон</h3>
-                      <p className="text-sm leading-6">{settings?.data.tone||defaults.settings.tone}</p>
-                    </div>
-                    <div className="ai-filter-card">
-                      <h3>CTA</h3>
-                      <p className="text-sm leading-6">{settings?.data.cta||defaults.settings.cta}</p>
-                    </div>
-                  </div>
-                  <div className="ai-block mt-4">
-                    <h3>Мягкое закрытие в ЛС</h3>
-                    <p className="muted text-sm leading-6">{settings?.data.dmSoftClose||defaults.settings.dmSoftClose}</p>
-                  </div>
-                  {(settings?.data.hotSignals||defaults.settings.hotSignals)&&(
-                    <div className="ai-block">
-                      <h3>Сигналы горячего</h3>
-                      <p className="muted">{settings?.data.hotSignals||defaults.settings.hotSignals}</p>
-                    </div>
-                  )}
-                  {(settings?.data.learnExamples)&&(
-                    <div className="ai-block">
-                      <h3>Обучение (примеры)</h3>
-                      <p className="muted text-sm whitespace-pre-wrap">{settings.data.learnExamples}</p>
-                    </div>
-                  )}
-                </section>
-
-                <section className="panel">
-                  <div className="ai-filter-grid">
-                    <div className="ai-filter-card plus">
-                      <h3>Плюс-слова</h3>
-                      <div className="kw-list">
-                        {(settings?.data.keywords||defaults.settings.keywords).split(/[,;\n]+/).filter(Boolean).map((t:string)=>(
-                          <span className="kw plus" key={t}>{t.trim()}</span>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="ai-filter-card minus">
-                      <h3>Стоп / минус-слова</h3>
-                      {Array.isArray(settings?.data?.lastMinusAdded)&&settings.data.lastMinusAdded.length>0&&(
-                        <div className="ai-last-minus">
-                          <div className="ai-last-minus-title">
-                            Только что из лидов
-                            {settings.data.lastMinusAddedAt?` · ${new Date(settings.data.lastMinusAddedAt).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}`:''}
-                          </div>
-                          <div className="kw-list">
-                            {settings.data.lastMinusAdded.map((t:string)=>(
-                              <span className="kw minus is-new" key={`new-${t}`}>{t}</span>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                      <div className="kw-list">
-                        {(settings?.data.minusKeywords||defaults.settings.minusKeywords).split(/[,;\n]+/).filter(Boolean).map((t:string)=>(
-                          <span className="kw minus" key={t}>{t.trim()}</span>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="ai-block">
-                    <h3>Ниши каталога</h3>
-                    <div className="kw-list">
-                      {nichesFromProjectText(settings?.data.product,settings?.data.audience,settings?.data.keywords,settings?.data.leadCriteria).map(n=>(
-                        <span className="kw niche" key={n}>{GROUP_NICHE_LABELS[n]}</span>
-                      ))}
-                    </div>
-                  </div>
-                </section>
-              </div>
-
-              <div className="min-w-0 space-y-5">
-                <section className="panel">
-                  <h2 className="mb-3">Действия</h2>
-                  <div className="flex flex-col gap-2">
-                    <Button disabled={busy||!aiKeyReady} onClick={rebuildProduct}><RefreshCw size={15}/>Пересобрать продукт + обход</Button>
-                    <Button variant="outline" disabled={busy} onClick={trainFromHot}><Sparkles size={15}/>Обучить на горячих лидах</Button>
-                    <Button variant="outline" disabled={busy||!excludedLeads.length} onClick={trainFromIgnored}>
-                      <Ban size={15}/>Обучить на игноре → стоп-слова{excludedLeads.length?` (${excludedLeads.length})`:''}
-                    </Button>
-                    <Button variant="outline" disabled={busy} onClick={async()=>{setBusy(true);try{const r=await rescanAllGroups({force:true});toast.success(`Обход: ${r.scanned} групп, +${r.added} лидов`)}catch(e){toast.error((e as Error).message)}finally{setBusy(false)}}}><Search size={15}/>Обход групп сейчас</Button>
-                    <Button variant="outline" onClick={()=>{navigate('Группы и каналы');openCatalog()}}><Search size={15}/>Поиск тем</Button>
-                  </div>
-                  <p className="muted mt-4 text-sm">
-                    Автообход: {(settings?.data.autoRescanEnabled??true)?'вкл.':'выкл.'} каждые {settings?.data.autoRescanMinutes||30} мин
-                    {autoRescanRunning?' · идёт…':''}
-                    {settings?.data.lastAutoRescanAt?` · последний ${new Date(settings.data.lastAutoRescanAt).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'})}`:''}.
-                    Ядро score≥45 + стоп-слова до AI. AI-шлюз: {(settings?.data.aiQualify??true)?'вкл. (только подтверждение кандидатов ядра)':'выкл. (только score ядра)'}.
-                  </p>
-                </section>
-
-                <section className="panel ai-tips">
-                  <h2 className="mb-2">Конверсия AI-ассистента</h2>
-                  <ol className="ai-tips-list">
-                    <li><strong>Строгий AI-шлюз</strong> — лид показывается только если сообщение прошло все правила ассистента; лучше меньше, чем шум.</li>
-                    <li><strong>Подробный продукт</strong> — чем точнее описание и критерии, тем точнее отбор hot/warm.</li>
-                    <li><strong>Клик по подсказкам</strong> — добавляйте плюс/минус в настройках одним нажатием.</li>
-                    <li><strong>В стоп-слова</strong> — сообщение не лид: сразу в минус-фильтр + скрыть из списка.</li>
-                    <li><strong>Не учитывать</strong> — шум без новых стоп-слов; потом можно «Обучить на игноре».</li>
-                    <li><strong>Обучение на горячих</strong> — после 5–10 hot нажмите «Обучить», исключённые лиды не участвуют.</li>
-                    <li><strong>Пересборка → обход</strong> — после правок продукта сразу сканируем группы под новые правила.</li>
-                    <li><strong>Автообход</strong> — круглосуточно через tg-worker (кабинет открывать не нужно).</li>
-                    <li><strong>Стоп-слова жёстко</strong> — вакансии и накрутка отсекаются до и внутри AI.</li>
-                  </ol>
-                </section>
-              </div>
-            </div>
+            <AiWorkspace
+              records={records}
+              projects={projects}
+              loading={loading}
+              error={error}
+              aiKeyReady={aiKeyReady}
+              leadTextVisible={canSeeLeadText(workspaceMeta)}
+              groupsVisible={canSeeGroups(workspaceMeta)}
+              telegramConnected={telegramConnected}
+              activeProjectId={activeProjectId}
+              onSelectProject={setActiveProjectId}
+              onRefresh={refresh}
+              onOpenThread={(id)=>{const item=records.find(r=>r.id===id);if(item)void openLead(item)}}
+              onGoGroups={()=>goChats()}
+              onRescan={async()=>{
+                try{
+                  const r=await rescanAllGroups({force:true});
+                  if(!r.skipped)toast.success(`Обход: ${r.scanned} групп, +${r.added} лидов`);
+                }catch(e){toast.error((e as Error).message)}
+              }}
+            />
           )}
 
           {view==='Настройки'&&(
@@ -4187,6 +3034,30 @@ function WorkspaceHome(){
                         onChange={e=>setGenSettings(s=>({...s,autoRescanMinutes:Math.max(5,Math.min(180,Number(e.target.value)||30))}))}
                       />
                       <span className="settings-hint">Круглосуточно через tg-worker (кабинет не нужен). Интервал — минимум между сканами одной группы. Кнопка «Собрать лиды» — сразу.</span>
+                    </label>
+                  </div>
+                  <div className="settings-row">
+                    <label className="field">Лимит оценок AI в день
+                      <Input
+                        type="number"
+                        inputMode="numeric"
+                        min={1}
+                        max={MAX_DAILY_CAP}
+                        value={genSettings.judgeDailyCap}
+                        onChange={e=>setGenSettings(s=>({...s,judgeDailyCap:clampCap(e.target.value,DEFAULT_JUDGE_DAILY_CAP)}))}
+                      />
+                      <span className="settings-hint">Сколько сообщений AI прочитает за сутки по всем проектам. Остальные подождут следующего дня в шаге «Без оценки».</span>
+                    </label>
+                    <label className="field">Лимит черновиков в день
+                      <Input
+                        type="number"
+                        inputMode="numeric"
+                        min={1}
+                        max={MAX_DAILY_CAP}
+                        value={genSettings.draftDailyCap}
+                        onChange={e=>setGenSettings(s=>({...s,draftDailyCap:clampCap(e.target.value,DEFAULT_DRAFT_DAILY_CAP)}))}
+                      />
+                      <span className="settings-hint">Сколько черновиков ответа AI напишет за сутки: и сам для горячих лидов, и по кнопке.</span>
                     </label>
                   </div>
                   <label className="settings-check">
@@ -4231,7 +3102,7 @@ function WorkspaceHome(){
                     <div className="icon-box"><MessageSquare size={20}/></div>
                     <div>
                       <h2>Уведомления в Telegram</h2>
-                      <p className="small-note">Бот: новые лиды, ответы клиентов в «Переписках» и события рассылки</p>
+                      <p className="small-note">Бот: новые лиды и ответы клиентов в «Переписках»</p>
                     </div>
                   </div>
                   <span className={`badge ${genSettings.notifyEnabled&&genSettings.notifyBotToken&&genSettings.notifyChatId?'success':'neutral'}`}>
@@ -4241,7 +3112,7 @@ function WorkspaceHome(){
                 <div className="settings-fields">
                   <label className="settings-check">
                     <Checkbox checked={genSettings.notifyEnabled} onCheckedChange={v=>setGenSettings(s=>({...s,notifyEnabled:v===true}))}/>
-                    <span>Включить уведомления (лиды + переписки + рассылка)</span>
+                    <span>Включить уведомления (лиды + переписки)</span>
                   </label>
                   <ol className="settings-steps">
                     <li>Создайте бота у <strong>@BotFather</strong> → команда /newbot → скопируйте token.</li>
@@ -4303,42 +3174,18 @@ function WorkspaceHome(){
         </div>
       </SidebarInset>
 
-      <Dialog open={!!modal} onOpenChange={o=>{if(!o&&!busy){setModal(null);setSecret('');setInviteWizardStep(1)}}}>
-        <DialogContent className={`max-h-[90vh] overflow-y-auto ${modal?.kind==='settings'?'sm:max-w-3xl':modal?.kind==='audience_task'||modal?.kind==='invite_task'||modal?.kind==='mailing_task'?'sm:max-w-xl':''}`}>
+      <Dialog open={!!modal} onOpenChange={o=>{if(!o&&!busy){setModal(null);setSecret('')}}}>
+        <DialogContent className={`max-h-[90vh] overflow-y-auto `}>
           <DialogHeader>
             <DialogTitle>{
-              modal?.kind==='settings'?(modal?.item?'Настройки AI-ассистента':'Создать AI-ассистента'):
-              modal?.kind==='audience_task'?(modal?.item?'Изменить сбор':'Настройте параметры сбора'):
-              modal?.kind==='invite_task'?(inviteWizardStep===1?'Выберите тип инвайтинга':modal?.item?'Изменить инвайт':'Настройте параметры инвайтинга'):
-              modal?.kind==='mailing_task'?(modal?.item?'Изменить рассылку':'Новая рассылка'):
               `${modal?.item?'Изменить':'Добавить'} ${modal?labels[modal.kind]:''}`
             }</DialogTitle>
             <DialogDescription>{
-              modal?.kind==='settings'?'Продукт, фильтры и обучение. DeepSeek уже подключён в коде.':
-              modal?.kind==='audience_task'?'Аккаунт вступит в источник и соберёт участников по фильтрам.':
-              modal?.kind==='invite_task'?'Приглашение собранной базы в вашу группу с паузами и лимитами.':
-              modal?.kind==='mailing_task'?'ЛС или reply в чат: AI/Spintax, ротация аккаунтов, лог доставок.':
               'Запись будет сохранена в вашем рабочем пространстве.'
             }</DialogDescription>
           </DialogHeader>
           <form className="form-stack" onSubmit={save}>
-            {modal?.kind!=='settings'&&modal?.kind!=='audience_task'&&modal?.kind!=='invite_task'&&modal?.kind!=='mailing_task'&&field('name','Название')}
-            {modal?.kind==='audience_task'&&(
-              <AudienceTaskFields
-                form={form}
-                setForm={(fn)=>{setFormError('');setForm(fn)}}
-                accounts={accountsUsableOpts}
-              />
-            )}
-            {modal?.kind==='invite_task'&&inviteWizardStep===1&&(
-              <InviteModePicker mode={form.mode||'ordinary'} onPick={m=>setForm((f:any)=>({...f,mode:m}))} onContinue={()=>setInviteWizardStep(2)}/>
-            )}
-            {modal?.kind==='invite_task'&&inviteWizardStep===2&&(
-              <InviteTaskFields form={form} setForm={setForm} accounts={accountsUsableOpts} audienceTasks={list('audience_task').map(r=>({id:r.id,data:r.data}))}/>
-            )}
-            {modal?.kind==='mailing_task'&&(
-              <MailingTaskFields form={form} setForm={setForm} accounts={accountsUsableOpts} audienceTasks={list('audience_task').map(r=>({id:r.id,data:r.data}))}/>
-            )}
+            {modal?.kind!=='settings'&&field('name','Название')}
             {modal?.kind==='account'&&<>
               {field('phone','Телефон','tel','+79991234567')}
               <label className="field">Прокси
@@ -4354,21 +3201,15 @@ function WorkspaceHome(){
                   </SelectContent>
                 </Select>
               </label>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 gap-3">
                 <label className="field">Вступления
                   <Input type="number" min={0} max={10000} value={form.limits?.invite??10} onChange={e=>changeLimit('invite',e.target.value)}/>
-                </label>
-                <label className="field">Инвайт людей
-                  <Input type="number" min={0} max={10000} value={form.limits?.memberInvite??40} onChange={e=>changeLimit('memberInvite',e.target.value)}/>
                 </label>
                 <label className="field">Сообщения
                   <Input type="number" min={0} max={10000} value={form.limits?.message??10} onChange={e=>changeLimit('message',e.target.value)}/>
                 </label>
-                <label className="field">Чаты
-                  <Input type="number" min={0} max={10000} value={form.limits?.chat??10} onChange={e=>changeLimit('chat',e.target.value)}/>
-                </label>
               </div>
-              <p className="small-note">Дневные лимиты (сброс 00:00 МСК). «Вступления» — join в группы; «Инвайт людей» — модуль инвайтинга.</p>
+              <p className="small-note">Дневные лимиты (сброс 00:00 МСК). «Вступления» — join в группы; «Сообщения» — ответы лидам в личку.</p>
               <div className="grid grid-cols-2 gap-4">
                 {field('firstName','Имя','text','Бренд или имя')}
                 {field('lastName','Фамилия','text','опционально')}
@@ -4433,8 +3274,8 @@ function WorkspaceHome(){
               {field('url','Ссылка на группу или канал','text','https://t.me/… или https://t.me/+invite')}
               <label className="field">Аккаунт<Pick value={form.accountId} onChange={v=>change('accountId',v)} options={accountsActive.map(r=>({id:r.id,name:r.data.name}))} placeholder={accountsActive.length?'Назначить позже':'Нет рабочих аккаунтов'}/></label>
               <p className="small-note">
-                {onboardAfterSave||!modal.item
-                  ? 'После сохранения аккаунт вступит в группу и просканирует сообщения на лиды.'
+                {!modal.item
+                  ? 'После сохранения нажмите «Вступить» в строке группы — аккаунт вступит и просканирует сообщения на лиды.'
                   : 'Нужна живая ссылка из Telegram. Шаблоны вроде @mp_automation не работают.'}
               </p>
             </>}
@@ -4465,110 +3306,6 @@ function WorkspaceHome(){
               </div>
               {form.draft&&<label className="field">Черновик<Textarea rows={5} value={form.draft} onChange={e=>change('draft',e.target.value)}/></label>}
             </>}
-            {modal?.kind==='settings'&&<>
-              <div className="form-section">
-                <p className="form-section-title">DeepSeek</p>
-                <p className="form-section-hint">Провайдер и ключ заданы в коде/.env — настраивать не нужно. {aiKeyReady?'Ключ активен.':'Добавьте AI_API_KEY в .env и перезапустите сервер.'}</p>
-                <label className="flex items-center gap-2 text-sm font-medium">
-                  <Checkbox checked={form.aiQualify!==false} onCheckedChange={v=>setForm((f:any)=>({...f,aiQualify:v===true}))}/>
-                  AI подтверждает кандидатов ядра (hot/warm)
-                </label>
-                <p className="form-section-hint mt-1">Сначала ядро (score ≥ 45). AI не поднимает чат без запроса сервиса. Лучше 0 лидов, чем шум.</p>
-                <label className="flex items-center gap-2 text-sm font-medium mt-3">
-                  <Checkbox checked={form.autoRescanEnabled!==false} onCheckedChange={v=>setForm((f:any)=>({...f,autoRescanEnabled:v===true}))}/>
-                  Автообход подключённых чатов (ловить новые заявки)
-                </label>
-                <label className="field mt-2">Интервал автообхода, минут
-                  <Input type="number" min={5} max={180} value={form.autoRescanMinutes??30} onChange={e=>change('autoRescanMinutes',String(Math.max(5,Math.min(180,Number(e.target.value)||30))))}/>
-                </label>
-                <p className="form-section-hint mt-1">Круглосуточно: tg-worker дергает автообход. Кабинет открывать не обязательно (по умолчанию раз в 30 мин на группу).</p>
-              </div>
-
-              <div className="form-section">
-                <p className="form-section-title">Продукт (подробно)</p>
-                {field('name','Название ассистента / бренда')}
-                {field('projectUrl','Ссылка на сайт','url','https://example.com')}
-                <label className="field">Полное описание продукта, модулей и правил ответа
-                  <Textarea rows={10} value={form.product||''} onChange={e=>change('product',e.target.value)} placeholder="Что делает продукт, для кого, модули, интеграции, как начать…"/>
-                </label>
-                <label className="field">Заметки для пересборки (опционально)
-                  <Textarea rows={2} value={form.productNotes||''} onChange={e=>change('productNotes',e.target.value)} placeholder="Усиль акцент на боль / оффер / демо…"/>
-                </label>
-                <label className="field">Целевая аудитория
-                  <Textarea rows={3} value={form.audience||''} onChange={e=>change('audience',e.target.value)}/>
-                </label>
-                <label className="field">Критерии целевого лида
-                  <Textarea rows={3} value={form.leadCriteria||''} onChange={e=>change('leadCriteria',e.target.value)}/>
-                </label>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="field">Боли клиента
-                    <Textarea rows={3} value={form.pains||''} onChange={e=>change('pains',e.target.value)}/>
-                  </label>
-                  <label className="field">Ценность / результаты
-                    <Textarea rows={3} value={form.valueProps||''} onChange={e=>change('valueProps',e.target.value)}/>
-                  </label>
-                </div>
-                <label className="field">Сигналы горячего лида
-                  <Textarea rows={2} value={form.hotSignals||''} onChange={e=>change('hotSignals',e.target.value)} placeholder="ищу crm, нужна синхронизация…"/>
-                </label>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="field">Тон ответов
-                    <Textarea rows={2} value={form.tone||''} onChange={e=>change('tone',e.target.value)}/>
-                  </label>
-                  <label className="field">CTA
-                    <Textarea rows={2} value={form.cta||''} onChange={e=>change('cta',e.target.value)}/>
-                  </label>
-                </div>
-                <label className="field mt-3">Мягкое закрытие в ЛС (не банить / не мутить)
-                  <Textarea
-                    rows={3}
-                    value={form.dmSoftClose??DEFAULT_DM_SOFT_CLOSE}
-                    onChange={e=>change('dmSoftClose',e.target.value)}
-                    placeholder={DEFAULT_DM_SOFT_CLOSE}
-                  />
-                </label>
-                <p className="form-section-hint mt-1">Добавляется в черновики и AI-рассылку: если неактуально — извиниться и попросить не банить/не мутить.</p>
-              </div>
-
-              <div className="form-section">
-                <p className="form-section-title">Плюс-слова</p>
-                <p className="form-section-hint">Enter / запятая — добавить. Нажмите подсказку, чтобы вставить в юнит.</p>
-                <KeywordChips value={form.keywords||''} onChange={v=>change('keywords',v)} variant="plus" placeholder="ищу, нужен, сервис…"/>
-                <div className="kw-list mt-2">
-                  {unusedSuggestions(form.keywords||'',SUGGESTED_PLUS).slice(0,14).map(t=>(
-                    <button type="button" className="kw plus" key={t} onClick={()=>change('keywords',mergeKeywords(form.keywords||'',t))}>+ {t}</button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="form-section">
-                <p className="form-section-title">Стоп / минус-слова</p>
-                <p className="form-section-hint">Всегда исключаются при поиске в группах.</p>
-                <KeywordChips value={form.minusKeywords||''} onChange={v=>change('minusKeywords',v)} variant="minus" placeholder="вакансия, накрутка…"/>
-                <div className="kw-list mt-2">
-                  {unusedSuggestions(form.minusKeywords||'',SUGGESTED_MINUS).slice(0,14).map(t=>(
-                    <button type="button" className="kw minus" key={t} onClick={()=>change('minusKeywords',mergeKeywords(form.minusKeywords||'',t))}>+ {t}</button>
-                  ))}
-                </div>
-                <label className="field mt-3">Доп. темы, которых избегать
-                  <Textarea rows={2} value={form.avoidTopics||''} onChange={e=>change('avoidTopics',e.target.value)}/>
-                </label>
-              </div>
-
-              <div className="form-section">
-                <p className="form-section-title">Обучение</p>
-                <p className="form-section-hint">Примеры целевых формулировок из горячих лидов (обновляется кнопкой «Обучить»).</p>
-                <label className="field">Примеры
-                  <Textarea rows={3} value={form.learnExamples||''} onChange={e=>change('learnExamples',e.target.value)}/>
-                </label>
-              </div>
-
-              <label className="flex items-center gap-2 text-sm font-medium">
-                <Checkbox checked={!!form._rescanAfterSave} onCheckedChange={v=>setForm((f:any)=>({...f,_rescanAfterSave:v===true}))}/>
-                После сохранения запустить обход групп (новые лиды по правилам)
-              </label>
-              <p className="small-note">DeepSeek уже в коде. Контекст идёт в черновики, AI-отбор и стоп-фильтр скана.</p>
-            </>}
             {modal?.item?.hasSecret&&['proxy'].includes(modal.kind)&&(
               <label className="flex items-center gap-2 text-sm font-medium">
                 <Checkbox checked={clearSecret} onCheckedChange={v=>{setClearSecret(v===true);if(v)setSecret('')}}/>
@@ -4576,38 +3313,12 @@ function WorkspaceHome(){
               </label>
             )}
             {formError&&<p role="alert" className="form-error">{formError}</p>}
-            {modal?.kind==='invite_task'&&inviteWizardStep===1?(
-              <div className="flex justify-end gap-2">
-                <Button type="button" variant="ghost" onClick={()=>setModal(null)}>Отменить</Button>
-              </div>
-            ):modal?.kind==='invite_task'&&inviteWizardStep===2&&!modal.item?(
-              <div className="flex justify-between gap-2">
-                <Button type="button" variant="ghost" onClick={()=>setInviteWizardStep(1)}>Назад</Button>
-                <Button type="submit" disabled={busy}>{busy&&<Loader2 className="animate-spin" size={15}/>}Продолжить</Button>
-              </div>
-            ):(
-              <Button type="submit" disabled={busy}>{busy&&<Loader2 className="animate-spin" size={15}/>}{modal?.kind==='audience_task'&&!modal?.item?'Продолжить':'Сохранить'}</Button>
-            )}
+            <Button type="submit" disabled={busy}>{busy&&<Loader2 className="animate-spin" size={15}/>}Сохранить</Button>
           </form>
         </DialogContent>
       </Dialog>
 
-      <TaskLogDialog
-        open={taskLog}
-        liveLog={taskLog?.taskId?(records.find(r=>r.id===taskLog.taskId)?.data?.log||taskLog.log):taskLog?.log}
-        liveNextAt={taskLog?.taskId?String(records.find(r=>r.id===taskLog.taskId)?.data?.nextAt||''):''}
-        onClose={()=>setTaskLog(null)}
-      />
-
-      <Dialog open={!!mailingDeliveries} onOpenChange={o=>{if(!o)setMailingDeliveries(null)}}>
-        <DialogContent className="sm:max-w-xl max-h-[70vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Доставки · {mailingDeliveries?.title}</DialogTitle>
-            <DialogDescription>Ссылки на сообщения в ЛС или в чате, статус и превью текста</DialogDescription>
-          </DialogHeader>
-          <MailingDeliveriesView deliveries={mailingDeliveries?.deliveries||[]}/>
-        </DialogContent>
-      </Dialog>
+      <TaskLogDialog open={taskLog} onClose={()=>setTaskLog(null)}/>
 
       <Dialog open={groupImportOpen} onOpenChange={o=>{if(!busy){setGroupImportOpen(o);if(!o){setGroupImportText('');setFormError('')}}}}>
         <DialogContent className="sm:max-w-lg">
@@ -4633,22 +3344,16 @@ function WorkspaceHome(){
               setFormError('');
             }}/>
           </label>
-          <label className="flex items-center gap-2 text-sm font-medium">
-            <Checkbox checked={groupImportJoin} onCheckedChange={v=>setGroupImportJoin(v===true)}/>
-            Сразу вступить выбранным аккаунтом
+          <label className="field">Аккаунт
+            <Pick
+              value={groupImportAccountId}
+              onChange={setGroupImportAccountId}
+              options={list('account').map(r=>({id:r.id,name:r.data.name}))}
+              placeholder="Назначить позже"
+            />
           </label>
-          {groupImportJoin&&(
-            <label className="field">Аккаунт
-              <Pick
-                value={groupImportAccountId}
-                onChange={setGroupImportAccountId}
-                options={list('account').map(r=>({id:r.id,name:r.data.name}))}
-                placeholder="Выберите аккаунт"
-              />
-            </label>
-          )}
           <p className="small-note">
-            Найдено ссылок: {parseGroupUrlLines(groupImportText).length}
+            Найдено ссылок: {parseGroupUrlLines(groupImportText).length}. Группы добавятся без вступления — «Вступить» в строке группы.
           </p>
           {formError&&<p className="form-error">{formError}</p>}
           <div className="flex flex-wrap gap-2 justify-end">
@@ -4922,7 +3627,7 @@ function WorkspaceHome(){
 
               <label className="field catalog-account">
                 Аккаунт
-                <Pick value={catalogAccountId} onChange={setCatalogAccountId} options={accountsActive.map(r=>({id:r.id,name:r.data.name}))} placeholder={accountsActive.length?'Для фонового вступления':'Нет рабочих аккаунтов'}/>
+                <Pick value={catalogAccountId} onChange={setCatalogAccountId} options={accountsActive.map(r=>({id:r.id,name:r.data.name}))} placeholder={accountsActive.length?'Аккаунт для новых групп':'Нет рабочих аккаунтов'}/>
               </label>
 
               <div className="catalog-results">
@@ -4967,16 +3672,17 @@ function WorkspaceHome(){
                         ):(
                           <Button
                             size="sm"
-                            disabled={busy||!telegramConnected||!dbRec.data.accountId}
+                            disabled={busy||joinInFlight||!telegramConnected||!dbRec.data.accountId}
                             onClick={()=>{setCatalogOpen(false);void joinGroup(dbRec)}}
                           >Вступить</Button>
                         )
                       ):canJoin?(
                         <Button
                           size="sm"
-                          disabled={busy||!catalogAccountId}
-                          onClick={()=>joinCatalogNow(g.id)}
-                        >Вступить</Button>
+                          variant="outline"
+                          disabled={busy}
+                          onClick={()=>void addCatalogGroupToDb(g.id)}
+                        ><Plus size={14}/>В базу</Button>
                       ):(
                         <Button
                           size="sm"
@@ -4986,8 +3692,7 @@ function WorkspaceHome(){
                             setCatalogOpen(false);
                             setForm({...defaults.group,name:g.name,url:'',accountId:catalogAccountId,status:'setup',error:''});
                             setModal({kind:'group'});
-                            setOnboardAfterSave(true);
-                            toast.message('Вставьте t.me — после сохранения вступим сами');
+                            toast.message('Вставьте t.me — затем «Вступить» в строке группы');
                           }}
                         >Ссылка</Button>
                       )}
@@ -5037,13 +3742,8 @@ function WorkspaceHome(){
                 <Button
                   disabled={busy||!catalogReadyCount}
                   variant="default"
-                  onClick={()=>catalogMarket==='all'?void importFullCatalogToDb():saveCatalogGroupsToDb(catalogLinkHits.map(g=>g.id),{join:false})}
+                  onClick={()=>catalogMarket==='all'?void importFullCatalogToDb():void addCatalogGroupsToDb(catalogLinkHits.map(g=>g.id))}
                 >{busy?'Сохраняем…':catalogMarket==='all'?`Залить весь каталог (${catalogStats().uniqueUrls})`:`Залить в базу (${catalogReadyCount})`}</Button>
-                <Button
-                  disabled={busy||!catalogReadyCount||!catalogAccountId}
-                  variant="outline"
-                  onClick={()=>addCatalogGroups(catalogLinkHits.map(g=>g.id))}
-                >{busy?'Вступаем…':`Вступить во все (${catalogReadyCount})`}</Button>
               </>
             ):(
               <Button
@@ -5055,10 +3755,9 @@ function WorkspaceHome(){
                   setCatalogOpen(false);
                   setForm({...defaults.group,name:first.name,url:'',accountId:catalogAccountId,status:'setup',error:''});
                   setModal({kind:'group'});
-                  setOnboardAfterSave(true);
-                  toast.message(`Вставьте t.me для «${first.name}» — вступим сразу после сохранения`);
+                  toast.message(`Вставьте t.me для «${first.name}» — затем «Вступить» в строке группы`);
                 }}
-              >Вставить ссылку и вступить</Button>
+              >Вставить ссылку</Button>
             )}
             <Button variant="ghost" disabled={busy} onClick={()=>{setCatalogOpen(false);openManualGroup()}}><Plus size={15}/>Своя группа</Button>
           </div>
@@ -5100,7 +3799,7 @@ function WorkspaceHome(){
               const incoming=rep.from==='client';
               return (
               <div className={`chat-bubble ${incoming?'in':'out'} ${!incoming&&!rep.ok?'fail':''}`} key={`${rep.at}-${i}`}>
-                <span className="chat-meta">{incoming?'Клиент · входящее':(rep.mode==='dm'?'Личка':'В чат')} · {new Date(rep.at).toLocaleString('ru-RU')}{!incoming&&!rep.ok?' · ошибка':''}</span>
+                <span className="chat-meta">{incoming?'Клиент · входящее':(rep.mode==='dm'?'Личка':'В чат')} · {new Date(rep.at).toLocaleString('ru-RU')}{!incoming&&!rep.ok?(rep.status==='pending'?' · отправляется':rep.status==='unknown'?' · не подтверждено':' · ошибка'):''}</span>
                 <p>{rep.text}</p>
                 {rep.error&&<p className="chat-err">{rep.error}</p>}
                 {href&&rep.ok&&(
@@ -5132,32 +3831,19 @@ function WorkspaceHome(){
               placeholder={chatMode==='dm'?'Личное сообщение клиенту…':'Ответ в группу (reply)…'}
             />
             <div className="flex flex-wrap gap-2">
-              <Button disabled={busy||!chatText.trim()} onClick={sendLeadReply}>
+              <Button disabled={busy||!chatText.trim()} onClick={()=>{void sendLeadReply()}}>
                 {busy?<Loader2 className="animate-spin" size={15}/>:null}
                 {chatMode==='dm'?'Отправить в ЛС':'Отправить в чат'}
               </Button>
               <Button variant="outline" disabled={busy} onClick={async()=>{if(!detail)return;await draft(detail);const updated=records.find(r=>r.id===detail.id)||detail;setChatText(prev=>prev||updated.data.draft||'')}}>
                 <Sparkles size={15}/>Черновик AI
               </Button>
-              <Button
-                variant={detail?.data.excludeFromTraining?'outline':'ghost'}
-                disabled={busy||!detail}
-                onClick={()=>detail&&setLeadTrainingExclude(detail,!detail.data.excludeFromTraining)}
-              >
-                <Ban size={15}/>
-                {detail?.data.excludeFromTraining?'Вернуть в учёт':'Не учитывать'}
+              <Button variant="ghost" disabled={busy||!detail} onClick={()=>{if(detail)void leadFeedback(detail,'good')}}>
+                <ThumbsUp size={15}/>Хороший лид
               </Button>
-              {!detail?.data.excludeFromTraining&&(
-                <Button
-                  variant="outline"
-                  disabled={busy||!detail}
-                  title="Пометить как не лид и добавить стоп-слова из сообщения"
-                  onClick={()=>detail&&rejectLeadToStopwords(detail)}
-                >
-                  <FilterX size={15}/>
-                  В стоп-слова
-                </Button>
-              )}
+              <Button variant="ghost" disabled={busy||!detail} onClick={()=>{if(detail)void leadFeedback(detail,'bad')}}>
+                <ThumbsDown size={15}/>Не лид
+              </Button>
               <Button variant="outline" disabled={!chatText} onClick={async()=>{try{await navigator.clipboard.writeText(chatText);toast.success('Скопировано')}catch{toast.error('Не удалось скопировать')}}}>Копировать</Button>
               <Button variant="ghost" onClick={()=>{if(detail){open('lead',detail);setDetail(null)}}}>Правки</Button>
               <Button variant="ghost" onClick={()=>{setDeleting(detail);setDetail(null)}}><Trash2 size={15}/></Button>
@@ -5177,12 +3863,10 @@ function WorkspaceHome(){
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {accountPicker?.mode==='mix'?'Аккаунты для смешанного режима':accountPicker?.mode==='row'?'Аккаунт для группы':'Выберите аккаунт'}
+              {accountPicker?.mode==='row'?'Аккаунт для группы':'Выберите аккаунт'}
             </DialogTitle>
             <DialogDescription>
-              {accountPicker?.mode==='mix'
-                ?'Отметьте аккаунты — они будут перемешаны по выбранным группам.'
-                :'Клик по аккаунту выбирает, кто будет вступать в группы.'}
+              Один аккаунт на группу: он вступает и сканирует. Если он недоступен, группа ждёт — другой аккаунт сам не подставляется.
             </DialogDescription>
           </DialogHeader>
           <div className="relative">
@@ -5204,19 +3888,12 @@ function WorkspaceHome(){
               })
               .map(a=>{
                 const on=accountPickerDraft.includes(a.id);
-                const multi=accountPicker?.mode==='mix';
                 return (
                   <button
                     type="button"
                     key={a.id}
                     className={`account-picker-row ${on?'on':''}`}
-                    onClick={()=>{
-                      if(multi){
-                        setAccountPickerDraft(prev=>on?prev.filter(x=>x!==a.id):[...prev,a.id]);
-                      }else{
-                        setAccountPickerDraft([a.id]);
-                      }
-                    }}
+                    onClick={()=>setAccountPickerDraft([a.id])}
                   >
                     <span className={`account-picker-check ${on?'on':''}`}>{on?<Check size={14}/>:null}</span>
                     <span className="min-w-0 flex-1 text-left">
@@ -5234,26 +3911,13 @@ function WorkspaceHome(){
             )}
           </div>
           <div className="flex flex-wrap justify-between gap-2">
-            {accountPicker?.mode==='mix'?(
-              <div className="flex flex-wrap gap-2">
-                <Button type="button" variant="ghost" size="sm" onClick={()=>setAccountPickerDraft(accountsActive.map(a=>a.id))}>
-                  Выбрать все ({accountsActive.length})
-                </Button>
-                {accountPickerDraft.length>0&&(
-                  <Button type="button" variant="ghost" size="sm" onClick={()=>setAccountPickerDraft([])}>
-                    Снять
-                  </Button>
-                )}
-              </div>
-            ):(
-              <Button type="button" variant="ghost" size="sm" onClick={()=>{setAccountPickerDraft([]);}}>
-                Сбросить
-              </Button>
-            )}
+            <Button type="button" variant="ghost" size="sm" onClick={()=>setAccountPickerDraft([])}>
+              Сбросить
+            </Button>
             <div className="flex gap-2 ml-auto">
               <Button type="button" variant="outline" onClick={()=>setAccountPicker(null)}>Отмена</Button>
-              <Button type="button" disabled={busy||(accountPicker?.mode==='mix'?accountPickerDraft.length<1:!accountPickerDraft[0]&&accountPicker?.mode!=='row')} onClick={confirmAccountPicker}>
-                Готово{accountPicker?.mode==='mix'&&accountPickerDraft.length?` (${accountPickerDraft.length})`:''}
+              <Button type="button" disabled={busy||(!accountPickerDraft[0]&&accountPicker?.mode!=='row')} onClick={confirmAccountPicker}>
+                Готово
               </Button>
             </div>
           </div>
@@ -5298,27 +3962,19 @@ function WorkspaceHome(){
               onClick={()=>setBulkLimits({
                 invite:TELEGRAM_RECOMMENDED_LIMITS.invite,
                 message:TELEGRAM_RECOMMENDED_LIMITS.message,
-                chat:TELEGRAM_RECOMMENDED_LIMITS.chat,
-                memberInvite:TELEGRAM_RECOMMENDED_LIMITS.memberInvite,
               })}
             >
               Подставить рекомендации TG
             </Button>
             <p className="small-note">
-              Рекомендация: инвайт {TELEGRAM_RECOMMENDED_LIMITS.invite} · ЛС {TELEGRAM_RECOMMENDED_LIMITS.message} · чат {TELEGRAM_RECOMMENDED_LIMITS.chat} · участники {TELEGRAM_RECOMMENDED_LIMITS.memberInvite}
+              Рекомендация: вступления {TELEGRAM_RECOMMENDED_LIMITS.invite} · ЛС {TELEGRAM_RECOMMENDED_LIMITS.message}
             </p>
             <div className="grid grid-cols-2 gap-3">
-              <label className="field">Инвайты / день
+              <label className="field">Вступления / день
                 <Input type="number" min={0} max={10000} value={bulkLimits.invite} onChange={e=>setBulkLimits(s=>({...s,invite:Number(e.target.value)||0}))}/>
               </label>
               <label className="field">ЛС / день
                 <Input type="number" min={0} max={10000} value={bulkLimits.message} onChange={e=>setBulkLimits(s=>({...s,message:Number(e.target.value)||0}))}/>
-              </label>
-              <label className="field">В чаты / день
-                <Input type="number" min={0} max={10000} value={bulkLimits.chat} onChange={e=>setBulkLimits(s=>({...s,chat:Number(e.target.value)||0}))}/>
-              </label>
-              <label className="field">Участники / день
-                <Input type="number" min={0} max={10000} value={bulkLimits.memberInvite} onChange={e=>setBulkLimits(s=>({...s,memberInvite:Number(e.target.value)||0}))}/>
               </label>
             </div>
           </div>
@@ -5472,11 +4128,7 @@ function WorkspaceHome(){
           <AlertDialogHeader>
             <AlertDialogTitle>Удалить «{deleting?.data.name}»?</AlertDialogTitle>
             <AlertDialogDescription>
-              {deleting?.kind==='audience_task'
-                ? 'Задача сбора и все участники базы будут удалены.'
-                : deleting?.kind==='invite_task'
-                  ? 'Задача инвайтинга будет удалена. Собранная база останется.'
-                  : deleting?.kind==='group'
+              {deleting?.kind==='group'
                 ? 'Группа и все лиды из неё будут удалены из админки. Из Telegram аккаунт не выйдет.'
                 : 'Запись будет удалена из админки. Это не удаляет аккаунт Telegram и не выходит из группы.'}
             </AlertDialogDescription>

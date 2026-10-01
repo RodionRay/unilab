@@ -68,9 +68,6 @@ export function subscribeNotices(fn: () => void) {
 
 export function inferNoticeView(text: string): NavName | undefined {
   const t = text.toLowerCase();
-  if (/рассылк/.test(t)) return "Рассылка";
-  if (/инвайт/.test(t)) return "Инвайтинг";
-  if (/сбор заверш|сбор аудитори|сбор запущен|задача сбора/.test(t)) return "Сбор аудитории";
   if (/клиент ответил|переписк|черновик/.test(t)) return "Переписки";
   if (/лид/.test(t)) return "Лиды";
   if (/прокси/.test(t)) return "Прокси";

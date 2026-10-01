@@ -20,20 +20,26 @@ export type AuthzDecision={ok:true}|{ok:false;error:string};
 
 type ActionRule={anyOf:readonly CrmAccessKey[];mutates:boolean};
 
-export const RECORD_KINDS=['account','proxy','group','lead','settings','audience_task','audience_user','invite_task','mailing_task'] as const;
+/** Record kinds generic `save`/`delete` may write. Rows of removed kinds (audience_task, audience_user,
+ * invite_task, mailing_task) stay in D1 but are neither served nor accepted. */
+export const RECORD_KINDS=['account','proxy','group','lead','settings'] as const;
 export type RecordKind=(typeof RECORD_KINDS)[number];
 
+/**
+ * Kinds GET serves. `project` is read-only here: it changes only through the project_* actions,
+ * which validate fields and ownership (lead core v2 REQ-23). `scan_day` / `ai_guard` are never served.
+ */
+export const READ_RECORD_KINDS=[...RECORD_KINDS,'project'] as const;
+export type ReadRecordKind=(typeof READ_RECORD_KINDS)[number];
+
 /** Section that owns each record kind (save/delete/GET visibility). */
-export const KIND_ACCESS:Readonly<Record<RecordKind,readonly CrmAccessKey[]>>={
+export const KIND_ACCESS:Readonly<Record<ReadRecordKind,readonly CrmAccessKey[]>>={
  account:['accounts'],
  proxy:['proxies'],
  group:['groups'],
  lead:['leads','chats'],
  settings:['settings','ai'],
- audience_task:['audience'],
- audience_user:['audience'],
- invite_task:['invite'],
- mailing_task:['mailing'],
+ project:['ai','leads'],
 };
 
 const LEADS:readonly CrmAccessKey[]=['leads','chats'];
@@ -46,8 +52,9 @@ export const ACTION_RULES:Readonly<Record<string,ActionRule>>={
  mark_lead_viewed:rule(LEADS),
  set_lead_training_exclude:rule(LEADS),
  bulk_set_lead_training_exclude:rule(LEADS),
- reject_lead_stopwords:rule(LEADS),
  send_lead_message:rule(LEADS),
+ lead_feedback:rule(LEADS),
+ dismiss_draft:rule(LEADS),
  poll_dm_replies:rule(['chats','leads']),
 
  check_proxy:rule(['proxies']),
@@ -62,33 +69,19 @@ export const ACTION_RULES:Readonly<Record<string,ActionRule>>={
  join_group:rule(['groups']),
  scan_group:rule(['groups']),
  rescan_groups:rule(['groups']),
- heal_dead_group_accounts:rule(['groups']),
  import_catalog:rule(['groups']),
  mark_auto_rescan:rule(['groups']),
- enqueue_joins:rule(['groups']),
  set_group_join_state:rule(['groups']),
  assign_group_accounts:rule(['groups']),
  heal_group_join_state:rule(['groups']),
 
  rebuild_product:rule(AI),
- train_from_hot:rule(AI),
- train_from_ignored:rule(AI),
- preview_lead_core:rule(AI,false),
+ project_create:rule(AI),
+ project_update:rule(AI),
+ project_delete:rule(AI),
+ set_group_project:rule(AI),
+ funnel:rule(AI,false),
  test_notify:rule(['settings']),
-
- start_audience:rule(['audience']),
- pause_audience:rule(['audience']),
- tick_audience:rule(['audience']),
- export_audience:rule(['audience'],false),
-
- start_invite:rule(['invite']),
- pause_invite:rule(['invite']),
- tick_invite:rule(['invite']),
-
- start_mailing:rule(['mailing']),
- pause_mailing:rule(['mailing']),
- refill_mailing_ai_pool:rule(['mailing']),
- tick_mailing:rule(['mailing']),
 };
 
 const DENY_UNKNOWN='Действие недоступно для вашей роли';
@@ -97,6 +90,10 @@ const DENY_SECTION='Нет доступа к этому разделу. Обра
 
 function isRecordKind(kind:unknown):kind is RecordKind{
  return typeof kind==='string'&&(RECORD_KINDS as readonly string[]).includes(kind);
+}
+
+function isReadRecordKind(kind:unknown):kind is ReadRecordKind{
+ return typeof kind==='string'&&(READ_RECORD_KINDS as readonly string[]).includes(kind);
 }
 
 function hasAnyAccess(actor:WorkspaceActor,keys:readonly CrmAccessKey[]):boolean{
@@ -118,11 +115,11 @@ export function authorizeWorkspaceAction(actor:WorkspaceActor,action:unknown,kin
  return hasAnyAccess(actor,r.anyOf)?{ok:true}:{ok:false,error:DENY_SECTION};
 }
 
-/** Sections that pick farm accounts for their tasks without managing the accounts themselves. */
-const ACCOUNT_PICKER_SECTIONS:readonly CrmAccessKey[]=['mailing','audience','invite','groups'];
+/** Sections that pick an account for their groups without managing the accounts themselves. */
+const ACCOUNT_PICKER_SECTIONS:readonly CrmAccessKey[]=['groups'];
 const ACCOUNT_PICKER_FIELDS=[
  'name','username','firstName','lastName','status','cooldownUntil','limits','hasPhoto',
- 'joinsToday','joinsDay','memberInvitesToday','memberInviteDay',
+ 'joinsToday','joinsDay',
 ] as const;
 /** Owner-only secrets that live inside record data (not in the sealed `secret` column). */
 const OWNER_ONLY_SETTINGS_FIELDS=['notifyBotToken'] as const;
@@ -140,13 +137,47 @@ function redactOwnerSecrets(data:Record<string,unknown>):Record<string,unknown>{
 }
 
 function viewRecord<T extends WorkspaceRecordView>(actor:WorkspaceActor,rec:T):T|null{
- if(!isRecordKind(rec.kind))return null;
+ if(!isReadRecordKind(rec.kind))return null;
  if(rec.kind==='settings')return {...rec,data:redactOwnerSecrets(rec.data)};
+ if(rec.kind==='project'&&hasAnyAccess(actor,KIND_ACCESS.project))return {...rec,data:withoutLeadText(actor,rec.data)};
  if(hasAnyAccess(actor,KIND_ACCESS[rec.kind]))return rec;
  if(rec.kind==='account'&&hasAnyAccess(actor,ACCOUNT_PICKER_SECTIONS)){
   return {...rec,data:pick(rec.data,ACCOUNT_PICKER_FIELDS)};
  }
  return null;
+}
+
+/** Lead and DM texts (funnel samples, project examples) are visible only to the lead sections. */
+export function canSeeLeadText(actor:WorkspaceActor):boolean{
+ return hasAnyAccess(actor,LEADS);
+}
+
+const LEAD_TEXT_PROJECT_FIELDS=['goodExamples','badExamples'] as const;
+
+function withoutLeadText(actor:WorkspaceActor,project:Record<string,unknown>):Record<string,unknown>{
+ if(canSeeLeadText(actor))return project;
+ const next={...project};
+ for(const f of LEAD_TEXT_PROJECT_FIELDS)if(f in next)next[f]=[];
+ return next;
+}
+
+function isObject(v:unknown):v is Record<string,unknown>{
+ return !!v&&typeof v==='object'&&!Array.isArray(v);
+}
+
+/**
+ * Action response projection for project / funnel actions: an actor without lead access (ai or
+ * settings only) gets no lead/DM texts — funnel `samples` emptied, project examples emptied.
+ */
+export function redactLeadTextFor(actor:WorkspaceActor,body:Record<string,unknown>):Record<string,unknown>{
+ if(canSeeLeadText(actor))return body;
+ const next={...body};
+ for(const key of ['funnel','dm']){
+  const view=next[key];
+  if(isObject(view))next[key]={...view,samples:{}};
+ }
+ if(isObject(next.project))next.project=withoutLeadText(actor,next.project);
+ return next;
 }
 
 /** GET projection: drop kinds outside the member's sections, strip owner-only secrets. */
