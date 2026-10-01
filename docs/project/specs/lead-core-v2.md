@@ -64,7 +64,10 @@ Judge
 - REQ-10 IF a batch fails (invalid JSON/schema or call error after retry → `judgeError`) or is skipped (no AI key or
   daily judge cap → `judgeSkipped` + reason) THEN THE scan SHALL stop judging, count later batches `judgeSkipped`
   (`blocked`) and set `scanCursor = firstUnjudgedId − 1` — only for `messageKind` group/discussion; comment ids never
-  reach the cursor. There is no non-LLM fallback.
+  reach the cursor. There is no non-LLM fallback. Exceptions (code review 2026-10-01, poison-batch guard): an answer
+  still invalid JSON/schema after the retry moves the cursor past that batch (`judgeError`, counted, samples kept);
+  after 3 consecutive rewinding scans of a group (`judgeFailStreak`) the cursor jumps to the worker cursor and a
+  Russian warn line goes to scanLog/rescanLog.
 - REQ-11 THE judge prompt SHALL treat message text as untrusted data, forbid inventing facts, require one verdict per id.
 Funnel
 - REQ-12 WHEN a scan (group or DM pass) finishes THE SYSTEM SHALL atomically upsert `scan_day`
@@ -210,3 +213,6 @@ Verdict REVISE → fixed:
 - 2026-10-01 Learning = examples in the prompt, never auto stop words (self-poisoning observed on the stand).
 - 2026-10-01 Plan review: funnel as per-day aggregate row instead of per-run records (D1 GET budget); cursor rewinds to
   first unjudged id so a judge outage never loses messages.
+- 2026-10-01 Code review: a deterministic poison batch would pin the cursor and burn ~2/3 of the daily cap, so the
+  rewind is bounded — schema-invalid answer ×2 skips the batch, 3 failed scans in a row advance the group; both
+  counted as `judgeError` and logged. Trade-off: a long judge outage (>3 scans) loses those messages, visibly.
