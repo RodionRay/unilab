@@ -4,6 +4,7 @@
  * and how a `vk_account` row reads (status, reason, today's usage). Pure and browser-safe.
  */
 import {VK_IMPORT_CHUNK} from '@/lib/vk/import';
+import {VK_LEAD_URL} from '@/lib/vk/url';
 import {VK_DEFAULT_SEARCH_DAILY_CAP, effectiveVkStatus, vkUsageToday, type VkAccountData} from '@/lib/vk/pool';
 
 export type LeadPlatform = 'telegram' | 'vk';
@@ -25,23 +26,13 @@ export function matchesLeadSource(data: {groupId?: unknown; vkSourceId?: unknown
   return String(data.groupId ?? '') === sourceId || String(data.vkSourceId ?? '') === sourceId;
 }
 
-const VK_LINK_PREFIX = 'https://vk.com/';
-
 /**
- * Security (review blocker): a lead URL becomes an href only when it is a plain `https://vk.com/…`
- * link; anything else (other hosts, `javascript:`, userinfo, whitespace or control characters) → null.
+ * Security (review blocker): a lead URL becomes an href only when it matches the server's single
+ * deep-link shape lib/vk/url.ts::VK_LEAD_URL (`https://vk.com/` + plain path/query); else null.
  */
 export function safeVkHref(url: unknown): string | null {
-  if (typeof url !== 'string' || !url.startsWith(VK_LINK_PREFIX) || url.length > 2048) return null;
-  if (/[\s\\\u0000-\u001f\u007f]/.test(url)) return null;
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return null;
-  }
-  if (parsed.protocol !== 'https:' || parsed.hostname !== 'vk.com' || parsed.port || parsed.username || parsed.password) return null;
-  return parsed.href;
+  if (typeof url !== 'string' || url.length > 2048 || !VK_LEAD_URL.test(url)) return null;
+  return url;
 }
 
 /** One import request: ≤ VK_IMPORT_CHUNK non-empty lines and their 1-based line numbers in the paste. */
