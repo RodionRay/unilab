@@ -1,0 +1,191 @@
+[
+  {
+    "state": "leads-all",
+    "width": 390,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/leads-all-390.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "leads-all",
+    "width": 768,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/leads-all-768.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "leads-all",
+    "width": 1440,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/leads-all-1440.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "leads-vk",
+    "width": 390,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/leads-vk-390.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "leads-vk",
+    "width": 768,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/leads-vk-768.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "leads-vk",
+    "width": 1440,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/leads-vk-1440.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "leads-telegram",
+    "width": 390,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/leads-telegram-390.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "leads-telegram",
+    "width": 768,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/leads-telegram-768.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "leads-telegram",
+    "width": 1440,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/leads-telegram-1440.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "accounts",
+    "width": 390,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/accounts-390.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "accounts",
+    "width": 768,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/accounts-768.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "accounts",
+    "width": 1440,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/accounts-1440.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "accounts-import",
+    "width": 390,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/accounts-import-390.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "accounts-import",
+    "width": 768,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/accounts-import-768.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "accounts-import",
+    "width": 1440,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/accounts-import-1440.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "groups",
+    "width": 390,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/groups-390.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "groups",
+    "width": 768,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/groups-768.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "groups",
+    "width": 1440,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/groups-1440.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "lead-detail-tg",
+    "width": 390,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/lead-detail-tg-390.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "lead-detail-tg",
+    "width": 768,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/lead-detail-tg-768.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "lead-detail-tg",
+    "width": 1440,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/lead-detail-tg-1440.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "lead-detail-vk",
+    "width": 390,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/lead-detail-vk-390.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "lead-detail-vk",
+    "width": 768,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/lead-detail-vk-768.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "lead-detail-vk",
+    "width": 1440,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/lead-detail-vk-1440.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "lead-detail-vk-badurl",
+    "width": 390,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/lead-detail-vk-badurl-390.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "lead-detail-vk-badurl",
+    "width": 768,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/lead-detail-vk-badurl-768.png",
+    "errors": [],
+    "stepError": ""
+  },
+  {
+    "state": "lead-detail-vk-badurl",
+    "width": 1440,
+    "file": "artifacts/ui-qa/vk-lead-source/build-4/lead-detail-vk-badurl-1440.png",
+    "errors": [],
+    "stepError": ""
+  }
+]
