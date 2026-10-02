@@ -144,7 +144,9 @@ Source: read-only scout of origin/dev @671338d + Telegram docs (core.telegram.or
 ### Notices
 - REQ-N1 Where a member is linked and opted in, new-hot-lead / reply notices shall also go to their private chat with
   an inline `web_app` «Открыть» button; group notices are unchanged. They follow the workspace notices switch
-  (`noticesOff` in link status) and skip a member whose private chat is the notices chat itself.
+  (`noticesOff` in link status) and skip a member whose private chat is the notices chat itself. At most
+  `DM_HOT_LEADS_PER_FLUSH` = 3 hot leads per notify flush go privately (`R::DM_HOT_LEADS_PER_FLUSH`); the rest stay in
+  the group summary.
 - REQ-N2 Notice sending failures (blocked bot, 403) shall disable that member's DM opt-in and be shown in settings.
 
 ## Assumptions ledger
