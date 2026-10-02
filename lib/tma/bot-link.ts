@@ -11,7 +11,7 @@ import {
 } from "@/lib/telegram-bot";
 import { botIdFromToken } from "@/lib/tma/init-data";
 import { miniAppUrl } from "@/lib/tma/link-api";
-import { findActiveLink, listDmRecipients, redeemLinkCode, setDmError } from "@/lib/tma/links";
+import { findActiveLink, listDmRecipients, redeemLinkCode, setDmError, type RedeemResult } from "@/lib/tma/links";
 import { ensureTmaTables, getOrCreateWorkspaceKey, readWorkspaceBot } from "@/lib/tma/workspace";
 
 /**
@@ -29,6 +29,8 @@ const TEXT = {
   linkedNoHttps: "Telegram подключён к UniLab. Приложение откроется, когда у кабинета будет публичный адрес https.",
   invalid: "Ссылка недействительна или устарела — получите новую в настройках UniLab",
   rateLimited: "Слишком много попыток, попробуйте позже",
+  linkedElsewhere:
+    "Этот Telegram уже подключён к другому сотруднику UniLab. Сначала нажмите «Отключить» в блоке «Telegram-приложение» UniLab, затем откройте новую ссылку.",
   onboarding: "Это бот уведомлений UniLab. Чтобы подключиться, нажмите «Подключить Telegram» в настройках UniLab.",
   help: "Вы подключены к UniLab. Лиды и переписки открываются в приложении: кнопка меню или «Открыть UniLab».",
   replyHint: "Ответьте клиенту в приложении — кнопка «Открыть»",
@@ -73,9 +75,14 @@ async function say(token: string, chatId: string, text: string, replyMarkup?: Re
   if (!r.ok) console.error("[tma] bot_private_reply:", r.error.slice(0, 200));
 }
 
+const REDEEM_FAILURE_TEXT: Partial<Record<Extract<RedeemResult, { ok: false }>["reason"], string>> = {
+  rate_limited: TEXT.rateLimited,
+  linked_elsewhere: TEXT.linkedElsewhere,
+};
+
 async function redeemFromStart(db: D1LikeDatabase, owner: string, token: string, cmd: Extract<BotCommand, { kind: "link" }>) {
   const result = await redeemLinkCode(db, owner, cmd.code, cmd.tg, botIdFromToken(token));
-  if (!result.ok) return say(token, cmd.chatId, result.reason === "rate_limited" ? TEXT.rateLimited : TEXT.invalid);
+  if (!result.ok) return say(token, cmd.chatId, REDEEM_FAILURE_TEXT[result.reason] ?? TEXT.invalid);
   const url = await publicMiniAppUrl(db, owner);
   if (!url) return say(token, cmd.chatId, TEXT.linkedNoHttps);
   const menu = await setChatMenuButton(token, cmd.tg.id, url);

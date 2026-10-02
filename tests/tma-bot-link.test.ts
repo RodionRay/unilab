@@ -2,7 +2,7 @@ import {afterEach,beforeAll,beforeEach,describe,expect,it,vi} from 'vitest';
 import {BOT_TOKEN,OWNER,SETTINGS_ID,login,postRequest,resetWorkspace,testDb} from './helpers/workspace-harness';
 import {CHAT_LEAD,addChatLead,enableNotifications,readRecord,writeRecord,type WorkerCall} from './helpers/chats-fixture';
 import {buttonsOf,stubWorkerAndBot} from './helpers/bot-fixture';
-import {clearTmaState,linkTelegram,prepareTmaTables,wsKeyOf} from './helpers/tma-harness';
+import {addMember,clearTmaState,linkTelegram,prepareTmaTables,wsKeyOf} from './helpers/tma-harness';
 
 vi.mock('cloudflare:workers',async()=>(await import('./helpers/workspace-harness')).cfModule);
 vi.mock('@/lib/auth',async(importOriginal)=>({
@@ -103,6 +103,23 @@ describe('бот · привязка Telegram в личке (REQ-L2)',()=>{
   expect(w.sent().map(c=>c.body.text)).toEqual([NEUTRAL]);
   expect(buttonsOf(w.sent()[0])).toEqual([]);
   expect(await findActiveLink(db(),OWNER,TG)).toBeNull();
+ });
+
+ it('L3: tg уже привязан к другому сотруднику → нейтральный отказ «сначала отключите», старая привязка цела',async()=>{
+  addMember('manager-1','manager');
+  await linkTelegram('manager-1',TG);
+  const {code}=await createLinkCode(db(),OWNER,OWNER);
+  const w=stubWorkerAndBot(noWorker);
+  w.queueUpdates([privateMsg(9,`/start link_${code}`)]);
+
+  await pollBot();
+
+  expect((await findActiveLink(db(),OWNER,TG))?.userId).toBe('manager-1');
+  expect(w.botCalls.filter(c=>c.method==='setChatMenuButton')).toHaveLength(0);
+  const text=String(w.sent()[0]?.body.text);
+  expect(text).toContain('уже подключён');
+  expect(text).toContain('Отключить');
+  expect(text).not.toContain('manager-1');
  });
 
  it('адрес кабинета не публичный https → привязка есть, меню не ставится, ответ про https',async()=>{

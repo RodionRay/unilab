@@ -102,7 +102,9 @@ Source: read-only scout of origin/dev @671338d + Telegram docs (core.telegram.or
   bit, base64url ≤ 60 chars, TTL 10 min) and show `t.me/<bot>?start=link_<code>`.
 - REQ-L2 When the bot poller receives `/start link_<code>` in a private chat, the system shall bind `from.id` to that
   member (one tg user ↔ one member per workspace), consume the code, reply with confirmation and set the chat's menu
-  button to the mini app URL. Mini app URLs (menu button, «Открыть» buttons) come only from a public https `APP_URL`,
+  button to the mini app URL. If `from.id` is already linked to ANOTHER member of that workspace, the system shall
+  refuse (code not consumed, existing link kept) with a neutral reply to press «Отключить» first (D-9); relinking the
+  same member is allowed. Mini app URLs (menu button, «Открыть» buttons) come only from a public https `APP_URL`,
   never from the request Host (`lib/tma/bot-link.ts::publicMiniAppUrl`).
 - REQ-L3 Where a member already has a Login-Widget `oauth_accounts` telegram row, the system shall accept that tg id
   as linked without a code.

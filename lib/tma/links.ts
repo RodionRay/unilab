@@ -42,7 +42,7 @@ export type TelegramIdentity = { id: number; username: string };
 
 export type RedeemResult =
   | { ok: true; userId: string; linkId: string }
-  | { ok: false; reason: "invalid" | "expired" | "used" | "foreign" | "rate_limited" };
+  | { ok: false; reason: "invalid" | "expired" | "used" | "foreign" | "rate_limited" | "linked_elsewhere" };
 
 function rowLink(row: Record<string, unknown> | null): TmaLink | null {
   if (!row) return null;
@@ -114,7 +114,8 @@ async function insertLink(db: D1LikeDatabase, owner: string, userId: string, tg:
 
 /**
  * Binds `tg` to `userId` in `owner`: an identical active link is kept (live sessions stay valid);
- * any other active link of this member or this tg user in the workspace is revoked first.
+ * any other active link of this member is revoked first (a tg user linked to another member is refused
+ * earlier by redeemLinkCode; revoking by tg id here only resolves a concurrent race).
  */
 async function bindLink(db: D1LikeDatabase, owner: string, userId: string, tg: TelegramIdentity, botId: string): Promise<string> {
   const same = rowLink(
@@ -143,6 +144,21 @@ async function bindLink(db: D1LikeDatabase, owner: string, userId: string, tg: T
 }
 
 /**
+ * Security L3 (binding CSRF): a code opened by a tg user who is already linked to ANOTHER member of this
+ * workspace must not silently move them; they unlink first. The code is checked unclaimed, so it stays valid.
+ */
+async function linkedToAnotherMember(db: D1LikeDatabase, owner: string, codeHash: string, tgUserId: number, nowMs: number): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT 1 AS hit FROM tma_link_codes c JOIN tma_links l ON l.owner=c.owner AND l.tg_user_id=? AND l.revoked_at IS NULL
+       WHERE c.code_hash=? AND c.owner=? AND c.used_at IS NULL AND c.expires_at>? AND l.user_id<>c.user_id`,
+    )
+    .bind(String(tgUserId), codeHash, owner, nowMs)
+    .first<{ hit: number }>();
+  return row != null;
+}
+
+/**
  * Redeems `/start link_<code>` received by the workspace bot from `tg` (REQ-L2/L5). Single use: the
  * claim is one conditional UPDATE. Never throws for bad input; the reason must not be shown verbatim
  * beyond a neutral bot reply.
@@ -162,6 +178,7 @@ export async function redeemLinkCode(
   const clean = code.startsWith(LINK_START_PREFIX) ? code.slice(LINK_START_PREFIX.length) : code;
   if (!CODE_RE.test(clean) || !Number.isSafeInteger(tg.id) || tg.id <= 0) return { ok: false, reason: "invalid" };
   const codeHash = await sha256Hex(clean);
+  if (await linkedToAnotherMember(db, owner, codeHash, tg.id, nowMs)) return { ok: false, reason: "linked_elsewhere" };
   const claim = await db
     .prepare("UPDATE tma_link_codes SET used_at=? WHERE code_hash=? AND owner=? AND used_at IS NULL AND expires_at>?")
     .bind(nowMs, codeHash, owner, nowMs)

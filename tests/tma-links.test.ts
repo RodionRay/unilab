@@ -158,16 +158,29 @@ describe('REQ-L1/L2/L5 · код привязки',()=>{
   expect((await redeemLinkCode(db,OWNER,code,TG,BOT)).ok).toBe(true);
  });
 
- it('один tg ↔ один сотрудник: новый код другого сотрудника перепривязывает tg, старая ссылка отозвана',async()=>{
+ it('L3 (CSRF привязки): tg уже привязан к другому сотруднику → отказ linked_elsewhere, ссылка цела, код не сгорает',async()=>{
   const {db}=testDb();
   addMember('operator-1','operator');
   await redeemLinkCode(db,OWNER,(await createLinkCode(db,OWNER,'manager-1')).code,TG,BOT);
+  const {code}=await createLinkCode(db,OWNER,'operator-1');
 
-  await redeemLinkCode(db,OWNER,(await createLinkCode(db,OWNER,'operator-1')).code,TG,BOT);
+  const refused=await redeemLinkCode(db,OWNER,code,TG,BOT);
+
+  expect(refused).toEqual({ok:false,reason:'linked_elsewhere'});
+  expect(activeLinks().map(r=>r.user_id)).toEqual(['manager-1']);
+  await revokeLink(db,OWNER,'manager-1');
+  expect(await redeemLinkCode(db,OWNER,code,TG,BOT)).toMatchObject({ok:true,userId:'operator-1'});
+ });
+
+ it('сотрудник перепривязывает себя на новый tg: старая ссылка этого сотрудника отозвана',async()=>{
+  const {db}=testDb();
+  await redeemLinkCode(db,OWNER,(await createLinkCode(db,OWNER,'manager-1')).code,TG,BOT);
+
+  await redeemLinkCode(db,OWNER,(await createLinkCode(db,OWNER,'manager-1')).code,{id:515151,username:'new_phone'},BOT);
 
   const rows=activeLinks();
   expect(rows).toHaveLength(1);
-  expect(rows[0].user_id).toBe('operator-1');
+  expect([rows[0].user_id,rows[0].tg_user_id]).toEqual(['manager-1','515151']);
  });
 
  it('повторная привязка того же tg к тому же сотруднику сохраняет ссылку (живые сессии не рвутся)',async()=>{
