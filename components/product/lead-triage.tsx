@@ -16,7 +16,10 @@ import {
 } from '@/lib/lead-triage';
 
 const ACTION_ICON={lead:Check,rejected:CircleX,new:Undo2} as const;
-const ACTION_VARIANT:Record<LeadTriage,ComponentProps<typeof Button>['variant']>={lead:'default',rejected:'outline',new:'ghost'};
+type Variant=ComponentProps<typeof Button>['variant'];
+const ACTION_VARIANT:Record<LeadTriage,Variant>={lead:'default',rejected:'outline',new:'ghost'};
+/** Rows repeat per lead: no filled accent there (one accent per viewport), the card keeps the primary. */
+const ROW_VARIANT:Record<LeadTriage,Variant>={lead:'outline',rejected:'ghost',new:'ghost'};
 
 export function LeadTriageTabs({value,counts,onChange}:{
   value:LeadTriageTab;
@@ -54,7 +57,7 @@ export function LeadTriageActions({current,name,disabled,compact,onMove}:{
             key={to}
             type="button"
             size={compact?'xs':'sm'}
-            variant={ACTION_VARIANT[to]}
+            variant={compact?ROW_VARIANT[to]:ACTION_VARIANT[to]}
             disabled={disabled}
             data-testid={`lead-move-${to}`}
             onClick={e=>{e.stopPropagation();onMove(to)}}

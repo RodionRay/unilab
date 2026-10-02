@@ -447,11 +447,11 @@ export function OverviewDashboard({
                   <SelectItem value="cold">Холодные</SelectItem>
                 </SelectContent>
               </Select>
-              <div className="studio-view-tabs">
-                <button type="button" className={!showLeads?'is-on':''} aria-pressed={!showLeads} onClick={()=>setList('new')}>
+              <div className="flex flex-wrap gap-1.5" role="group" aria-label="Список лидов">
+                <button type="button" className={`groups-filter ${!showLeads?'on':''}`} aria-pressed={!showLeads} onClick={()=>setList('new')}>
                   Новые <strong>{freshCount}</strong>
                 </button>
-                <button type="button" className={showLeads?'is-on':''} aria-pressed={showLeads} onClick={()=>setList('lead')}>
+                <button type="button" className={`groups-filter ${showLeads?'on':''}`} aria-pressed={showLeads} onClick={()=>setList('lead')}>
                   Лиды <strong>{qualifiedCount}</strong>
                 </button>
               </div>

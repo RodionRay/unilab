@@ -143,7 +143,7 @@ AI будет использовать этот текст для отбора �
   invite_task:{...DEFAULT_INVITE_TASK},
   mailing_task:{...DEFAULT_MAILING_TASK},
 };
-const viewCopy:Record<string,string>={'Обзор':'Лиды, чаты и статус подключений — всё важное на одном экране.','Уведомления':'Журнал событий кабинета: сканы, вступления, рассылки, ошибки и сохранения.','Лиды':'Новые запросы: просмотренные скрываются из общей сетки.','Переписки':'Ответы клиентов: откройте диалог — он уйдёт в «Просмотренные». Новый ответ клиента снова в «Новые».','Группы и каналы':'Поиск тем под AI → вступление → реальные лиды из чатов.','Сбор аудитории':'Аккаунт → источник → фильтры → база участников для инвайтинга.','Инвайтинг':'Приглашение собранной аудитории в вашу группу: обычный и продвинутый режим.','Рассылка':'Личные сообщения базе или лидам: смешанные аккаунты, Spintax или уникальные AI-тексты, полный лог доставок.','Аккаунты':'Статусы, дневные лимиты, отлёжка, прокси и группы — всё по каждому аккаунту.','Прокси':'host:port:user:password — список или по одному.','AI-ассистент':'Ядро поиска лидов, продукт, плюс/минус слова, обучение и обход групп.','Сотрудники':'Роли, доступы к разделам CRM и приглашения коллег по ссылке.','Настройки':'Глубина скана, профиль кабинета и уведомления о лидах в Telegram-бота.'};
+const viewCopy:Record<string,string>={'Обзор':'Лиды, чаты и статус подключений — всё важное на одном экране.','Уведомления':'Журнал событий кабинета: сканы, вступления, рассылки, ошибки и сохранения.','Лиды':'Разбирайте вручную: «В лиды» или «Не подходит». Открытие лида его не переносит.','Переписки':'Ответы клиентов: откройте диалог — он уйдёт в «Просмотренные». Новый ответ клиента снова в «Новые».','Группы и каналы':'Поиск тем под AI → вступление → реальные лиды из чатов.','Сбор аудитории':'Аккаунт → источник → фильтры → база участников для инвайтинга.','Инвайтинг':'Приглашение собранной аудитории в вашу группу: обычный и продвинутый режим.','Рассылка':'Личные сообщения базе или лидам: смешанные аккаунты, Spintax или уникальные AI-тексты, полный лог доставок.','Аккаунты':'Статусы, дневные лимиты, отлёжка, прокси и группы — всё по каждому аккаунту.','Прокси':'host:port:user:password — список или по одному.','AI-ассистент':'Ядро поиска лидов, продукт, плюс/минус слова, обучение и обход групп.','Сотрудники':'Роли, доступы к разделам CRM и приглашения коллег по ссылке.','Настройки':'Глубина скана, профиль кабинета и уведомления о лидах в Telegram-бота.'};
 
 async function api(body?:unknown){
   const r=await fetch('/api/workspace',body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{cache:'no-store'});
@@ -1550,35 +1550,40 @@ function WorkspaceHome(){
    * Ручной разбор лидов (set_lead_triage): оптимистично, откат при ошибке, «Отменить» в тосте
    * возвращает каждому лиду прежний статус. Открытие лида статус не меняет.
    */
-  async function moveLeads(ids:string[],to:LeadTriage,opts:{undo?:boolean}={}){
-    const status=LEAD_TRIAGE_STATUS[to];
+  async function moveLeads(ids:string[],to:LeadTriage){
     const before=new Map(records.filter(r=>r.kind==='lead'&&ids.includes(r.id)).map(r=>[r.id,leadTriage(r.data)]));
     const targets=[...before].filter(([,t])=>t!==to).map(([id])=>id);
     if(!targets.length)return;
+    setLeadSelected(prev=>prev.filter(id=>!targets.includes(id)));
+    if(!await commitTriage(targets,to,id=>before.get(id)||'new'))return;
+    const what=targets.length===1?'Лид':`Лидов: ${targets.length}`;
+    toast.success(`${what} → «${LEAD_TRIAGE_TAB_LABELS[to]}»`,{
+      action:{label:'Отменить',onClick:()=>{
+        // Не читает records: тост живёт дольше рендера, прежние статусы взяты из before
+        for(const back of ['new','lead','rejected'] as LeadTriage[]){
+          const group=targets.filter(id=>before.get(id)===back);
+          if(group.length)void commitTriage(group,back,()=>to);
+        }
+      }},
+    });
+  }
+
+  /** Оптимистичная запись разбора; при ошибке откат к `rollback(id)`. */
+  async function commitTriage(ids:string[],to:LeadTriage,rollback:(id:string)=>LeadTriage){
     const patchStatus=(pick:(id:string)=>string|undefined)=>{
       setRecords(prev=>prev.map(r=>{const st=pick(r.id);return st?{...r,data:{...r.data,status:st}}:r}));
       setDetail(d=>{const st=d?pick(d.id):undefined;return d&&st?{...d,data:{...d.data,status:st}}:d});
     };
-    patchStatus(id=>targets.includes(id)?status:undefined);
-    setLeadSelected(prev=>prev.filter(id=>!targets.includes(id)));
+    patchStatus(id=>ids.includes(id)?LEAD_TRIAGE_STATUS[to]:undefined);
     try{
-      const r=await api({action:'set_lead_triage',ids:targets,triage:to});
+      const r=await api({action:'set_lead_triage',ids,triage:to});
       if(Array.isArray(r.missing)&&r.missing.length)await refresh();
+      return true;
     }catch(e){
-      patchStatus(id=>targets.includes(id)?LEAD_TRIAGE_STATUS[before.get(id)||'new']:undefined);
+      patchStatus(id=>ids.includes(id)?LEAD_TRIAGE_STATUS[rollback(id)]:undefined);
       toast.error(`Не удалось перенести: ${(e as Error).message}`);
-      return;
+      return false;
     }
-    if(opts.undo)return;
-    const what=targets.length===1?'Лид':`Лидов: ${targets.length}`;
-    toast.success(`${what} → «${LEAD_TRIAGE_TAB_LABELS[to]}»`,{
-      action:{label:'Отменить',onClick:()=>{
-        for(const back of ['new','lead','rejected'] as LeadTriage[]){
-          const group=targets.filter(id=>before.get(id)===back);
-          if(group.length)void moveLeads(group,back,{undo:true});
-        }
-      }},
-    });
   }
 
   /** Один ключ на одно сообщение: повтор после таймаута узнаётся сервером и не уходит дублем. */
@@ -3419,7 +3424,7 @@ function WorkspaceHome(){
                     </SelectContent>
                   </Select>
                   <Select value={leadTemp} onValueChange={v=>setLeadTemp(v as LeadTemperatureFilter)}>
-                    <SelectTrigger className="w-[170px]" aria-label="Температура"><SelectValue placeholder="Температура"/></SelectTrigger>
+                    <SelectTrigger className="w-[200px]" aria-label="Температура"><SelectValue placeholder="Температура"/></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">Любая температура</SelectItem>
                       <SelectItem value="hot">Горячие</SelectItem>
