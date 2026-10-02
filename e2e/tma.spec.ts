@@ -125,7 +125,8 @@ test.describe("inbox", () => {
           : undefined,
     });
     await expect(page.getByTestId("inbox-row")).toHaveCount(10);
-    await page.getByRole("button", { name: "Показать ещё" }).click();
+    // Scrolling the sentinel into view loads page 2 (IntersectionObserver); a click could race that load.
+    await page.getByRole("button", { name: "Показать ещё" }).scrollIntoViewIfNeeded();
     await expect(page.getByRole("button", { name: "Показать ещё" })).toHaveCount(0);
     await expect(page.getByTestId("inbox-row")).toHaveCount(12);
     await expect(page.getByTestId("inbox-row").filter({ hasText: repeated.name })).toHaveCount(1);

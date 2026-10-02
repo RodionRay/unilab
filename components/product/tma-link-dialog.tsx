@@ -13,7 +13,7 @@ export function TmaLinkDialog() {
   return (
     <Dialog>
       <DialogTrigger
-        className="text-link flex min-h-10 items-center gap-2"
+        className="text-link flex min-h-11 min-w-11 items-center justify-center gap-2 px-1"
         aria-label="Telegram-приложение"
         data-testid="tma-link-open"
       >

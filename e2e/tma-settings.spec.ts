@@ -369,7 +369,8 @@ test.describe("Telegram-приложение in settings", () => {
     await expect(dialog.getByTestId("tma-link-panel")).toBeVisible();
     await dialog.getByRole("button", { name: "Подключить Telegram" }).click();
     await expect(dialog.getByRole("link", { name: /Открыть бота и подключить/ })).toHaveAttribute("href", START_LINK);
-    expect(actionsOf(calls, "status")).toHaveLength(1);
+    // Opening the dialog checks the status first; the pending link then polls status on its own.
+    expect(calls[0]?.action).toBe("status");
     expect(actionsOf(calls, "create_code")).toHaveLength(1);
     expect(calls.every((c) => c.userId === undefined)).toBe(true);
     await dialogShot(page, "operator-dialog");
