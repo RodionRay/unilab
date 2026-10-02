@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 import { BotMessageSquare, CornerUpLeft, Eye, Loader2, PlugZap, Reply, SendHorizontal, TriangleAlert, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -26,6 +27,8 @@ export type ChatComposerProps = {
   onSend: (text: string, mode: ChatMode) => void;
   onDraft: () => void;
   onConnect: () => void;
+  /** Host controls shown above the input (e.g. «Отправить позже»). */
+  extras?: ReactNode;
 };
 
 type Notice = { icon: LucideIcon; text: string; action?: { label: string; run: () => void } };
@@ -78,6 +81,7 @@ export function ChatComposer(props: ChatComposerProps) {
             ) : null}
           </p>
         ) : null}
+        {props.extras ? <div className="chat-compose-extras">{props.extras}</div> : null}
         <div className="chat-compose-row">
           <Textarea
             data-chat-composer

@@ -270,3 +270,24 @@ describe('chat-view · retry',()=>{
     expect(pendingFor(box,lead({replies:[us('Привет',at(2,9,1))]}))).toMatchObject({retry:true});
   });
 });
+
+describe('chat-view · host statuses (deferred replies)',()=>{
+  it('a scheduled reply ticks as «on its way», a cancelled one never as failed and is not the list preview',()=>{
+    const scheduled=us('Позже',at(2,10),{ok:false,status:'scheduled' as ReplyEntry['status']});
+    const cancelled=us('Отменён',at(2,11),{ok:false,status:'cancelled' as ReplyEntry['status']});
+    const l=lead({replies:[client('Вопрос',at(2,9)),scheduled,cancelled]});
+    const out=messages(buildThread(l,{now:NOW}).items).filter(m=>m.side==='out');
+    const row=chatListItem(l,{now:NOW});
+
+    expect(out.map(m=>m.tick)).toEqual(['pending','unknown']);
+    expect(out.every(m=>m.entry!==null)).toBe(true);
+    expect([row.prefix,row.preview,row.failed]).toEqual(['Вы: ','Позже',false]);
+  });
+
+  it('source post uses the stored post time (msgAt) when the scanner saved it',()=>{
+    const m=messages(buildThread(lead({msgAt:at(1,8,30),replies:[]},at(2,9)),{now:NOW}).items);
+
+    expect(m[0]?.time).toBe('08:30');
+  });
+});
+

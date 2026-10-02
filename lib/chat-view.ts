@@ -29,6 +29,8 @@ export type ThreadMessage = {
   tick: TickState | null;
   /** Failed and not yet superseded by a later delivered / in-flight copy of the same text+mode. */
   retryable: boolean;
+  /** The stored reply (null for the source post) — lets a host render statuses it adds (e.g. deferred replies). */
+  entry: ReplyEntry | null;
   error: string;
   /** Outgoing reply sent into the group: quote of the source post. */
   quote: string;
@@ -108,6 +110,10 @@ export function listTimeLabel(iso: string, now: Date = new Date()): string {
 }
 
 export function tickOf(entry: ReplyEntry, replies: readonly ReplyEntry[]): TickState {
+  // hosts with deferred replies: a waiting one is «on its way», a cancelled one never failed
+  const status = String(entry.status ?? "");
+  if (status === "scheduled") return "pending";
+  if (status === "cancelled") return "unknown";
   if (!entry.ok) {
     if (entry.status === "pending") return "pending";
     if (entry.status === "unknown") return "unknown";
@@ -125,7 +131,8 @@ export function tickOf(entry: ReplyEntry, replies: readonly ReplyEntry[]): TickS
  * the first reply's time without a clock label.
  */
 function sourceMessage(lead: ChatLead, firstReplyAt: string): ThreadMessage {
-  const created = str(lead.data.messageAt) || str(lead.created);
+  // msgAt = the post's own Telegram time where the scanner stores it
+  const created = str(lead.data.msgAt) || str(lead.data.messageAt) || str(lead.created);
   const late = !!firstReplyAt && !(ms(created) <= ms(firstReplyAt));
   const at = late ? firstReplyAt : created;
   return {
@@ -138,6 +145,7 @@ function sourceMessage(lead: ChatLead, firstReplyAt: string): ThreadMessage {
     source: true,
     tick: null,
     retryable: false,
+    entry: null,
     error: "",
     quote: "",
     mode: "chat",
@@ -161,6 +169,7 @@ function replyMessage(entry: ReplyEntry, i: number, all: readonly ReplyEntry[], 
     source: false,
     tick: side === "out" ? tickOf(entry, all) : null,
     retryable: false,
+    entry,
     error: side === "out" ? str(entry.error) : "",
     quote: side === "out" && entry.mode === "chat" ? quote : "",
     mode: entry.mode === "chat" ? "chat" : "dm",
@@ -298,10 +307,12 @@ export function unreadCountOf(data: LeadData): number {
 export function chatListItem(lead: ChatLead, ctx: { now?: Date } = {}): ChatListItem {
   const now = ctx.now ?? new Date();
   const replies = leadReplies(lead.data);
-  const last = replies.reduce<ReplyEntry | null>((acc, r) => (!acc || (ms(r.at) || 0) >= (ms(acc.at) || 0) ? r : acc), null);
+  // a cancelled deferred reply never reached the client: not the chat's last message
+  const live = replies.filter((r) => String(r.status ?? "") !== "cancelled");
+  const last = live.reduce<ReplyEntry | null>((acc, r) => (!acc || (ms(r.at) || 0) >= (ms(acc.at) || 0) ? r : acc), null);
   const unreadCount = unreadCountOf(lead.data);
   const draft = unsentDraft(lead.data);
-  const lastOurs = [...replies].reverse().find((r) => r.from === "us") ?? null;
+  const lastOurs = [...live].reverse().find((r) => r.from === "us") ?? null;
   const failed = !!lastOurs && tickOf(lastOurs, replies) === "failed";
   const at = str(last?.at) || str(lead.data.conversationAt) || str(lead.created);
 

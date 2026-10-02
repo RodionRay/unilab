@@ -30,6 +30,8 @@ export type ChatHeaderProps = {
   headingRef?: Ref<HTMLHeadingElement>;
   /** External badges (e.g. account penalty) rendered inside `[data-slot=chat-header-badges]`. */
   badges?: ReactNode;
+  /** Host actions before the theme/Telegram/⋮ buttons (e.g. lead triage). */
+  actions?: ReactNode;
   onThemeToggle: () => void;
   onBack: () => void;
   onEdit: () => void;
@@ -50,6 +52,7 @@ export function ChatHeader({
   headingRef,
   themeInMenu,
   badges,
+  actions,
   onThemeToggle,
   onBack,
   onEdit,
@@ -93,6 +96,7 @@ export function ChatHeader({
         </p>
       </div>
       <div className="chat-header-actions">
+        {actions ? <div className="chat-header-host-actions">{actions}</div> : null}
         <Button variant="ghost" size="icon" className="chat-icon-btn chat-theme-btn" aria-label={themeLabel} title={themeLabel} onClick={onThemeToggle}>
           {theme === "dark" ? <Sun aria-hidden /> : <Moon aria-hidden />}
         </Button>

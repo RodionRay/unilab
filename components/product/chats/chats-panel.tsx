@@ -58,6 +58,14 @@ export type ChatsPanelProps = {
   headerBadges?: ReactNode;
   /** Optional badge next to the name in each list row. */
   renderRowBadge?: (lead: ChatLead) => ReactNode;
+  /** Host actions in the chat header (e.g. lead triage). */
+  headerActions?: ReactNode;
+  /** Replaces the composer for chats that cannot be answered from here (e.g. VK leads). */
+  composerOverride?: ReactNode;
+  /** Host controls above the composer input (e.g. scheduled send). */
+  composerExtras?: ReactNode;
+  /** Host override for single thread messages (e.g. deferred replies). */
+  renderEntry?: (message: ThreadMessage) => ReactNode | null;
   onFolderChange: (folder: ChatFolder) => void;
   onQueryChange: (query: string) => void;
   onTextChange: (text: string) => void;
@@ -257,6 +265,7 @@ export function ChatsPanel(props: ChatsPanelProps) {
                 headingRef={headingRef}
                 themeInMenu={narrow}
                 badges={props.headerBadges}
+                actions={props.headerActions}
                 onThemeToggle={() => setTheme(theme === "dark" ? "light" : "dark")}
                 onBack={props.onBack}
                 onEdit={props.onEdit}
@@ -276,7 +285,11 @@ export function ChatsPanel(props: ChatsPanelProps) {
                 canRetry={!props.readOnly && props.telegramConnected === true && !sending}
                 onRetry={(m) => void send(m.text, m.mode, true)}
                 onCopy={props.onCopy}
+                renderEntry={props.renderEntry}
               />
+              {props.composerOverride ? (
+                <div className="chat-compose-override">{props.composerOverride}</div>
+              ) : (
               <ChatComposer
                 text={props.text}
                 mode={props.mode}
@@ -292,7 +305,9 @@ export function ChatsPanel(props: ChatsPanelProps) {
                 onDraft={requestDraft}
                 onConnect={props.onConnect}
                 onSend={(text, mode) => void send(text, mode, false)}
+                extras={props.composerExtras}
               />
+              )}
             </>
           ) : props.loading || props.loadError ? null : props.counts.fresh + props.counts.viewed === 0 && !query.trim() ? (
             <FirstRun telegramConnected={props.telegramConnected} onConnect={props.onConnect} onOpenLeads={props.onOpenLeads} />

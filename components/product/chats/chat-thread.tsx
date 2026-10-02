@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowDown, Copy, CornerUpLeft, ExternalLink, RotateCw, UsersRound } from "lucide-react";
 import { Bubble } from "@/components/ui/bubble";
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,8 @@ export type ChatThreadProps = {
   canRetry: boolean;
   onRetry: (message: ThreadMessage) => void;
   onCopy: (text: string) => void;
+  /** Host override for one message (e.g. a deferred reply with «Отменить»); null = default bubble. */
+  renderEntry?: (message: ThreadMessage) => ReactNode | null;
 };
 
 /** Pixels from the bottom that still count as "at the bottom" (new messages keep the view pinned). */
@@ -129,7 +131,7 @@ function FailedNote({ m, canRetry, onRetry, onCopy }: Omit<BubbleProps, "groupNa
   );
 }
 
-export function ChatThreadView({ chatKey, thread, groupName, emptyHint, messageHref, canRetry, onRetry, onCopy }: ChatThreadProps) {
+export function ChatThreadView({ chatKey, thread, groupName, emptyHint, messageHref, canRetry, onRetry, onCopy, renderEntry }: ChatThreadProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const dividerRef = useRef<HTMLDivElement>(null);
   const nearBottom = useRef(true);
@@ -184,6 +186,8 @@ export function ChatThreadView({ chatKey, thread, groupName, emptyHint, messageH
                 </Marker>
               );
             }
+            const custom = renderEntry ? renderEntry(item) : null;
+            if (custom) return <div key={item.key} className="chat-msg-custom">{custom}</div>;
             return (
               <MessageBubble
                 key={item.key}

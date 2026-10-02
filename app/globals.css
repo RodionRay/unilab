@@ -6185,6 +6185,32 @@ body:has(.chats-panel[data-chat-theme="light"]) [data-slot="alert-dialog-content
   border-color: #e4e1dc !important;
 }
 
+/* host extension slots (header actions, composer extras/override, custom thread entries) */
+.chat-header-host-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 4px;
+}
+.chat-compose-extras {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 0;
+}
+.chats-panel .chat-compose-override {
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 8px 20px 16px;
+}
+.chat-msg-custom {
+  display: flex;
+  flex-direction: column;
+  margin-top: 8px;
+}
+
 /* ---------- small additions: add lead, row badge, notice action ---------- */
 /* the app's outline buttons are dark-only (white ink !important): re-ink them for the chat palette */
 .chats-panel button[data-slot="button"][data-variant="outline"] {
