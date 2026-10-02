@@ -122,6 +122,9 @@ const actionsOf = (calls: Record<string, unknown>[], action: string) => calls.fi
 test.describe("Telegram-приложение in settings", () => {
   test("sits right after the bot block and starts with a status check", async ({ page }) => {
     const { calls } = await openSettings(page);
+    // allTextContents() does not wait: under parallel load the neighbour cards may still be rendering.
+    await expect(page.locator(".settings-card h2", { hasText: "Уведомления в Telegram" })).toBeVisible();
+    await expect(page.locator(".settings-card h2", { hasText: "Telegram-приложение" })).toBeVisible();
     const titles = await page.locator(".settings-card h2").allTextContents();
     expect(titles.indexOf("Telegram-приложение")).toBe(titles.indexOf("Уведомления в Telegram") + 1);
     await expect(panel(page).getByRole("button", { name: "Подключить Telegram" })).toBeVisible();
