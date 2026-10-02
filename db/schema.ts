@@ -1,4 +1,4 @@
-import { sqliteTable, text, index, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const records = sqliteTable(
   "records",
@@ -69,5 +69,25 @@ export const workspaceInvites = sqliteTable(
   (t) => [
     uniqueIndex("idx_ws_invites_token").on(t.token),
     index("idx_ws_invites_owner").on(t.workspaceOwnerId),
+  ],
+);
+
+/** Penalty journal per Telegram account — lib/account-events.ts (drizzle/0002_account_events.sql). */
+export const accountEvents = sqliteTable(
+  "account_events",
+  {
+    id: text("id").primaryKey(),
+    owner: text("owner").notNull(),
+    accountId: text("account_id").notNull(),
+    type: text("type").notNull(),
+    context: text("context").notNull(),
+    waitSec: integer("wait_sec"),
+    reason: text("reason").notNull().default(""),
+    at: text("at").notNull(),
+    dedupeKey: text("dedupe_key").notNull(),
+  },
+  (t) => [
+    uniqueIndex("idx_account_events_dedupe").on(t.owner, t.dedupeKey),
+    index("idx_account_events_owner_account_at").on(t.owner, t.accountId, t.at),
   ],
 );

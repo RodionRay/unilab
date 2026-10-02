@@ -32,6 +32,7 @@ const records = db
   .get();
 if (!records) apply("0000_even_hydra.sql");
 apply("0001_users_oauth.sql");
+apply("0002_account_events.sql");
 
 db.close();
 console.log(`SQLite ready: ${path}`);
