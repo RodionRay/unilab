@@ -60,6 +60,19 @@ describe('POST /api/tma/link',()=>{
   expect(cross.status).toBe(403);
  });
 
+ it('L5: без Origin нужен Sec-Fetch-Site: same-origin; cross-site / без заголовков → 403, код не выдаётся',async()=>{
+  const raw=async(body:Record<string,unknown>,headers:Record<string,string>)=>(await linkPOST(new Request('http://crm.test/api/tma/link',{
+   method:'POST',headers:{'Content-Type':'application/json',...headers},body:JSON.stringify(body),
+  }))).status;
+
+  expect(await raw({action:'create_code'},{})).toBe(403);
+  expect(await raw({action:'unlink'},{'sec-fetch-site':'cross-site'})).toBe(403);
+  expect(await raw({action:'create_code'},{'sec-fetch-site':'same-site'})).toBe(403);
+  expect(botCalls).toEqual([]);
+  expect(await raw({action:'create_code'},{'sec-fetch-site':'same-origin'})).toBe(200);
+  expect(await raw({action:'status'},{origin:'http://crm.test','sec-fetch-site':'cross-site'})).toBe(200);
+ });
+
  it('REQ-L1: create_code → ссылка t.me/<bot>?start=link_<code> (≤64 символа payload), срок 10 мин, getMe кеширует username',async()=>{
   const r=await call({action:'create_code'});
 

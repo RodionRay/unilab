@@ -28,3 +28,13 @@ export async function readJsonObject(req: Request, maxBytes: number): Promise<Re
     return null;
   }
 }
+
+/**
+ * Same-origin proof for cookie-authenticated, state-changing requests (security L5): the Origin equals
+ * this origin, or — when a browser omits Origin — Sec-Fetch-Site says same-origin. Anything else is refused.
+ */
+export function isSameOriginRequest(req: Request): boolean {
+  const origin = req.headers.get("origin");
+  if (origin) return origin === new URL(req.url).origin;
+  return req.headers.get("sec-fetch-site") === "same-origin";
+}
