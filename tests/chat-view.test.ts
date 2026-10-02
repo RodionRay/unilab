@@ -1,0 +1,171 @@
+import {describe,expect,it} from 'vitest';
+import type {ReplyEntry} from '@/lib/lead-conversation';
+import {
+  AVATAR_TONES,buildThread,chatListItem,dateSeparatorLabel,initials,avatarTone,isSendShortcut,listTimeLabel,unreadCountOf,
+  type ChatLead,type ThreadItem,type ThreadMessage,
+} from '@/lib/chat-view';
+
+// Local-time constructors keep the tests independent of the machine time zone.
+const NOW=new Date(2026,9,2,18,0);
+const at=(day:number,h:number,m=0)=>new Date(2026,9,day,h,m).toISOString();
+const us=(text:string,iso:string,over:Partial<ReplyEntry>={}):ReplyEntry=>({text,mode:'dm',at:iso,ok:true,error:'',messageId:'1',link:'',chatId:'',from:'us',status:'sent',...over});
+const client=(text:string,iso:string):ReplyEntry=>({text,mode:'dm',at:iso,ok:true,error:'',messageId:'2',link:'',chatId:'',from:'client'});
+const lead=(data:Record<string,unknown>,created=at(1,9)):ChatLead=>({id:'lead-1',created,data:{name:'Анна Демидова',message:'Ищу сервис для остатков',viewed:true,...data}});
+const messages=(items:ThreadItem[])=>items.filter((i):i is ThreadMessage=>i.kind==='message');
+
+describe('chat-view · thread',()=>{
+  it('starts with the source post, then replies in time order, ours on the right',()=>{
+    const t=buildThread(lead({replies:[client('Да',at(2,10,5)),us('Здравствуйте',at(2,10))]}),{now:NOW});
+    const m=messages(t.items);
+
+    expect(m.map(x=>[x.source,x.side,x.text])).toEqual([[true,'in','Ищу сервис для остатков'],[false,'out','Здравствуйте'],[false,'in','Да']]);
+  });
+
+  it('puts date separators Сегодня / Вчера / «d MMMM» before each new day',()=>{
+    const t=buildThread(lead({replies:[us('a',at(1,12)),us('b',at(2,9))]},new Date(2026,8,28,9).toISOString()),{now:NOW});
+    const dates=t.items.filter(i=>i.kind==='date').map(i=>i.kind==='date'?i.label:'');
+
+    expect(dates).toEqual(['28 сентября','Вчера','Сегодня']);
+    expect(dateSeparatorLabel(new Date(2025,11,31,9).toISOString(),NOW)).toBe('31 декабря 2025 г.');
+  });
+
+  it('groups one side within 5 minutes: only the last bubble of a run has the tail',()=>{
+    const t=buildThread(lead({replies:[us('1',at(2,10,0)),us('2',at(2,10,4)),us('3',at(2,10,12)),client('4',at(2,10,13))]}),{now:NOW});
+    const m=messages(t.items).filter(x=>!x.source);
+
+    expect(m.map(x=>[x.text,x.first,x.last])).toEqual([['1',true,false],['2',false,true],['3',true,true],['4',true,true]]);
+  });
+
+  it('a date separator breaks a group even inside the window',()=>{
+    const t=buildThread(lead({replies:[us('late',at(1,23,58)),us('early',at(2,0,1))]}),{now:NOW});
+    const m=messages(t.items).filter(x=>!x.source);
+
+    expect(m.every(x=>x.first&&x.last)).toBe(true);
+  });
+
+  it('ticks: pending clock, failed with error, unknown, sent ✓, read ✓✓ once the client wrote later',()=>{
+    const t=buildThread(lead({replies:[
+      us('read',at(2,9)),client('reply',at(2,9,30)),us('sent',at(2,10)),
+      us('fail',at(2,11),{ok:false,status:'failed',error:'PEER_FLOOD'}),
+      us('unk',at(2,12),{ok:false,status:'unknown'}),
+      us('legacy fail',at(2,13),{ok:false,status:undefined,error:'x'}),
+    ]}),{now:NOW,pending:{text:'sending',mode:'dm',at:at(2,14)}});
+    const out=messages(t.items).filter(x=>x.side==='out');
+
+    expect(out.map(x=>[x.text,x.tick])).toEqual([['read','read'],['sent','sent'],['fail','failed'],['unk','unknown'],['legacy fail','failed'],['sending','pending']]);
+    expect(out.find(x=>x.text==='fail')?.error).toBe('PEER_FLOOD');
+    expect(messages(t.items).filter(x=>x.side==='in').every(x=>x.tick===null)).toBe(true);
+  });
+
+  it('a reply sent into the group quotes the source post; a DM does not',()=>{
+    const t=buildThread(lead({replies:[us('in group',at(2,9),{mode:'chat'}),us('dm',at(2,10))]}),{now:NOW});
+    const out=messages(t.items).filter(x=>x.side==='out');
+
+    expect(out.map(x=>x.quote)).toEqual(['Ищу сервис для остатков','']);
+  });
+
+  it('unread divider sits before the first client message after our last one',()=>{
+    const t=buildThread(lead({viewed:false,replies:[client('old',at(2,8)),us('ours',at(2,9)),client('new 1',at(2,10)),client('new 2',at(2,10,1))]}),{now:NOW});
+
+    expect(t.unreadIndex).toBeGreaterThan(-1);
+    expect(t.items[t.unreadIndex]?.kind).toBe('unread');
+    const next=t.items[t.unreadIndex+1];
+    expect(next?.kind==='message'&&next.text).toBe('new 1');
+  });
+
+  it('no unread divider for a viewed chat, or when the caller captured it as read',()=>{
+    const replies=[us('ours',at(2,9)),client('new',at(2,10))];
+
+    expect(buildThread(lead({viewed:true,replies}),{now:NOW}).unreadIndex).toBe(-1);
+    expect(buildThread(lead({viewed:false,replies}),{now:NOW,unread:false}).unreadIndex).toBe(-1);
+    expect(buildThread(lead({viewed:true,replies}),{now:NOW,unread:true}).unreadIndex).toBeGreaterThan(-1);
+  });
+
+  it('source post created after the first reply is placed first without a clock label',()=>{
+    const t=buildThread(lead({replies:[us('hi',at(2,9))]},at(2,17)),{now:NOW});
+    const [source,first]=messages(t.items);
+
+    expect(source?.source).toBe(true);
+    expect(source?.time).toBe('');
+    expect(first?.text).toBe('hi');
+  });
+
+  it('empty thread = only the source post (with its time)',()=>{
+    const m=messages(buildThread(lead({replies:[]},at(2,9,7)),{now:NOW}).items);
+
+    expect(m).toHaveLength(1);
+    expect(m[0]?.time).toBe('09:07');
+  });
+});
+
+describe('chat-view · list item',()=>{
+  it('prefixes our last message with «Вы: »',()=>{
+    const row=chatListItem(lead({replies:[client('Привет',at(2,9)),us('Добрый   день!\nСейчас',at(2,10))]}),{now:NOW});
+
+    expect([row.prefix,row.preview,row.lastTick]).toEqual(['Вы: ','Добрый день! Сейчас','sent']);
+  });
+
+  it('shows an unsent AI draft with «Черновик: » but not one that was already sent',()=>{
+    const draftOnly=chatListItem(lead({draft:'Предлагаю демо',replies:[]}),{now:NOW});
+    const sentDraft=chatListItem(lead({draft:'Предлагаю демо',replies:[us('Предлагаю демо',at(2,9))]}),{now:NOW});
+
+    expect([draftOnly.prefix,draftOnly.preview]).toEqual(['Черновик: ','Предлагаю демо']);
+    expect([sentDraft.prefix,sentDraft.preview]).toEqual(['Вы: ','Предлагаю демо']);
+  });
+
+  it('a waiting client message beats the draft in the preview',()=>{
+    const row=chatListItem(lead({viewed:false,draft:'Ответ',replies:[us('Здравствуйте',at(2,9)),client('Сколько стоит?',at(2,10))]}),{now:NOW});
+
+    expect([row.prefix,row.preview,row.unreadCount]).toEqual(['','Сколько стоит?',1]);
+  });
+
+  it('unread count = client messages after our last; ≥1 for an unviewed chat with client messages; 0 otherwise',()=>{
+    expect(unreadCountOf({viewed:false,replies:[us('a',at(2,8)),client('b',at(2,9)),client('c',at(2,9,1))]})).toBe(2);
+    expect(unreadCountOf({viewed:false,replies:[client('b',at(2,8)),us('a',at(2,9))]})).toBe(1);
+    expect(unreadCountOf({viewed:false,replies:[us('a',at(2,9))]})).toBe(0);
+    expect(unreadCountOf({viewed:true,replies:[client('b',at(2,9))]})).toBe(0);
+  });
+
+  it('flags a failed last send',()=>{
+    const row=chatListItem(lead({replies:[us('x',at(2,9),{ok:false,status:'failed',error:'PEER_FLOOD'})]}),{now:NOW});
+
+    expect(row.failed).toBe(true);
+    expect(row.lastTick).toBe('failed');
+  });
+
+  it('falls back to the client text/source post when there are no replies',()=>{
+    expect(chatListItem(lead({replies:[]}),{now:NOW}).preview).toBe('Ищу сервис для остатков');
+  });
+
+  it('time labels: HH:mm today · «вчера» · weekday within 7 days · dd.MM.yy',()=>{
+    expect(listTimeLabel(at(2,9,5),NOW)).toBe('09:05');
+    expect(listTimeLabel(at(1,23,59),NOW)).toBe('вчера');
+    expect(listTimeLabel(new Date(2026,8,29,12).toISOString(),NOW)).toBe('вт');
+    expect(listTimeLabel(new Date(2026,8,20,12).toISOString(),NOW)).toBe('20.09.26');
+    expect(listTimeLabel('garbage',NOW)).toBe('');
+  });
+});
+
+describe('chat-view · avatar, keys',()=>{
+  it('initials from the first two words with letters',()=>{
+    expect(initials('Анна Демидова')).toBe('АД');
+    expect(initials('Студия «Лён и хлопок»')).toBe('СЛ');
+    expect(initials('igor')).toBe('I');
+    expect(initials('  ')).toBe('?');
+  });
+
+  it('avatar tone is stable per id and within the palette',()=>{
+    expect(avatarTone('lead-1')).toBe(avatarTone('lead-1'));
+    for(const id of ['a','b','c','8b1f2c3d-0000-4000-8000-000000000001'])expect(avatarTone(id)).toBeLessThan(AVATAR_TONES);
+  });
+
+  it('Enter sends; Shift/Alt+Enter, IME composition and other keys do not',()=>{
+    expect(isSendShortcut({key:'Enter'})).toBe(true);
+    expect(isSendShortcut({key:'Enter',shiftKey:true})).toBe(false);
+    expect(isSendShortcut({key:'Enter',altKey:true})).toBe(false);
+    expect(isSendShortcut({key:'Enter',isComposing:true})).toBe(false);
+    expect(isSendShortcut({key:'Enter',nativeEvent:{isComposing:true}})).toBe(false);
+    expect(isSendShortcut({key:'Enter',keyCode:229})).toBe(false);
+    expect(isSendShortcut({key:'a'})).toBe(false);
+  });
+});
