@@ -46,11 +46,13 @@ export const ACTION_RULES:Readonly<Record<string,ActionRule>>={
  mark_lead_viewed:rule(LEADS),
  send_lead_message:rule(LEADS),
  poll_dm_replies:rule(['chats','leads']),
+ check_lead_blocks:rule(['chats','leads']),
 
  check_proxy:rule(['proxies']),
  check_proxies:rule(['proxies']),
  check_account:rule(['accounts']),
  check_accounts:rule(['accounts']),
+ account_events:rule(['accounts'],false),
  reset_checking_accounts:rule(['accounts','proxies']),
  generate_account_about:rule(['accounts']),
  apply_account_profiles:rule(['accounts']),

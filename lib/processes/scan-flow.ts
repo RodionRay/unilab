@@ -181,7 +181,7 @@ const SERVER_OWNED: Record<"lead" | "group", readonly string[]> = {
     "replies", "needsManager", "incomingLastText", "conversationOpen", "conversationAt",
     "coreScore", "notifyPending", "notifiedAt", "notifyAttempts", "notifyClaimUntil",
     "senderId", "senderUsername", "senderAccessHash", "peerId", "replyToMsgId", "messageKind",
-    "tgMsgId", "groupId", "accountId", "mailingTaskId",
+    "tgMsgId", "groupId", "accountId", "mailingTaskId", "blockSignal",
   ],
   group: ["scanLockUntil", "scanLockToken", "scanCursor", "aiRejected", "leadTombstones"],
 };

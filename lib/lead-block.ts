@@ -203,3 +203,21 @@ export function sameSignal(a: unknown, b: unknown): boolean {
   const strip = (s: LeadBlockSignal) => JSON.stringify({ ...s, checkedAt: undefined, visibleAt: undefined });
   return strip(x) === strip(y);
 }
+
+/**
+ * Lead after a DM send attempt by `accountId`: delivered → send-error reasons cleared + visibility baseline from
+ * the worker's `peer`; peer-side error code → reason added; anything else (flood, timeout…) → unchanged.
+ */
+export function applySendToBlockSignal<T extends Record<string, unknown>>(
+  lead: T,
+  result: { ok?: unknown; errorCode?: unknown; error?: unknown; peer?: unknown } | null | undefined,
+  accountId: string,
+  nowIso: string,
+): T {
+  if (!result || !accountId) return lead;
+  if (result.ok === true) {
+    return { ...lead, blockSignal: observeSendOk(lead.blockSignal, parsePeerSnapshot(result.peer), accountId, nowIso) };
+  }
+  const code = peerSendErrorCode(result);
+  return code ? { ...lead, blockSignal: observeSendError(lead.blockSignal, code, accountId, nowIso) } : lead;
+}

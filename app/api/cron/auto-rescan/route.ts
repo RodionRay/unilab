@@ -349,6 +349,12 @@ async function tickOwner(
     } catch {
       /* ответы в ЛС — следующим тиком */
     }
+    try {
+      // «Вероятно, заблокировал»: один пакетный запрос по одному аккаунту за тик (lib/lead-block.ts)
+      await workspace(origin, cookie, { action: "check_lead_blocks" }, 75_000);
+    } catch {
+      /* следующим тиком */
+    }
 
     const summary =
       `Автообход: вступил ${joined}/${Math.min(rejoin.length, MAX_JOINS)}, ` +
