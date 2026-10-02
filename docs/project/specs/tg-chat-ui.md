@@ -49,6 +49,14 @@ List of lead rows + modal Dialog with thread and composer (`app/app/page.tsx` `r
 ## Out of scope
 Real read receipts, media, avatars from Telegram, per-message reply-to (not stored); a global light theme.
 
+## Status (2026-10-02, after panel round 7)
+Send flow: async send/draft results update only the chat they belong to (`app/app/page.tsx::openLeadIdRef`); the
+composer empties when a send starts and gets the text back only on failure; a retry of a failed send replaces the
+failed entry server-side (`lib/lead-conversation.ts::failedAttemptIndex`, `applySendOutcome` targets the newest entry
+with the key); a failed bubble offers «Повторить» only while no later copy is delivered or in flight
+(`ThreadMessage.retryable`). States: first run (no chats) with one next step, records load error with «Повторить»,
+help FAB hidden while a chat is open, destructive «Удалить» in the delete confirm.
+
 ## Status (2026-10-02, after panel round 1)
 Panel fixes applied: dedicated in-flight state (pending bubble reconciled by stored-copy count, cleared when the send
 settles), no resend of an already-sent draft on open, draft-overwrite confirm, «Повторить»/«Копировать» on failed

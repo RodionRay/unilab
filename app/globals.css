@@ -6078,6 +6078,20 @@ body:has(.chats-panel[data-chat-open="true"]) .assistant-root {
   background: #e4e1dc;
 }
 
+/* first run inside the list: only where the chat pane is hidden (one column) */
+.chat-list-firstrun {
+  display: none;
+  width: 100%;
+}
+@container chats (max-width: 699px) {
+  .chat-list-firstrun {
+    display: block;
+  }
+  .chat-list-firstrun .chat-placeholder {
+    padding: 8px 0 0;
+  }
+}
+
 /* ---------- small additions: add lead, row badge, notice action ---------- */
 /* the app's outline buttons are dark-only (white ink !important): re-ink them for the chat palette */
 .chats-panel button[data-slot="button"][data-variant="outline"] {

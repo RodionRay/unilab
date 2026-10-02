@@ -226,6 +226,7 @@ export function ChatsPanel(props: ChatsPanelProps) {
           readOnly={props.readOnly}
           loadError={props.loadError}
           onReload={props.onReload}
+          firstRun={<FirstRun telegramConnected={props.telegramConnected} onConnect={props.onConnect} onOpenLeads={props.onOpenLeads} />}
           renderRowBadge={props.renderRowBadge}
           onFolderChange={props.onFolderChange}
           onQueryChange={props.onQueryChange}

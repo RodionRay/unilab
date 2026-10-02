@@ -24,6 +24,8 @@ export type ChatListProps = {
   /** Records failed to load ("" = fine). */
   loadError: string;
   onReload: () => void;
+  /** Next step when there are no chats at all; shown in the list only in the one-column layout. */
+  firstRun?: ReactNode;
   /** Optional per-row badge next to the name (e.g. account penalty on the staff branch). */
   renderRowBadge?: (lead: ChatLead) => ReactNode;
   onFolderChange: (folder: ChatFolder) => void;
@@ -53,9 +55,20 @@ function ListSkeleton() {
   );
 }
 
-function ListEmpty({ folder, query, counts, onFolderChange, onQueryChange }: Pick<ChatListProps, "folder" | "query" | "counts" | "onFolderChange" | "onQueryChange">) {
+function ListEmpty({ folder, query, counts, firstRun, onFolderChange, onQueryChange }: Pick<ChatListProps, "folder" | "query" | "counts" | "firstRun" | "onFolderChange" | "onQueryChange">) {
   const searching = query.trim().length > 0;
   const other = folder === "all" ? counts.viewed : counts.fresh;
+  // no chats at all: the chat pane explains and offers the next step, the list stays a quiet label
+  if (!searching && counts.fresh + counts.viewed === 0) {
+    return (
+      <Empty className="chat-list-empty">
+        <EmptyHeader>
+          <EmptyTitle>Нет диалогов</EmptyTitle>
+        </EmptyHeader>
+        {firstRun ? <div className="chat-list-firstrun">{firstRun}</div> : null}
+      </Empty>
+    );
+  }
   return (
     <Empty className="chat-list-empty">
       <EmptyHeader>
@@ -239,7 +252,7 @@ function ChatListView(props: ChatListProps) {
             ) : null}
           </>
         ) : (
-          <ListEmpty folder={folder} query={query} counts={counts} onFolderChange={onFolderChange} onQueryChange={onQueryChange} />
+          <ListEmpty folder={folder} query={query} counts={counts} firstRun={props.firstRun} onFolderChange={onFolderChange} onQueryChange={onQueryChange} />
         )}
       </div>
     </section>
