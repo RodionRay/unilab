@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import type { InboxFilter, InboxPage, InboxRow } from "@/lib/tma/client";
 import { toApiError, useFeedQuery, useOnline, useTmaSession } from "@/components/tma/context";
 import { formatListTime } from "@/components/tma/format";
+import { uniqueById } from "@/components/tma/inbox-pages";
 import { Avatar, EmptyState, ErrorState, InlineNotice, ListSkeleton, PullScroll, RefreshButton, ScreenHeader } from "@/components/tma/parts";
 
 const FILTERS: { id: InboxFilter; label: string }[] = [
@@ -43,9 +44,8 @@ export function InboxScreen({
 
   const pageKey = feed.data ? `${filter}:${feed.data.nextCursor ?? ""}:${feed.data.items[0]?.id ?? ""}` : "";
   const extra = more && more.key === pageKey ? more : null;
-  const items = feed.data ? [...feed.data.items, ...(extra?.items ?? [])] : [];
+  const items = feed.data ? uniqueById([...feed.data.items, ...(extra?.items ?? [])]) : [];
   const cursor = extra ? extra.cursor : (feed.data?.nextCursor ?? null);
-
 
   const loadMore = useCallback(async () => {
     if (!cursor || extra?.loading) return;

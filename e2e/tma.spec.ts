@@ -116,6 +116,21 @@ test.describe("inbox", () => {
     await expect(page.locator('[data-testid="inbox-row"][data-hot]')).toHaveCount(3);
   });
 
+  test("load-more never shows a lead twice when the next page repeats it (order changed after viewing)", async ({ page }) => {
+    const repeated = fx.inboxAll.items[0]!;
+    await open(page, {}, {
+      feed: (view, q) =>
+        view === "inbox" && q.cursor === "c2"
+          ? { status: 200, body: { ...fx.inboxAllPage2, items: [{ ...repeated, unread: false }, ...fx.inboxAllPage2.items] } }
+          : undefined,
+    });
+    await expect(page.getByTestId("inbox-row")).toHaveCount(10);
+    await page.getByRole("button", { name: "Показать ещё" }).click();
+    await expect(page.getByRole("button", { name: "Показать ещё" })).toHaveCount(0);
+    await expect(page.getByTestId("inbox-row")).toHaveCount(12);
+    await expect(page.getByTestId("inbox-row").filter({ hasText: repeated.name })).toHaveCount(1);
+  });
+
   test("empty filter offers «Показать все»", async ({ page }) => {
     await open(page, {}, { feed: (view, q) => (view === "inbox" && q.filter === "conversations" ? { status: 200, body: fx.inboxEmpty } : undefined) });
     await page.getByRole("radio", { name: "Диалоги" }).click();
