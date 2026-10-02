@@ -114,10 +114,12 @@ function FailedNote({ m, canRetry, onRetry, onCopy }: Omit<BubbleProps, "groupNa
         {err.text}
       </p>
       <div className="chat-error-actions">
-        <button type="button" className="chat-error-btn" data-chat-retry disabled={!canRetry} onClick={() => onRetry(m)}>
-          <RotateCw size={13} aria-hidden />
-          Повторить
-        </button>
+        {m.retryable ? (
+          <button type="button" className="chat-error-btn" data-chat-retry disabled={!canRetry} onClick={() => onRetry(m)}>
+            <RotateCw size={13} aria-hidden />
+            Повторить
+          </button>
+        ) : null}
         <button type="button" className="chat-error-btn" onClick={() => onCopy(m.text)}>
           <Copy size={13} aria-hidden />
           Копировать

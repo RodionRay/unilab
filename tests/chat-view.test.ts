@@ -244,3 +244,18 @@ describe('chat-view · send errors',()=>{
     expect(describeSendError('').text).toBe('Не отправлено. Повторите попытку.');
   });
 });
+
+describe('chat-view · retry',()=>{
+  it('a failed message is retryable until a later copy (same text+mode) is delivered or in flight',()=>{
+    const failed=us('Привет',at(2,9),{ok:false,status:'failed',error:'PEER_FLOOD'});
+    const only=messages(buildThread(lead({replies:[failed]}),{now:NOW}).items).find(m=>m.tick==='failed');
+    const afterRetry=messages(buildThread(lead({replies:[failed,us('Привет',at(2,9,1))]}),{now:NOW}).items).find(m=>m.tick==='failed');
+    const inFlight=messages(buildThread(lead({replies:[failed]}),{now:NOW,pending:{text:'Привет',mode:'dm',at:at(2,9,2)}}).items).find(m=>m.tick==='failed');
+    const otherMode=messages(buildThread(lead({replies:[failed,us('Привет',at(2,9,1),{mode:'chat'})]}),{now:NOW}).items).find(m=>m.tick==='failed');
+
+    expect(only?.retryable).toBe(true);
+    expect(afterRetry?.retryable).toBe(false);
+    expect(inFlight?.retryable).toBe(false);
+    expect(otherMode?.retryable).toBe(true);
+  });
+});

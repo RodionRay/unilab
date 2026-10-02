@@ -27,6 +27,8 @@ export type ThreadMessage = {
   source: boolean;
   /** Outgoing only. */
   tick: TickState | null;
+  /** Failed and not yet superseded by a later delivered / in-flight copy of the same text+mode. */
+  retryable: boolean;
   error: string;
   /** Outgoing reply sent into the group: quote of the source post. */
   quote: string;
@@ -69,6 +71,7 @@ function daysBetween(at: Date, now: Date): number {
 }
 
 const pad = (n: number) => String(n).padStart(2, "0");
+const sameText = (a: string, b: string) => a.trim() === b.trim();
 
 export function formatClock(iso: string): string {
   const t = ms(iso);
@@ -134,6 +137,7 @@ function sourceMessage(lead: ChatLead, firstReplyAt: string): ThreadMessage {
     time: late ? "" : formatClock(at),
     source: true,
     tick: null,
+    retryable: false,
     error: "",
     quote: "",
     mode: "chat",
@@ -156,6 +160,7 @@ function replyMessage(entry: ReplyEntry, i: number, all: readonly ReplyEntry[], 
     time: formatClock(str(entry.at)),
     source: false,
     tick: side === "out" ? tickOf(entry, all) : null,
+    retryable: false,
     error: side === "out" ? str(entry.error) : "",
     quote: side === "out" && entry.mode === "chat" ? quote : "",
     mode: entry.mode === "chat" ? "chat" : "dm",
@@ -198,6 +203,16 @@ function applyGrouping(items: ThreadItem[]): void {
   }
 }
 
+/** A failed message can be retried unless a later copy (same text+mode) was delivered or is in flight. */
+function markRetryable(messages: ThreadMessage[]): void {
+  messages.forEach((m, i) => {
+    if (m.tick !== "failed") return;
+    m.retryable = !messages.some(
+      (later, j) => j > i && later.side === "out" && later.tick !== "failed" && later.mode === m.mode && sameText(later.text, m.text),
+    );
+  });
+}
+
 export function buildThread(lead: ChatLead, opts: BuildThreadOptions = {}): ChatThread {
   const now = opts.now ?? new Date();
   const replies = leadReplies(lead.data)
@@ -222,6 +237,8 @@ export function buildThread(lead: ChatLead, opts: BuildThreadOptions = {}): Chat
       key: `pending-${p.at}`,
     });
   }
+
+  markRetryable(messages);
 
   const items: ThreadItem[] = [];
   let unreadIndex = -1;
@@ -362,8 +379,6 @@ export type Outbox = {
   /** How many of our replies with this text existed when it was sent (server clocks may differ from ours). */
   known: number;
 };
-
-const sameText = (a: string, b: string) => a.trim() === b.trim();
 
 function ourCopies(data: LeadData, text: string): number {
   return leadReplies(data).filter((r) => r.from === "us" && sameText(str(r.text), text)).length;
