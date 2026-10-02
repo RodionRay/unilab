@@ -18,6 +18,22 @@ describe('parseVkAccountLines (REQ-1, AM-10)',()=>{
     expect(JSON.stringify(res)).not.toContain('user@mail.ru');
   });
 
+  it('rejects login:password:word when the last part is not token-shaped and never echoes it',()=>{
+    const longPassword='Secret_Password_Part_'+'x'.repeat(30);
+    for(const line of [`login:pass:word`,`login:pass:${longPassword}`,`login:pass:${'g'.repeat(84)}`]){
+      const [res]=parseVkAccountLines(line);
+      expect(res).toMatchObject({line:1,ok:false});
+      expect(res.ok?'':res.reason).toMatch(/токен/i);
+      expect(JSON.stringify(res)).not.toMatch(/word|Secret|ggg|login/);
+    }
+  });
+
+  it('accepts a vk1.a. or ≥85-char token as the last part of a colon line',()=>{
+    const longToken='Z'.repeat(85);
+    expect(parseVkAccountLines(`l:p:${TOKEN_A}`)[0]).toMatchObject({ok:true,token:TOKEN_A});
+    expect(parseVkAccountLines(`l:p:${longToken}`)[0]).toMatchObject({ok:true,token:longToken});
+  });
+
   it('reads an oauth blank.html redirect with user id and offline expiry',()=>{
     const [res]=parseVkAccountLines(`https://oauth.vk.com/blank.html#access_token=${TOKEN_A}&expires_in=0&user_id=700100`);
     expect(res).toEqual({line:1,ok:true,token:TOKEN_A,expiresIn:0,userId:700100});

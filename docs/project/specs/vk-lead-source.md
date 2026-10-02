@@ -54,7 +54,8 @@ core + AI pipeline as Telegram, in the same Leads view and Telegram notification
 
 ## Acceptance criteria
 - REQ-1 WHEN the user pastes a list of VK accounts (one per line: `token` or `login:password:token`, the marketplace
-  format; password is discarded, never stored) THE SYSTEM SHALL validate each token (`users.get`) through its proxy,
+  format; password is discarded, never stored; the last part counts as the token only in a token shape — `vk1.a.…` or
+  85+ token characters — otherwise the line is invalid and nothing from it is sent to VK) THE SYSTEM SHALL validate each token (`users.get`) through its proxy,
   store it only sealed in `records.secret`, skip duplicates (same `vkUserId`), and report per line
   added / duplicate / invalid with the reason; the token is never returned to the client.
 - REQ-1a WHEN accounts are imported THE SYSTEM SHALL bind each to a proxy (chosen proxy, or round-robin over active

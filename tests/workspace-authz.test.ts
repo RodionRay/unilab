@@ -1,7 +1,7 @@
 import {afterEach,beforeAll,beforeEach,describe,expect,it,vi} from 'vitest';
 import {
   ACCOUNT_ID,BOT_TOKEN,LEAD_ID,MAILING_ID,OWNER,PROXY_ID,SETTINGS_ID,
-  login,postRequest,resetWorkspace,testDb,
+  addRecord,login,postRequest,resetWorkspace,testDb,
 } from './helpers/workspace-harness';
 
 vi.mock('cloudflare:workers',async()=>(await import('./helpers/workspace-harness')).cfModule);
@@ -126,6 +126,20 @@ describe('workspace API: доступ по разделам',()=>{
     expect(res.status).toBe(200);
     const row=testDb().sqlite.prepare('SELECT data FROM records WHERE id=?').get(SETTINGS_ID) as {data:string};
     expect(JSON.parse(row.data).notifyBotToken).toBe(BOT_TOKEN);
+  });
+});
+
+describe('workspace API: внутренние поля VK-аккаунта не уходят в GET',()=>{
+  it.each([['владелец',OWNER,null],['администратор','admin-1','admin']] as const)('%s не получает tokenFp и leaseId',async(_label,user,role)=>{
+    if(role)addMember(user,role);
+    login(user);
+    addRecord('d0000000-0000-4000-8000-00000000000a','vk_account',{name:'VK 1',status:'active',tokenFp:'fp-secret-1',leaseId:'lease-secret-1',leaseUntil:'2099-01-01T00:00:00.000Z'});
+
+    const acc=(await visibleRecords()).find(r=>r.kind==='vk_account');
+
+    expect(acc?.data.name).toBe('VK 1');
+    expect(acc?.data).not.toHaveProperty('tokenFp');
+    expect(acc?.data).not.toHaveProperty('leaseId');
   });
 });
 

@@ -21,6 +21,8 @@ const DEFAULT_MAX_BODY_BYTES = 6_000_000;
 const DEFAULT_MAX_CONCURRENCY = 4;
 // Requests beyond the running slots wait here; the UI fires ~8 proxy checks at once.
 const DEFAULT_MAX_QUEUE = 64;
+// vk_call batches run up to 45 s each; this many at most, so Telegram jobs keep the other slots.
+const DEFAULT_MAX_VK_CONCURRENCY = 2;
 const DEFAULT_MAX_STDOUT_BYTES = 2 * 1024 * 1024;
 const DEFAULT_KILL_GRACE_MS = 5_000;
 // After SIGKILL the kernel reaps the child almost at once; this only bounds a missing 'close'.
@@ -77,6 +79,7 @@ export function resolveConfig(env) {
     extraHosts,
     maxConcurrency: positiveInt(env.TG_WORKER_MAX_CONCURRENCY, DEFAULT_MAX_CONCURRENCY),
     maxQueue: nonNegativeInt(env.TG_WORKER_MAX_QUEUE, DEFAULT_MAX_QUEUE),
+    maxVkConcurrency: positiveInt(env.TG_WORKER_MAX_VK_CONCURRENCY, DEFAULT_MAX_VK_CONCURRENCY),
     maxBodyBytes: positiveInt(env.TG_WORKER_MAX_BODY_BYTES, DEFAULT_MAX_BODY_BYTES),
   };
 }
@@ -378,40 +381,9 @@ export function createWorkerServer(config, deps) {
   // Requests holding a place: reading their body, waiting for a slot or running.
   // Reserved before the body is read, so slow senders cannot all pass the check.
   let admitted = 0;
-  let active = 0;
-  /** @type {Array<() => void>} */
-  const waiters = [];
-  /**
-   * Resolves true once a Python slot is held (FIFO), false if `signal` aborts first.
-   * @param {AbortSignal} signal
-   * @returns {Promise<boolean>}
-   */
-  const acquire = (signal) => {
-    if (signal.aborted) return Promise.resolve(false);
-    if (active < config.maxConcurrency) {
-      active += 1;
-      return Promise.resolve(true);
-    }
-    return new Promise((resolve) => {
-      const onAbort = () => {
-        const i = waiters.indexOf(grant);
-        if (i >= 0) waiters.splice(i, 1);
-        resolve(false);
-      };
-      const grant = () => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(true);
-      };
-      signal.addEventListener("abort", onAbort, { once: true });
-      waiters.push(grant);
-    });
-  };
-  /** Hands the slot to the next waiter, or frees it. Call once per granted slot. */
-  const release = () => {
-    const next = waiters.shift();
-    if (next) next();
-    else active -= 1;
-  };
+  const pythonSlots = createSlots(config.maxConcurrency);
+  // A vk_call holds one of these before a Python slot, so VK bursts never take every slot.
+  const vkSlots = createSlots(config.maxVkConcurrency ?? DEFAULT_MAX_VK_CONCURRENCY);
 
   /** @param {import("node:http").IncomingMessage} req */
   const hostAllowed = (req) => {
@@ -495,19 +467,64 @@ export function createWorkerServer(config, deps) {
       return send(400, { ok: false, error: "Invalid JSON" });
     }
     payload.action = action;
-    if (!(await acquire(signal))) return;
+    const lane = action === "vk_call" ? vkSlots : null;
+    if (lane && !(await lane.acquire(signal))) return;
     try {
-      if (signal.aborted) return;
-      return send(200, await deps.runPython(payload, timeoutForAction(action), signal));
-    } catch {
-      return send(500, { ok: false, error: GENERIC_WORKER_ERROR });
+      if (!(await pythonSlots.acquire(signal))) return;
+      try {
+        if (signal.aborted) return;
+        return send(200, await deps.runPython(payload, timeoutForAction(action), signal));
+      } catch {
+        return send(500, { ok: false, error: GENERIC_WORKER_ERROR });
+      } finally {
+        pythonSlots.release();
+      }
     } finally {
-      release();
+      lane?.release();
     }
   }
   // Slow senders must not pin a concurrency slot while the body trickles in.
   server.requestTimeout = 60_000;
   return server;
+}
+
+/**
+ * FIFO counting semaphore: `acquire` resolves true once a slot is held, false if `signal`
+ * aborts first; `release` hands the slot to the next waiter or frees it (once per grant).
+ * @param {number} limit
+ */
+function createSlots(limit) {
+  let active = 0;
+  /** @type {Array<() => void>} */
+  const waiters = [];
+  return {
+    /** @param {AbortSignal} signal @returns {Promise<boolean>} */
+    acquire(signal) {
+      if (signal.aborted) return Promise.resolve(false);
+      if (active < limit) {
+        active += 1;
+        return Promise.resolve(true);
+      }
+      return new Promise((resolve) => {
+        const onAbort = () => {
+          const i = waiters.indexOf(grant);
+          if (i >= 0) waiters.splice(i, 1);
+          resolve(false);
+        };
+        const grant = () => {
+          signal.removeEventListener("abort", onAbort);
+          resolve(true);
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        waiters.push(grant);
+      });
+    },
+    release() {
+      const next = waiters.shift();
+      if (next) next();
+      else active -= 1;
+    },
+  };
 }
 
 /**

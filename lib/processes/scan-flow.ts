@@ -150,6 +150,11 @@ export function activeAiRejects(memory: unknown, sig: string, now: number): Reco
   return out;
 }
 
+/** REQ-15: a client payload without any server-owned field; a new lead gets them only from the server. */
+export function dropServerOwnedFields(kind: string, next: Record<string, unknown>): Record<string, unknown> {
+  return keepServerOwnedFields(kind, {}, next);
+}
+
 export function rememberAiRejects(
   active: Record<string, string>,
   ids: readonly string[],

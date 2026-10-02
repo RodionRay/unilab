@@ -10,6 +10,8 @@ export const VK_DEFAULT_ACCOUNTS_PER_PROXY = 3;
 
 // Legacy tokens are 85 hex chars; current ones look like `vk1.a.<base64url>`.
 const TOKEN_RE = /^[A-Za-z0-9._-]{32,1024}$/;
+// A colon line's last part is taken as the token only in a token shape, so a password split on ':' is never sent to VK.
+const COLON_TOKEN_RE = /^(?:vk1\.a\.[A-Za-z0-9._-]+|[A-Za-z0-9._-]{85,})$/;
 
 export type VkImportLine =
   | {line: number; ok: true; token: string; expiresIn: number | null; userId: number | null; warning?: string}
@@ -33,7 +35,9 @@ function tokenFromLine(raw: string): {token: string; expiresIn: number | null; u
   const parts = raw.split(':');
   if (parts.length === 2) return 'Ожидается token или login:password:token';
   // login:password:token — a password may itself hold ':', the token is always last.
-  return {token: parts[parts.length - 1].trim(), expiresIn: null, userId: null};
+  const token = parts[parts.length - 1].trim();
+  if (!COLON_TOKEN_RE.test(token)) return 'Последняя часть строки не похожа на токен VK (vk1.a.… или 85+ символов)';
+  return {token, expiresIn: null, userId: null};
 }
 
 /**

@@ -190,6 +190,24 @@ class RunBatchTest(unittest.TestCase):
                 self.assertFalse(out["ok"])
                 self.assertEqual(t.calls, [])
 
+    def test_rejects_methods_outside_the_read_only_allowlist(self) -> None:
+        for method in ("wall.post", "messages.send", "execute", "account.ban", "groups.join"):
+            t = ScriptedTransport(self.clock, [])
+            with self.subTest(method=method):
+                out = run(batch("users.get", method), t, self.clock)
+                self.assertEqual(out, {"ok": False, "error": "Недопустимый метод VK"})
+                self.assertEqual(t.calls, [])
+
+    def test_accepts_every_read_only_method_the_app_uses(self) -> None:
+        used = (
+            "users.get", "newsfeed.search", "wall.get", "wall.getComments",
+            "board.getTopics", "board.getComments", "groups.getById", "utils.resolveScreenName",
+        )
+        t = ScriptedTransport(self.clock, [ok([]) for _ in used])
+        out = run(batch(*used), t, self.clock)
+        self.assertTrue(out["ok"])
+        self.assertEqual([c[0] for c in t.calls], list(used))
+
     def test_http_error_status_is_reported(self) -> None:
         t = ScriptedTransport(self.clock, [vk_api.HttpReply(404, b"")])
         out = run(batch("users.get"), t, self.clock)
@@ -203,12 +221,12 @@ class StubVk(BaseHTTPRequestHandler):
         size = int(self.headers.get("Content-Length") or 0)
         fields = dict(urllib.parse.parse_qsl(self.rfile.read(size).decode()))
         StubVk.seen.append((self.path, fields))
-        if self.path.endswith("/redirect.me"):
+        if self.path.endswith("/groups.getById"):  # stands in for a redirecting host
             self.send_response(302)
             self.send_header("Location", "http://example.com/")
             self.end_headers()
             return
-        if self.path.endswith("/boom.now"):
+        if self.path.endswith("/board.getTopics"):  # stands in for a failing host
             self.send_response(503)
             self.end_headers()
             return
@@ -257,13 +275,13 @@ class UrllibTransportTest(unittest.TestCase):
         self.assertEqual(fields["access_token"], TOKEN)
 
     def test_does_not_follow_redirects(self) -> None:
-        out = self._run("redirect.me")
+        out = self._run("groups.getById")
         self.assertEqual(out["results"][0]["error"]["code"], vk_api.CODE_HTTP)
         self.assertEqual(len(StubVk.seen), 1)
 
     def test_5xx_is_retried_then_reported_as_network(self) -> None:
         out = vk_api.run_batch(
-            batch("boom.now"),
+            batch("board.getTopics"),
             make_proxy=lambda _p: None,
             transport=self.transport,
             sleep=lambda _s: None,

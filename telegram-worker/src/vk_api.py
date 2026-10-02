@@ -39,6 +39,18 @@ CODE_HTTP = -3
 CODE_BAD_RESPONSE = -4
 
 _METHOD_RE = re.compile(r"^[a-z]+\.[a-zA-Z]+$")
+# Read-only methods lib/vk actually calls; anything else (wall.post, execute …) is refused
+# before a request, so a compromised app cannot act on a user token through the worker.
+ALLOWED_METHODS = frozenset({
+    "users.get",
+    "newsfeed.search",
+    "wall.get",
+    "wall.getComments",
+    "board.getTopics",
+    "board.getComments",
+    "groups.getById",
+    "utils.resolveScreenName",
+})
 _SCALARS = (str, int, float, bool)
 
 
@@ -119,7 +131,7 @@ def _validate(payload: dict[str, Any]) -> tuple[str, list[tuple[str, dict[str, A
     for call in calls:
         method = call.get("method") if isinstance(call, dict) else None
         params = call.get("params", {}) if isinstance(call, dict) else None
-        if not isinstance(method, str) or not _METHOD_RE.match(method):
+        if not isinstance(method, str) or not _METHOD_RE.match(method) or method not in ALLOWED_METHODS:
             raise BatchRejected("Недопустимый метод VK")
         if not isinstance(params, dict):
             raise BatchRejected("Параметры вызова должны быть объектом")
