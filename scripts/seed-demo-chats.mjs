@@ -7,6 +7,18 @@
  * Prints JSON {accounts, groups, leads} with the created ids.
  */
 const base = (process.env.DEMO_URL || "http://localhost:5173").replace(/\/$/, "");
+// Synthetic data only goes into a local cabinet: refuse anything that is not this machine.
+const host = (() => {
+  try {
+    return new URL(base).hostname;
+  } catch {
+    return "";
+  }
+})();
+if (!["localhost", "127.0.0.1", "[::1]", "::1"].includes(host)) {
+  console.error(`Refusing to seed ${base}: DEMO_URL must point to localhost / 127.0.0.1`);
+  process.exit(2);
+}
 const email = process.env.DEMO_EMAIL || "admin@uniseller.local";
 const password = process.env.DEMO_PASSWORD;
 if (!password) {
@@ -93,7 +105,7 @@ const leads = [
   }),
   await lead({
     name: "Дмитрий Соколов-Белозерский, руководитель отдела маркетплейсов", senderUsername: "demo_dmitry_long_username_example", groupId: groups[0], accountId: accounts[0],
-    message: "Очень длинное сообщение-запрос: у нас 14 юрлиц, на каждом по два-три кабинета на разных площадках, нужна единая панель для цен, остатков и отзывов, с ролями для менеджеров и выгрузкой в 1С. Есть такие решения на рынке или только самописное?",
+    message: "Коллеги, подскажите. У нас 14 юрлиц, на каждом по два-три кабинета на WB, Ozon и Яндекс Маркете. Хотим одну панель для цен, остатков и отзывов, чтобы менеджеры видели только свои кабинеты, а заказы уходили в 1С. Есть готовые решения или все пишут своё?",
     conversationAt: ago(60 * 24 * 3), incomingLastText: "",
     replies: [
       us("Дмитрий, здравствуйте! Да, единая панель с ролями и выгрузкой в 1С — наш основной сценарий для групп компаний.", 60 * 24 * 3, { status: "pending" }),
