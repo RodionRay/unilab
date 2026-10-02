@@ -44,6 +44,7 @@ const rule=(anyOf:readonly CrmAccessKey[],mutates=true):ActionRule=>({anyOf,muta
 export const ACTION_RULES:Readonly<Record<string,ActionRule>>={
  draft:rule(LEADS),
  mark_lead_viewed:rule(LEADS),
+ set_lead_triage:rule(LEADS),
  send_lead_message:rule(LEADS),
  poll_dm_replies:rule(['chats','leads']),
 

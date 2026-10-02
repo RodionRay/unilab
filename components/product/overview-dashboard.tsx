@@ -41,6 +41,7 @@ import {
   LEAD_TEMPERATURE_LABELS,
   type LeadTemperature,
 } from '@/lib/lead-filter';
+import type {LeadTriage} from '@/lib/lead-triage';
 import {useTableSort} from '@/hooks/useTableSort';
 import type {SortValueType} from '@/lib/table-sort';
 
@@ -52,6 +53,8 @@ export type OverviewLead={
   source:string;
   temperature:LeadTemperature;
   status:string;
+  /** Manual triage state (lib/lead-triage.ts::leadTriage); «Новые» = untriaged. */
+  triage:LeadTriage;
   viewed:boolean;
   groupId:string;
   draft:boolean;
@@ -96,10 +99,9 @@ function tempClass(t:LeadTemperature){
   return t==='hot'?'studio-pill hot':t==='cold'?'studio-pill cold':'studio-pill warm';
 }
 
-function statusLabel(status:string,viewed:boolean){
-  if(viewed)return {label:'Просмотрен',tone:'muted' as const};
-  if(status==='working')return {label:'В работе',tone:'info' as const};
-  if(status==='archived')return {label:'Архив',tone:'muted' as const};
+function statusLabel(triage:LeadTriage){
+  if(triage==='lead')return {label:'Лид',tone:'info' as const};
+  if(triage==='rejected')return {label:'Отклонён',tone:'muted' as const};
   return {label:'Новый',tone:'ok' as const};
 }
 
@@ -143,7 +145,8 @@ export function OverviewDashboard({
   needJoin:number;
   farm:OverviewFarmStats;
   onRefresh:()=>void;
-  onGoLeads:(opts?:{groupId?:string;filter?:string})=>void;
+  /** `filter`: triage tab (new|lead|rejected|all) or a temperature (opens «Новые»), lib/lead-triage.ts::leadsLinkTarget. */
+  onGoLeads:(opts?:{groupId?:string;filter?:string;temperature?:'all'|LeadTemperature})=>void;
   onGoChats:(filter?:'all'|'need'|'joined'|'pending'|'error')=>void;
   onGoAccounts:()=>void;
   onGoAudience:()=>void;
@@ -158,7 +161,8 @@ export function OverviewDashboard({
   const [chatQuery,setChatQuery]=useState('');
   const [leadQuery,setLeadQuery]=useState('');
   const [tempFilter,setTempFilter]=useState<'all'|LeadTemperature>('all');
-  const [showViewed,setShowViewed]=useState(false);
+  const [list,setList]=useState<'new'|'lead'>('new');
+  const showLeads=list==='lead';
 
   const filteredChats=useMemo(()=>{
     const q=chatQuery.trim().toLowerCase();
@@ -170,8 +174,7 @@ export function OverviewDashboard({
   const filteredLeads=useMemo(()=>{
     const q=leadQuery.trim().toLowerCase();
     return leads.filter(l=>{
-      if(!showViewed&&l.viewed)return false;
-      if(showViewed&&!l.viewed)return false;
+      if(l.triage!==list)return false;
       if(chatId!=='all'&&l.groupId!==chatId)return false;
       if(tempFilter!=='all'&&l.temperature!==tempFilter)return false;
       if(!q)return true;
@@ -181,7 +184,7 @@ export function OverviewDashboard({
         l.source.toLowerCase().includes(q)
       );
     });
-  },[leads,chatId,tempFilter,leadQuery,showViewed]);
+  },[leads,chatId,tempFilter,leadQuery,list]);
 
   const leadSortTypes=useMemo<Record<string,SortValueType>>(()=>({
     name:'string',
@@ -194,7 +197,7 @@ export function OverviewDashboard({
   const getLeadSortValue=useCallback((lead:OverviewLead,key:string)=>{
     if(key==='name')return lead.name||'';
     if(key==='temperature')return LEAD_TEMPERATURE_LABELS[lead.temperature]||lead.temperature;
-    if(key==='status')return statusLabel(lead.status,lead.viewed).label;
+    if(key==='status')return statusLabel(lead.triage).label;
     if(key==='source')return lead.source||'';
     if(key==='created')return lead.created;
     return '';
@@ -204,15 +207,16 @@ export function OverviewDashboard({
     types:leadSortTypes,
     defaultKey:'created',
     defaultDir:'desc',
-    resetKey:`${showViewed}-${chatId}-${tempFilter}`,
+    resetKey:`${list}-${chatId}-${tempFilter}`,
   });
 
   const tableLeads=useMemo(()=>sortedLeads.slice(0,12),[sortedLeads]);
 
   const joinActive=joinQueue.filter(q=>['queued','waiting','joining','scanning'].includes(q.status));
   const selectedChat=chats.find(c=>c.id===chatId);
-  const visibleFresh=leads.filter(l=>{
-    if(l.viewed)return false;
+  const qualifiedCount=leads.filter(l=>l.triage==='lead').length;
+  const visibleInList=leads.filter(l=>{
+    if(l.triage!==list)return false;
     if(chatId!=='all'&&l.groupId!==chatId)return false;
     if(tempFilter!=='all'&&l.temperature!==tempFilter)return false;
     return true;
@@ -374,7 +378,7 @@ export function OverviewDashboard({
             </div>
             {chatId!=='all'&&(
               <div className="studio-chat-foot">
-                <Button size="sm" variant="outline" onClick={()=>onGoLeads({groupId:chatId,filter:tempFilter==='all'?'all':tempFilter})}>
+                <Button size="sm" variant="outline" onClick={()=>onGoLeads({groupId:chatId,filter:'new',temperature:tempFilter})}>
                   Лиды «{selectedChat?.name||'чат'}» <ArrowRight size={14}/>
                 </Button>
               </div>
@@ -407,18 +411,18 @@ export function OverviewDashboard({
           <CardHeader className="border-b">
             <div>
               <CardTitle>
-                {showViewed
-                  ?`Просмотренные${chatId==='all'?'':` · ${selectedChat?.name||'чат'}`}`
-                  :`${visibleFresh} новых лидов${chatId==='all'?'':` · ${selectedChat?.name||'чат'}`}`}
+                {showLeads
+                  ?`${visibleInList} в «Лидах»${chatId==='all'?'':` · ${selectedChat?.name||'чат'}`}`
+                  :`${visibleInList} новых лидов${chatId==='all'?'':` · ${selectedChat?.name||'чат'}`}`}
               </CardTitle>
               <CardDescription>
-                {showViewed
-                  ?'Уже открытые лиды. Можно вернуться к новым.'
-                  :'Откройте лид — он сразу уйдёт в просмотренные и скроется из этого списка.'}
+                {showLeads
+                  ?'Отобранные вручную. Вернуть в новые можно из карточки лида.'
+                  :'Неразобранные запросы. Открытие лид не переносит — «В лиды» или «Не подходит» в карточке.'}
               </CardDescription>
             </div>
             <CardAction>
-              <Button variant="outline" size="sm" onClick={()=>onGoLeads({groupId:chatId==='all'?undefined:chatId,filter:showViewed?'viewed':tempFilter==='all'?'all':tempFilter})}>
+              <Button variant="outline" size="sm" onClick={()=>onGoLeads({groupId:chatId==='all'?undefined:chatId,filter:list,temperature:tempFilter})}>
                 Все лиды <ArrowRight size={14}/>
               </Button>
             </CardAction>
@@ -444,11 +448,11 @@ export function OverviewDashboard({
                 </SelectContent>
               </Select>
               <div className="studio-view-tabs">
-                <button type="button" className={!showViewed?'is-on':''} onClick={()=>setShowViewed(false)}>
+                <button type="button" className={!showLeads?'is-on':''} aria-pressed={!showLeads} onClick={()=>setList('new')}>
                   Новые <strong>{freshCount}</strong>
                 </button>
-                <button type="button" className={showViewed?'is-on':''} onClick={()=>setShowViewed(true)}>
-                  Просмотренные
+                <button type="button" className={showLeads?'is-on':''} aria-pressed={showLeads} onClick={()=>setList('lead')}>
+                  Лиды <strong>{qualifiedCount}</strong>
                 </button>
               </div>
             </div>
@@ -468,12 +472,12 @@ export function OverviewDashboard({
                     <TableRow>
                       <TableCell colSpan={5} className="text-center py-10">
                         <p className="small-note mb-3">
-                          {showViewed?'Нет просмотренных лидов':'Нет новых лидов в этой выборке'}
+                          {showLeads?'В «Лидах» пока нет отобранных':'Нет новых лидов в этой выборке'}
                         </p>
                       </TableCell>
                     </TableRow>
                   ):tableLeads.map(lead=>{
-                    const st=statusLabel(lead.status,lead.viewed);
+                    const st=statusLabel(lead.triage);
                     return (
                       <TableRow
                         key={lead.id}
