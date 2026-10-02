@@ -66,7 +66,10 @@ core + AI pipeline as Telegram, in the same Leads view and Telegram notification
 - REQ-2 IF the token is invalid/expired (VK error 5) THEN THE SYSTEM SHALL mark that `vk_account` `error` with the
   reason, exclude it from the pool, and show the state in the Accounts view; scans stop only when no active account is left.
 - REQ-3 WHEN a VK scan runs in `search` mode THE SYSTEM SHALL query `newsfeed.search` for each strong keyword from
-  settings, posts not older than `scanDepthDays`, continuing from the stored cursor (`start_time`/`start_from`).
+  settings, posts not older than `scanDepthDays`, in the interval [stored `searchStartTime` − 5 min, pinned end time],
+  following `next_from` → `start_from` up to 3 pages per keyword per run; unfinished keywords continue next run from
+  their stored `next_from` in the same interval, and `searchStartTime` moves to the interval end only when every
+  keyword has finished paging.
 - REQ-4 WHEN the user adds a VK group (URL `vk.com/<screen_name>` / `club<id>` / `public<id>`) THE SYSTEM SHALL resolve
   it (`utils.resolveScreenName` / `groups.getById`), reject duplicates (canonical id), and on scan read new wall posts,
   their comments and board-topic comments since the cursor, within `scanDepthDays`.
@@ -183,6 +186,12 @@ Live VK (real token, ≥1 real lead from search and from a group) → stand, evi
   with `json_set` (tombstones written meanwhile survive). Deleting a source moves its tombstones to another source;
   its leads stay. Settings gain `vkSearchDailyCap` (500) and `vkAccountsPerProxy` (3). Cron: groups and VK sources
   alternate (`interleaveScans`); `rescan_groups` lists no VK source while no account can scan.
+
+- 2026-10-02 REQ-3 paging (review fix): `cursor.searchPaging = {endTime, next:{keyword: next_from}}` pins the interval
+  (`end_time`) while any keyword pages; ≤3 pages per keyword per run (≤24 search calls a run); a keyword added while an
+  interval pages joins the next interval; nothing answered (all calls failover-worthy) → cursor unchanged.
+  Board topics: read oldest-updated first, ≤5 per run, page 100, `boardSince` = newest topic actually read (>100 topics
+  updated between two runs, or >5 sharing one `updated` second, are a known gap).
 
 REQ → tests (T3): REQ-1/1a/AM-10/11 `tests/vk-accounts-route.test.ts` «REQ-1 bulk import»; REQ-4 «REQ-4 group sources»;
 REQ-3/5/6/7/14/15, REQ-2/9/AM-8, REQ-1b/10/AM-9 `tests/vk-scan-route.test.ts`; REQ-8 `tests/vk-cron.test.ts` + «REQ-8 rescan_groups».

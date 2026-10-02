@@ -177,6 +177,43 @@ describe('workspace API: scan_vk_source',()=>{
       expect(record(ACC_A).leaseId).toBeUndefined();
     });
 
+    describe('paging (next_from)',()=>{
+      const post=(id:number)=>({id,owner_id:700400,from_id:700400,date:1790000000+id,text:leadText(id)});
+      const PAGES:Record<string,{items:Record<string,unknown>[];next_from?:string}>={
+        '':{items:[post(1)],next_from:'p2'},
+        p2:{items:[post(2)],next_from:'p3'},
+        p3:{items:[post(3)],next_from:'p4'},
+        p4:{items:[post(4)]},
+      };
+      const searched=()=>vkWorker.batches.flatMap(b=>b.params).filter(p=>p.q==='остатки');
+      beforeEach(()=>{
+        vkWorker.override=(m,p)=>m!=='newsfeed.search'?undefined
+          :{ok:true,response:p.q==='остатки'?{...PAGES[String(p.start_from??'')]!,profiles:[],groups:[]}:{items:[],profiles:[],groups:[]}};
+      });
+
+      it('follows next_from up to 3 pages per keyword in one pinned interval and keeps the cursor',async()=>{
+        const r=await scan(SEARCH_ID);
+
+        expect(r.body.added).toBe(3);
+        expect(searched().map(p=>p.start_from)).toEqual([undefined,'p2','p3']);
+        expect(searched().every(p=>p.end_time===Math.floor(NOW/1000))).toBe(true);
+        expect(record(SEARCH_ID).cursor).toEqual({searchPaging:{endTime:Math.floor(NOW/1000),next:{'остатки':'p4'}}});
+      });
+
+      it('the next run finishes only the unfinished keyword, then moves the cursor to the interval end',async()=>{
+        await scan(SEARCH_ID);
+        vkWorker.batches.length=0;
+        vi.setSystemTime(NOW+60_000);
+
+        const r=await scan(SEARCH_ID);
+
+        expect(r.body.added).toBe(1);
+        expect(vkWorker.batches.flatMap(b=>b.params).map(p=>[p.q,p.start_from,p.end_time])).toEqual([['остатки','p4',Math.floor(NOW/1000)]]);
+        expect(record(SEARCH_ID).cursor).toEqual({searchStartTime:Math.floor(NOW/1000)});
+        expect(leads()).toHaveLength(4);
+      });
+    });
+
     it('cuts a long post to 8000 characters (AM-3)',async()=>{
       feed().items[0]!.text=leadText(501)+' x'.repeat(6000);
 

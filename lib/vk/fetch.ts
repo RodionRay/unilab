@@ -1,6 +1,6 @@
 /**
  * What one scan of a VK source reads (spec vk-lead-source REQ-3, REQ-4, NFR page caps):
- * search → one newsfeed.search page per strong keyword since the cursor; group → the newest
+ * search → up to 3 newsfeed.search pages per strong keyword since the cursor; group → the newest
  * wall page, comments of the latest posts and comments of recently updated board topics.
  * Cursors advance only for the parts that were read without a failover-worthy error (REQ-9).
  */
@@ -25,6 +25,8 @@ import type {VkSourceCursor} from '@/lib/vk/records';
 export const VK_SEARCH_MAX_KEYWORDS = 8;
 /** Search overlap so posts indexed late are still found; duplicates fall to the D4 key. */
 export const VK_SEARCH_OVERLAP_SEC = 300;
+/** next_from pages per keyword per run (≤ 8 × 3 search calls a run). */
+export const VK_SEARCH_PAGES_PER_RUN = 3;
 export const VK_WALL_PAGE = 100;
 export const VK_COMMENT_POSTS_PER_RUN = 10;
 /** One full page: topics updated since the cursor beyond it are not seen (≫ 5 per run × runs per day). */
@@ -47,23 +49,68 @@ export type VkFetchOutcome = {
 const failedHard = (r: VkResult): boolean => !r.ok && shouldFailOver(classifyVkError(r.error));
 const skipReason = (r: VkResult): string => (r.ok ? '' : classifyVkError(r.error).reason);
 
-export async function fetchVkSearch(
-  run: VkRunCalls,
-  input: {keywords: readonly string[]; cursor: VkSourceCursor; depthCutoffSec: number; nowSec: number},
-): Promise<VkFetchOutcome> {
+type SearchInput = {keywords: readonly string[]; cursor: VkSourceCursor; depthCutoffSec: number; nowSec: number};
+
+function nextFrom(response: unknown): string {
+  const r = typeof response === 'object' && response !== null ? (response as {next_from?: unknown; items?: unknown}) : {};
+  const more = typeof r.next_from === 'string' && r.next_from !== '' && Array.isArray(r.items) && r.items.length > 0;
+  return more ? String(r.next_from) : '';
+}
+
+/** Interval in progress: the stored one (keywords still paging) or a new one ending now. */
+function openInterval(input: SearchInput, keywords: readonly string[]): {endTime: number; pending: Map<string, string>} {
+  const paging = input.cursor.searchPaging;
+  if (paging && Number.isInteger(paging.endTime) && paging.next && typeof paging.next === 'object') {
+    const pending = new Map(keywords.filter((q) => typeof paging.next[q] === 'string').map((q) => [q, paging.next[q]]));
+    if (pending.size) return {endTime: paging.endTime, pending};
+  }
+  return {endTime: input.nowSec, pending: new Map(keywords.map((q) => [q, '']))};
+}
+
+/**
+ * REQ-3: every strong keyword pages through [cursor − overlap, endTime] with next_from, up to
+ * VK_SEARCH_PAGES_PER_RUN pages a run. Unfinished keywords keep their next_from in
+ * `cursor.searchPaging` (endTime pinned); searchStartTime moves to endTime only when all finished.
+ */
+export async function fetchVkSearch(run: VkRunCalls, input: SearchInput): Promise<VkFetchOutcome> {
   const keywords = input.keywords.slice(0, VK_SEARCH_MAX_KEYWORDS);
   const since = Math.max(input.depthCutoffSec, (input.cursor.searchStartTime ?? 0) - VK_SEARCH_OVERLAP_SEC);
-  const calls = keywords.map((q) => vkMethods.newsfeedSearch({q, startTime: since}));
-  const results = await run(calls);
-  const candidates = results.flatMap((r) => (r.ok ? vkPostCandidates(r.response) : []));
-  const incomplete = results.some(failedHard);
-  return {
-    candidates,
-    cursor: incomplete ? input.cursor : {...input.cursor, searchStartTime: input.nowSec},
-    calls: calls.length,
-    incomplete,
-    sourceError: '',
-  };
+  const {endTime, pending} = openInterval(input, keywords);
+  const candidates: VkCandidate[] = [];
+  let active = [...pending.keys()];
+  let calls = 0;
+  let anyAnswered = false;
+  let incomplete = false;
+  for (let page = 0; page < VK_SEARCH_PAGES_PER_RUN && active.length; page += 1) {
+    const results = await run(active.map((q) => vkMethods.newsfeedSearch({q, startTime: since, endTime, startFrom: pending.get(q) || undefined})));
+    calls += active.length;
+    const still: string[] = [];
+    results.forEach((r, i) => {
+      const q = active[i];
+      if (failedHard(r)) {
+        incomplete = true;
+        return;
+      }
+      anyAnswered = true;
+      const next = r.ok ? nextFrom(r.response) : '';
+      if (r.ok) candidates.push(...vkPostCandidates(r.response));
+      if (next) {
+        pending.set(q, next);
+        still.push(q);
+      } else pending.delete(q);
+    });
+    active = still;
+  }
+  return {candidates, cursor: searchCursor(input.cursor, {anyAnswered, endTime, pending}), calls, incomplete, sourceError: ''};
+}
+
+/** Nothing answered (every call hit a failover-worthy error) → the cursor stays as it was (REQ-9). */
+function searchCursor(cursor: VkSourceCursor, run: {anyAnswered: boolean; endTime: number; pending: Map<string, string>}): VkSourceCursor {
+  if (!run.anyAnswered) return cursor;
+  const rest: VkSourceCursor = {...cursor};
+  delete rest.searchPaging;
+  if (!run.pending.size) return {...rest, searchStartTime: run.endTime};
+  return {...rest, searchPaging: {endTime: run.endTime, next: Object.fromEntries(run.pending)}};
 }
 
 type GroupInput = {groupId: number; cursor: VkSourceCursor; depthCutoffSec: number};

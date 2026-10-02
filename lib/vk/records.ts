@@ -16,7 +16,9 @@ export const VK_SOURCE_KIND = 'vk_source';
 export const VK_SOURCE_LOCK_TTL_MS = 5 * 60_000;
 
 export type VkSourceType = 'search' | 'group';
-export type VkSourceCursor = {searchStartTime?: number; wallMaxPostId?: number; boardSince?: number};
+/** Search interval still paging: its pinned end and next_from per unfinished keyword ('' = first page). */
+export type VkSearchPaging = {endTime: number; next: Record<string, string>};
+export type VkSourceCursor = {searchStartTime?: number; searchPaging?: VkSearchPaging; wallMaxPostId?: number; boardSince?: number};
 export type VkSourceData = {
   type: VkSourceType;
   title: string;
