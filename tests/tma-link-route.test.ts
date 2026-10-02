@@ -1,5 +1,5 @@
 import {afterEach,beforeAll,beforeEach,describe,expect,it,vi} from 'vitest';
-import {BOT_TOKEN,OWNER,authState,login,resetWorkspace,testDb} from './helpers/workspace-harness';
+import {BOT_TOKEN,OWNER,SETTINGS_ID,authState,login,resetWorkspace,testDb} from './helpers/workspace-harness';
 import {addMember,clearTmaState,linkTelegram,prepareTmaTables,wsKeyOf} from './helpers/tma-harness';
 
 vi.mock('cloudflare:workers',async()=>(await import('./helpers/workspace-harness')).cfModule);
@@ -27,6 +27,12 @@ async function call(body:Record<string,unknown>,headers:Record<string,string>={}
   method:'POST',headers:{'Content-Type':'application/json',origin:'http://crm.test',...headers},body:JSON.stringify(body),
  }));
  return {status:res.status,json:await res.json() as LinkStatus&TmaError};
+}
+
+function patchSettings(patch:Record<string,unknown>){
+ const {sqlite}=testDb();
+ const row=sqlite.prepare('SELECT data FROM records WHERE id=?').get(SETTINGS_ID) as {data:string};
+ sqlite.prepare('UPDATE records SET data=? WHERE id=?').run(JSON.stringify({...JSON.parse(row.data),...patch}),SETTINGS_ID);
 }
 
 beforeAll(async()=>{
@@ -123,6 +129,28 @@ describe('POST /api/tma/link',()=>{
   expect(byAdmin.json.linked).toBe(false);
   expect(await findActiveLinkForUser(testDb().db,OWNER,'manager-1')).toBeNull();
   expect(await findActiveLinkForUser(testDb().db,OWNER,OWNER)).not.toBeNull();
+ });
+
+ it('botLink: только когда кешированный username принадлежит текущему боту',async()=>{
+  const before=await call({action:'status'});
+  await call({action:'create_code'});
+  const cached=await call({action:'status'});
+  patchSettings({notifyBotToken:'999999:other-bot-token'});
+  const swapped=await call({action:'status'});
+
+  expect(before.json.botLink).toBe('');
+  expect(cached.json.botLink).toBe('https://t.me/unilab_test_bot');
+  expect(swapped.json.botLink).toBe('');
+ });
+
+ it('noticesOff повторяет выключатель уведомлений кабинета (settings.notifyEnabled)',async()=>{
+  patchSettings({notifyEnabled:true});
+  const on=await call({action:'status'});
+  patchSettings({notifyEnabled:false});
+  const off=await call({action:'status'});
+
+  expect(on.json.noticesOff).toBe(false);
+  expect(off.json.noticesOff).toBe(true);
  });
 
  it('appUrl только для https APP_URL',async()=>{
