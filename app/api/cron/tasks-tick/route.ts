@@ -9,6 +9,7 @@ import { listUserIdsForCron } from "@/lib/users";
 import { constantTimeEqual } from "@/lib/security/secret-compare";
 import { selfOrigin } from "@/lib/security/self-origin";
 import { database } from "@/lib/server-store";
+import { ensureTmaTables } from "@/lib/tma/workspace";
 import {
   TASKS_TICK_CALL_TIMEOUT_MS,
   TASKS_TICK_RUN_BUDGET_MS,
@@ -59,13 +60,21 @@ const BOT_POLL_TIMEOUT_MS = 440_000;
 /** Bot polls in parallel per run (each is a self-fetch; one owner's slow send must not hold the rest). */
 const BOT_POLL_CONCURRENCY = 3;
 
-/** Owners whose notification bot is configured — their bot replies are polled every loop, tasks or not. */
+/**
+ * Owners whose notification bot is configured — their bot replies are polled every loop, tasks or not —
+ * plus owners with a bot token and Telegram mini app linking in progress or done (private /start link_, REQ-L2).
+ */
 async function listBotOwners(): Promise<string[]> {
-  const rows = await database()
+  const db = database();
+  await ensureTmaTables(db);
+  const rows = await db
     .prepare(
-      "SELECT DISTINCT owner FROM records WHERE kind='settings' AND json_extract(data,'$.notifyEnabled')=1 AND COALESCE(json_extract(data,'$.notifyBotToken'),'')<>'' AND COALESCE(json_extract(data,'$.notifyChatId'),'')<>''",
+      `SELECT DISTINCT owner FROM records WHERE kind='settings' AND COALESCE(json_extract(data,'$.notifyBotToken'),'')<>'' AND (
+        (json_extract(data,'$.notifyEnabled')=1 AND COALESCE(json_extract(data,'$.notifyChatId'),'')<>'')
+        OR owner IN (SELECT owner FROM tma_link_codes WHERE used_at IS NULL AND expires_at>?)
+        OR owner IN (SELECT owner FROM tma_links WHERE revoked_at IS NULL))`,
     )
-    .bind()
+    .bind(Date.now())
     .all();
   return rows.results.map((r) => String(r.owner));
 }

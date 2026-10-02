@@ -56,8 +56,9 @@ import {JOIN_GATE_ROTATE_WAIT_SEC,JOIN_PENDING_ERROR,audienceJoinGate,classifyCo
 import {authorizeWorkspaceAction,keepOwnerSecretsOnSave,visibleRecordsFor,type WorkspaceActor} from '@/lib/security/workspace-authz';
 import {resolveTmaActor} from '@/lib/tma/actor';
 import {readTmaBearer} from '@/lib/tma/session';
+import {handlePrivateCommand,hasPrivateBotWork,isPrivateCommand,sendDmNotices} from '@/lib/tma/bot-link';
 import {ALL_CRM_ACCESS} from '@/lib/staff-types';
-import {BOT_UPDATES_LIMIT,buildConversationNotice,callBotApi,escapeHtml,explainBotError,parseBotUpdate,sendBotMessage,type BotCommand,type ReplyMarkup} from '@/lib/telegram-bot';
+import {BOT_UPDATES_LIMIT,buildConversationNotice,buildPrivateConversationNotice,buildPrivateLeadNotice,callBotApi,escapeHtml,explainBotError,parseBotUpdate,sendBotMessage,type BotCommand,type ReplyMarkup} from '@/lib/telegram-bot';
 import {INBOX_CURSOR_MARGIN_SEC,applySendOutcome,findSendBlock,leadReplies,markLeadOpened,mergeIncomingDm,nextInboxCursor,withPendingSend,type LeadData,type ReplyEntry,type SendOutcome} from '@/lib/lead-conversation';
 import type {D1LikeDatabase} from '@/lib/db';
 import {env} from 'cloudflare:workers';
@@ -1449,7 +1450,10 @@ const NOTIFY_BATCH=20;
  * REQ-L9: leads with notifyPending are claimed (so parallel scans never send one lead twice), sent in one
  * Telegram message, then marked notifiedAt; a failed send is logged and retried on the next scan.
  */
-async function flushLeadNotifications(owner:string,settings:{notifyEnabled?:unknown}){
+/** Hot leads of one flush that also go privately (REQ-N1); the rest stay in the group summary. */
+const DM_HOT_LEADS_PER_FLUSH=3;
+
+async function flushLeadNotifications(owner:string,settings:{notifyEnabled?:unknown;notifyBotToken?:unknown},appBase:string){
  if(!settings?.notifyEnabled)return;
  const db=database();
  const rows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='lead' AND json_extract(data,'$.notifyPending')=1 ORDER BY created LIMIT ?").bind(owner,NOTIFY_BATCH).all();
@@ -1468,6 +1472,12 @@ async function flushLeadNotifications(owner:string,settings:{notifyEnabled?:unkn
   message:String(c.data.message||''),
   temperature:String(c.data.temperature||''),
   source:String(c.data.source||''),
+ })));
+ // Private copies on the first attempt only: a failed group send is retried, the DMs are not repeated.
+ const hot=claimed.filter(c=>c.data.temperature==='hot'&&!Number(c.data.notifyAttempts)).slice(0,DM_HOT_LEADS_PER_FLUSH);
+ if(hot.length)await sendDmNotices(db,owner,String(settings.notifyBotToken||'').trim(),appBase,hot.map(c=>({
+  leadId:c.id,
+  ...buildPrivateLeadNotice({name:String(c.data.name||''),source:String(c.data.source||''),message:String(c.data.message||'')}),
  })));
  if(sent.ok){
   for(const c of claimed){
@@ -1572,9 +1582,9 @@ async function notifyConversation(db:D1LikeDatabase,owner:string,ctx:NotifyCtx,e
   if(!settings?.notifyEnabled)return;
   const token=String(settings.notifyBotToken||'').trim();
   const chatId=String(settings.notifyChatId||'').trim();
-  if(!token||!chatId)return;
+  if(!token)return;
   const lead=ev.lead||{};
-  const notice=buildConversationNotice({
+  const facts={
    event:ev.event,
    leadId:ev.leadId,
    clientName:String(lead.name||''),
@@ -1583,14 +1593,15 @@ async function notifyConversation(db:D1LikeDatabase,owner:string,ctx:NotifyCtx,e
    source:await conversationSource(db,owner,lead),
    accountName:await recordName(db,owner,ev.accountId||String(lead.accountId||''),'account'),
    text:ev.text,
-   appBase:ctx.appBase,
-  });
-  const sent=await sendBotMessage(token,chatId,{html:notice.html,plain:notice.plain,replyMarkup:notice.replyMarkup});
-  if(!sent.ok){
-   await reportNotifyFailure(owner,'Уведомление о переписке не доставлено в Telegram-бота',sent.error);
-   return;
+  };
+  if(chatId){
+   const notice=buildConversationNotice({...facts,appBase:ctx.appBase});
+   const sent=await sendBotMessage(token,chatId,{html:notice.html,plain:notice.plain,replyMarkup:notice.replyMarkup});
+   if(!sent.ok)await reportNotifyFailure(owner,'Уведомление о переписке не доставлено в Telegram-бота',sent.error);
+   else await rememberBotMessage(db,owner,chatId,sent.messageId,ev.leadId);
   }
-  await rememberBotMessage(db,owner,chatId,sent.messageId,ev.leadId);
+  // REQ-N1: replies also go privately to opted-in members, after the group notice.
+  if(ev.event==='client_reply')await sendDmNotices(db,owner,token,ctx.appBase,[{leadId:ev.leadId,...buildPrivateConversationNotice(facts)}]);
  }catch(e){
   console.error('[workspace] notify_conversation:',String((e as Error)?.message||e).slice(0,300));
  }
@@ -2139,8 +2150,9 @@ const BOT_HELP='<b>Бот UniLab подключён.</b>\nСюда приход�
 async function pollBotUpdates(db:D1LikeDatabase,owner:string,ctx:NotifyCtx){
  const settings=await loadNotifySettings(db,owner);
  const token=String(settings?.notifyBotToken||'').trim();
- const chatId=String(settings?.notifyChatId||'').trim();
- if(!settings?.notifyEnabled||!token||!chatId)return {ok:true,skipped:true,reason:'notify_off'};
+ // Group/notice chat only while notices are on; private linking (REQ-L2) needs just the token.
+ const chatId=settings?.notifyEnabled?String(settings?.notifyChatId||'').trim():'';
+ if(!token||(!chatId&&!(await hasPrivateBotWork(db,owner))))return {ok:true,skipped:true,reason:'notify_off'};
  const now=Date.now();
  const stamp=new Date(now).toISOString();
  const lease=await db.prepare('INSERT INTO records(id,owner,kind,data,created) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET created=excluded.created WHERE records.created < ? AND records.owner=excluded.owner')
@@ -2194,6 +2206,10 @@ async function handleBotCommand(db:D1LikeDatabase,owner:string,ctx:NotifyCtx,tok
   return r;
  };
  if(cmd.kind==='ignore')return '';
+ if(isPrivateCommand(cmd)){
+  await handlePrivateCommand(db,owner,token,ctx.appBase,cmd);
+  return '';
+ }
  if(cmd.kind==='callback_other'){
   await callBotApi(token,'answerCallbackQuery',{callback_query_id:cmd.callbackId});
   return '';
@@ -2992,7 +3008,7 @@ export async function POST(req:Request){const actor=await readActor(req);if(!act
     await db.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)').bind(crypto.randomUUID(),owner,'lead',JSON.stringify(lead),null,new Date().toISOString()).run();
     added++;
    }
-   try{await flushLeadNotifications(owner,settings)}catch(e){console.error('[workspace] notify_leads:',String((e as Error)?.message||e).slice(0,300))}
+   try{await flushLeadNotifications(owner,settings,notifyCtx.appBase)}catch(e){console.error('[workspace] notify_leads:',String((e as Error)?.message||e).slice(0,300))}
    // Пересчёт метрик группы по всем лидам этой groupId
    const allLeads=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='lead'").bind(owner).all();
    const counts={hot:0,warm:0,cold:0};

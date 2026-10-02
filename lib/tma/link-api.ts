@@ -2,7 +2,7 @@ import type { D1LikeDatabase } from "@/lib/db";
 import { consumeRateLimits } from "@/lib/security/rate-limit";
 import { resolveWorkspaceContext } from "@/lib/staff";
 import type { WorkspaceContext } from "@/lib/staff-types";
-import { callBotApi } from "@/lib/telegram-bot";
+import { callBotApi, setChatMenuButton } from "@/lib/telegram-bot";
 import type { z } from "zod";
 import type { LinkStatus, TmaError, linkRequestSchema } from "@/lib/tma/contract";
 import { TMA_ERROR_TEXT } from "@/lib/tma/exchange";
@@ -78,6 +78,18 @@ async function unlinkTarget(ctx: WorkspaceContext, requested: string | undefined
   return { ok: true, userId: target };
 }
 
+/** REQ-L4: the unlinked chat gets Telegram's default menu back. Best effort: never fails the unlink. */
+async function resetMenuButton(db: D1LikeDatabase, owner: string, tgUserId: number): Promise<void> {
+  try {
+    const bot = await readWorkspaceBot(db, owner);
+    if (!bot.token) return;
+    const r = await setChatMenuButton(bot.token, tgUserId, "", 5_000);
+    if (!r.ok) console.error("[tma] menu_reset:", r.error.slice(0, 200));
+  } catch (e) {
+    console.error("[tma] menu_reset:", String((e as Error)?.message || e).slice(0, 200));
+  }
+}
+
 export async function handleLinkRequest(
   db: D1LikeDatabase,
   ctx: WorkspaceContext,
@@ -93,7 +105,8 @@ export async function handleLinkRequest(
     case "unlink": {
       const target = await unlinkTarget(ctx, req.userId);
       if (!target.ok) return target.result;
-      await revokeLink(db, ctx.ownerId, target.userId);
+      const revoked = await revokeLink(db, ctx.ownerId, target.userId);
+      if (revoked) await resetMenuButton(db, ctx.ownerId, revoked.tgUserId);
       return { status: 200, body: await linkStatus(db, ctx.ownerId, target.userId, appUrl) };
     }
     case "set_dm_notices": {

@@ -91,7 +91,7 @@ describe('Telegram-бот · ответ клиенту из бота (poll_bot_u
     expect(gets[1]?.body.offset).toBe(102);
   });
 
-  it('REQ-4 authz: сообщение из чужого чата игнорируется, offset всё равно двигается',async()=>{
+  it('REQ-4 authz: сообщение из чужого чата клиенту не уходит (только онбординг tma, REQ-L2), offset всё равно двигается',async()=>{
     const w=stubWorkerAndBot(worker());
     const notice=await notified(w);
     w.queueUpdates([managerReply(102,notice,'Я чужой',999)]);
@@ -100,7 +100,9 @@ describe('Telegram-бот · ответ клиенту из бота (poll_bot_u
     await pollBot();
 
     expect(clientSends(w)).toHaveLength(0);
-    expect(w.sent().filter(c=>String(c.body.chat_id)==='999')).toHaveLength(0);
+    const toStranger=w.sent().filter(c=>String(c.body.chat_id)==='999');
+    expect(toStranger.map(c=>c.body.text)).toEqual(['Это бот уведомлений UniLab. Чтобы подключиться, нажмите «Подключить Telegram» в настройках UniLab.']);
+    expect(toStranger[0]?.body.reply_markup).toBeUndefined();
     expect(w.botCalls.filter(c=>c.method==='getUpdates')[1]?.body.offset).toBe(103);
   });
 
