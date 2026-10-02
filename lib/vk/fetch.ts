@@ -27,7 +27,8 @@ export const VK_SEARCH_MAX_KEYWORDS = 8;
 export const VK_SEARCH_OVERLAP_SEC = 300;
 export const VK_WALL_PAGE = 100;
 export const VK_COMMENT_POSTS_PER_RUN = 10;
-export const VK_BOARD_TOPICS_PAGE = 20;
+/** One full page: topics updated since the cursor beyond it are not seen (≫ 5 per run × runs per day). */
+export const VK_BOARD_TOPICS_PAGE = 100;
 export const VK_BOARD_TOPICS_PER_RUN = 5;
 
 export type VkRunCalls = (calls: readonly VkCall[]) => Promise<VkResult[]>;
@@ -78,10 +79,17 @@ function commentCalls(response: unknown, input: GroupInput): {calls: VkCall[]; c
   };
 }
 
+const topicUpdated = (t: VkBoardTopic): number => Number(t.updated ?? t.created ?? 0);
+
+/**
+ * Oldest-updated first, so when more than the per-run cap are fresh the cursor stops at the
+ * newest topic actually read and the next run continues with the rest (none is skipped).
+ */
 function freshTopics(response: unknown, since: number): VkBoardTopic[] {
   const items = typeof response === 'object' && response !== null ? (response as {items?: unknown}).items : [];
   return (Array.isArray(items) ? (items as VkBoardTopic[]) : [])
-    .filter((t) => Number.isInteger(t?.id) && Number(t.updated ?? t.created ?? 0) >= since)
+    .filter((t) => Number.isInteger(t?.id) && topicUpdated(t) >= since)
+    .sort((a, b) => topicUpdated(a) - topicUpdated(b))
     .slice(0, VK_BOARD_TOPICS_PER_RUN);
 }
 
@@ -111,7 +119,7 @@ export async function fetchVkGroup(run: VkRunCalls, input: GroupInput): Promise<
   const wallOk = wall.ok && !wallComments.some(failedHard);
   const boardOk = !failedHard(topics) && !boardComments.some(failedHard);
   const maxPostId = wall.ok ? Math.max(lastPostId, ...vkPosts(wall.response).map((p) => p.id)) : lastPostId;
-  const maxUpdated = Math.max(cursor.boardSince ?? 0, ...topicList.map((t) => Number(t.updated ?? 0)));
+  const maxUpdated = Math.max(cursor.boardSince ?? 0, ...topicList.map(topicUpdated));
   return {
     candidates,
     cursor: {
