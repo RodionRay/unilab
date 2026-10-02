@@ -161,6 +161,10 @@ export function VkAccountsPanel({ accounts, proxies, searchCap, perProxyCap, que
     return () => window.removeEventListener('beforeunload', guard);
   }, [progress]);
 
+  // Like a status-chip change: a new search hides rows, and bulk actions must never hit rows the user can't see.
+  const queryKey = query.trim();
+  useEffect(() => { setSelected([]); }, [queryKey]);
+
   const activeProxies = proxies.filter((p) => p.active);
   const proxyLabel = useMemo(() => new Map(proxies.map((p) => [p.id, p.label])), [proxies]);
   const lineCount = useMemo(() => text.split(/\r?\n/).filter((l) => l.trim()).length, [text]);
