@@ -197,6 +197,45 @@ describe('бот · привязка Telegram в личке (REQ-L2)',()=>{
  });
 });
 
+describe('бот · смена токена в Настройках: offset getUpdates принадлежит боту',()=>{
+ const STATE_ID=`bot-state:${OWNER}`;
+ /** Telegram semantics: getUpdates(offset) drops every update below the offset for good. */
+ const telegramLike=(pending:unknown[])=>(call:{method:string;body:Record<string,unknown>})=>{
+  if(call.method!=='getUpdates')return undefined;
+  const offset=Number(call.body.offset)||0;
+  const left=pending.filter(u=>Number((u as {update_id:number}).update_id)>=offset);
+  pending.splice(0,pending.length,...left);
+  return {ok:true,result:[...left]};
+ };
+ const state=()=>JSON.parse(String((testDb().sqlite.prepare('SELECT data FROM records WHERE id=?').get(STATE_ID) as {data:string}).data));
+ const seedState=(data:Record<string,unknown>)=>testDb().sqlite.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)')
+  .run(STATE_ID,OWNER,'ai_guard',JSON.stringify(data),null,new Date().toISOString());
+
+ it.each([
+  ['без botId (запись до фикса)',{offset:680511482,lastError:''}],
+  ['другого бота',{offset:680511482,lastError:'',botId:'999999'}],
+ ])('offset %s → сброшен, /start link_ нового бота привязывает',async(_name,stored)=>{
+  seedState(stored);
+  const {code}=await createLinkCode(db(),OWNER,OWNER);
+  const w=stubWorkerAndBot(noWorker,telegramLike([privateMsg(7,`/start link_${code}`)]));
+
+  await pollBot();
+
+  expect(w.botCalls.find(c=>c.method==='getUpdates')?.body.offset).toBeUndefined();
+  expect(await findActiveLink(db(),OWNER,TG)).toMatchObject({userId:OWNER,botId:'123456'});
+  expect(state()).toEqual({offset:8,lastError:'',botId:'123456'});
+ });
+
+ it('тот же бот → offset сохраняется',async()=>{
+  seedState({offset:40,lastError:'',botId:'123456'});
+  const w=stubWorkerAndBot(noWorker,telegramLike([]));
+
+  await pollBot();
+
+  expect(w.botCalls.find(c=>c.method==='getUpdates')?.body.offset).toBe(40);
+ });
+});
+
 describe('бот · прочая личка',()=>{
  it('не привязанный пользователь → только онбординг',async()=>{
   const w=stubWorkerAndBot(noWorker);

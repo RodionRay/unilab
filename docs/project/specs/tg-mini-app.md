@@ -30,7 +30,9 @@ Source: read-only scout of origin/dev @671338d + Telegram docs (core.telegram.or
   (`R::notifyConversationEvent`, `::notifyMailingEvent`, `::notifyNewLeadsTelegram`, `::notifyTelegramText`).
   Unmerged branches add `lib/telegram-bot.ts` (`buildConversationNotice` with «Ответить» callback, `parseBotUpdate`,
   `sendBotMessage`, `chatDeepLink`) and getUpdates polling inside `app/api/cron/tasks-tick/route.ts::listBotOwners`
-  (20 s). No webhook (polling and webhook are mutually exclusive).
+  (20 s). No webhook (polling and webhook are mutually exclusive). The getUpdates offset
+  (`app/api/workspace/route.ts::loadBotState`, record `bot-state:<owner>`) carries the bot id: after a token change
+  it restarts from 0, otherwise the old bot's offset would drop every update of the new bot (`/start link_` lost).
 - `oauth_accounts(provider='telegram', provider_user_id)` exists (Login Widget, `lib/oauth.ts::verifyTelegramAuth`);
   Telegram user ids are global across bots.
 - `lib/security/headers.ts::SECURITY_HEADERS` applied to all paths (`next.config.ts::headers`):

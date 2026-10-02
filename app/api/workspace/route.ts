@@ -57,6 +57,7 @@ import {authorizeWorkspaceAction,keepOwnerSecretsOnSave,visibleRecordsFor,type W
 import {resolveTmaActor} from '@/lib/tma/actor';
 import {readTmaBearer} from '@/lib/tma/session';
 import {handlePrivateCommand,hasPrivateBotWork,isPrivateCommand,sendDmNotices} from '@/lib/tma/bot-link';
+import {botIdFromToken} from '@/lib/tma/init-data';
 import {ALL_CRM_ACCESS} from '@/lib/staff-types';
 import {BOT_UPDATES_LIMIT,buildConversationNotice,buildPrivateConversationNotice,buildPrivateLeadNotice,callBotApi,escapeHtml,explainBotError,parseBotUpdate,sendBotMessage,type BotCommand,type ReplyMarkup} from '@/lib/telegram-bot';
 import {INBOX_CURSOR_MARGIN_SEC,applySendOutcome,findSendBlock,leadReplies,markLeadOpened,mergeIncomingDm,nextInboxCursor,withPendingSend,type LeadData,type ReplyEntry,type SendOutcome} from '@/lib/lead-conversation';
@@ -2125,14 +2126,20 @@ const botPollLeaseId=(owner:string)=>`bot-poll-lease:${owner}`;
 const botStateId=(owner:string)=>`bot-state:${owner}`;
 const UUID_RE=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-type BotState={offset:number;lastError:string};
+type BotState={offset:number;lastError:string;botId:string};
 
-async function loadBotState(db:D1LikeDatabase,owner:string):Promise<BotState>{
+/**
+ * update_id is per bot: an offset saved for another bot (token changed in Settings, or a row without botId)
+ * would make getUpdates drop every update of the new bot, so it restarts from 0 — Telegram keeps only
+ * unconfirmed updates, nothing already handled comes back.
+ */
+async function loadBotState(db:D1LikeDatabase,owner:string,botId:string):Promise<BotState>{
  const row=await db.prepare("SELECT data FROM records WHERE id=? AND owner=? AND kind='ai_guard'").bind(botStateId(owner),owner).first<{data:string}>();
  try{
   const d=row?JSON.parse(String(row.data)):{};
-  return {offset:Math.max(0,Number(d.offset)||0),lastError:String(d.lastError||'')};
- }catch{return {offset:0,lastError:''}}
+  if(String(d.botId??'')!==botId)return {offset:0,lastError:'',botId};
+  return {offset:Math.max(0,Number(d.offset)||0),lastError:String(d.lastError||''),botId};
+ }catch{return {offset:0,lastError:'',botId}}
 }
 
 async function saveBotState(db:D1LikeDatabase,owner:string,state:BotState){
@@ -2159,7 +2166,7 @@ async function pollBotUpdates(db:D1LikeDatabase,owner:string,ctx:NotifyCtx){
   .bind(botPollLeaseId(owner),owner,'ai_guard','{}',stamp,new Date(now-BOT_POLL_LEASE_MS).toISOString()).run();
  if(!lease.meta.changes)return {ok:true,skipped:true,reason:'busy'};
  try{
-  const state=await loadBotState(db,owner);
+  const state=await loadBotState(db,owner,botIdFromToken(token));
   const got=await callBotApi<unknown[]>(token,'getUpdates',{
    ...(state.offset?{offset:state.offset}:{}),
    limit:BOT_UPDATES_LIMIT,
@@ -2183,7 +2190,7 @@ async function pollBotUpdates(db:D1LikeDatabase,owner:string,ctx:NotifyCtx){
    if(cmd.updateId<state.offset)continue;
    // offset до действия: обновление обрабатывается не более одного раза
    state.offset=cmd.updateId+1;
-   await saveBotState(db,owner,{offset:state.offset,lastError:''});
+   await saveBotState(db,owner,{...state,lastError:''});
    handled++;
    const clientSend=await handleBotCommand(db,owner,ctx,token,cmd);
    if(clientSend==='sent')sent++;
