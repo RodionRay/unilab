@@ -122,6 +122,26 @@ describe('POST /api/tma/link',()=>{
   expect([notLinked.status,notLinked.json.code]).toEqual([409,'not_linked']);
  });
 
+ it('REQ-L1/D1: оператор и наблюдатель без доступа к «Настройкам» подключают СВОЙ Telegram; чужой — нет',async()=>{
+  addMember('operator-1','operator');
+  addMember('viewer-1','viewer');
+  await linkTelegram(OWNER,62);
+
+  login('operator-1');
+  const code=await call({action:'create_code'});
+  const own=await call({action:'status'});
+  const foreign=await call({action:'unlink',userId:OWNER});
+  login('viewer-1');
+  const viewer=await call({action:'create_code'});
+
+  expect(code.status).toBe(200);
+  expect(code.json.startLink).toMatch(/start=link_/);
+  expect(own.json.linked).toBe(false);
+  expect(foreign.status).toBe(403);
+  expect(viewer.status).toBe(200);
+  expect(await findActiveLinkForUser(testDb().db,OWNER,OWNER)).not.toBeNull();
+ });
+
  it('REQ-L4: админ отключает сотрудника своего кабинета; менеджер — нет; чужой кабинет — нет',async()=>{
   addMember('admin-1','admin');
   addMember('manager-1','manager');

@@ -14,6 +14,7 @@ import {MailingPanel,MailingTaskFields,MailingDeliveriesView} from '@/components
 import {TaskLogDialog} from '@/components/product/task-log-dialog';
 import {EmployeesPanel} from '@/components/product/employees-panel';
 import {TmaLinkPanel} from '@/components/product/tma-link-panel';
+import {TmaLinkDialog} from '@/components/product/tma-link-dialog';
 import {DEFAULT_DM_SOFT_CLOSE,DEFAULT_MAILING_TASK} from '@/lib/mailing';
 import {canAccessNav,type CrmAccess,type WorkspaceInvite,type WorkspaceMember} from '@/lib/staff-types';
 import {DEFAULT_NAV} from '@/components/product/workspace-nav';
@@ -3095,6 +3096,7 @@ function WorkspaceHome(){
             <span className="font-semibold">{view}</span>
           </div>
           <div className="topbar-actions">
+            {allowedNav&&!allowedNav.includes('Настройки')&&<TmaLinkDialog/>}
             <NotificationsBell
               onOpenAll={()=>navigate('Уведомления')}
               onOpenItem={(next)=>{if(next)navigate(next)}}

@@ -40,12 +40,19 @@ type Link = {
 };
 type Reply = { status: number; body: unknown; headers?: Record<string, string> } | "abort";
 type LinkHandler = (action: string, body: Record<string, unknown>) => Reply | undefined;
-type Opts = { owner?: boolean; botToken?: string; link?: Partial<Link>; handler?: LinkHandler };
+type Opts = { owner?: boolean; botToken?: string; link?: Partial<Link>; handler?: LinkHandler; member?: Member };
+/** Non-owner role + access; default = viewer that may open «Настройки». */
+type Member = { role: string; access: Record<string, boolean> };
+const SETTINGS_VIEWER: Member = { role: "viewer", access: { overview: true, leads: true, chats: true, notifications: true, settings: true } };
+const OPERATOR: Member = {
+  role: "operator",
+  access: { overview: true, notifications: true, leads: true, chats: true, groups: true, audience: false, invite: false, mailing: false, accounts: false, proxies: false, ai: false, settings: false, staff: false },
+};
 
 const UNLINKED: Link = { linked: false, tgUsername: "", dmNotices: false, dmError: "", appUrl: APP_URL, botLink: BOT_LINK, noticesOff: false };
 const LINKED: Link = { ...UNLINKED, linked: true, tgUsername: "anna_orlova", dmNotices: true };
 
-function workspacePayload(owner: boolean, botToken: string) {
+function workspacePayload(owner: boolean, botToken: string, member: Member) {
   return {
     records: [
       {
@@ -60,12 +67,12 @@ function workspacePayload(owner: boolean, botToken: string) {
     ai: null,
     workspace: owner
       ? { isOwner: true, role: "owner", access: {}, ownerId: USER.id }
-      : { isOwner: false, role: "viewer", access: { overview: true, leads: true, chats: true, notifications: true, settings: true }, ownerId: "u-owner" },
+      : { isOwner: false, role: member.role, access: member.access, ownerId: "u-owner" },
     me: { userId: USER.id, email: USER.email, name: USER.name },
   };
 }
 
-async function openSettings(page: Page, opts: Opts = {}): Promise<{ calls: Record<string, unknown>[]; link: Link }> {
+async function mockApp(page: Page, opts: Opts = {}): Promise<{ calls: Record<string, unknown>[]; link: Link }> {
   const owner = opts.owner ?? true;
   const link: Link = { ...UNLINKED, ...opts.link };
   const calls: Record<string, unknown>[] = [];
@@ -86,13 +93,18 @@ async function openSettings(page: Page, opts: Opts = {}): Promise<{ calls: Recor
       if (body.action === "unlink") Object.assign(link, UNLINKED);
       return json(200, link);
     }
-    if (url.pathname === "/api/workspace" && route.request().method() === "GET") return json(200, workspacePayload(owner, opts.botToken ?? "123456:AAE-test-token"));
+    if (url.pathname === "/api/workspace" && route.request().method() === "GET") return json(200, workspacePayload(owner, opts.botToken ?? "123456:AAE-test-token", opts.member ?? SETTINGS_VIEWER));
     if (url.pathname === "/api/staff") return json(200, { members: [], invites: [] });
     return json(200, {});
   });
+  return { calls, link };
+}
+
+async function openSettings(page: Page, opts: Opts = {}): Promise<{ calls: Record<string, unknown>[]; link: Link }> {
+  const mocked = await mockApp(page, opts);
   await page.goto("/app?view=settings");
   await expect(page.getByRole("heading", { name: "Уведомления в Telegram" })).toBeVisible();
-  return { calls, link };
+  return mocked;
 }
 
 const panel = (page: Page) => page.getByTestId("tma-link-panel");
@@ -345,6 +357,27 @@ test.describe("Telegram-приложение in settings", () => {
     });
     await panel(page).getByRole("button", { name: "Подключить Telegram" }).click();
     await expect(panel(page).getByTestId("tma-no-bot")).toBeVisible();
+  });
+
+  test("operator without «Настройки»: «Telegram-приложение» in the top bar opens the panel and connects", async ({ page }) => {
+    const { calls } = await mockApp(page, { owner: false, member: OPERATOR });
+    await page.goto("/app?view=settings");
+    // «Настройки» is not allowed: the app falls back to the first allowed view.
+    await expect(page.getByRole("heading", { name: "Уведомления в Telegram" })).toHaveCount(0);
+    await page.getByTestId("tma-link-open").click();
+    const dialog = page.getByRole("dialog", { name: "Telegram-приложение" });
+    await expect(dialog.getByTestId("tma-link-panel")).toBeVisible();
+    await dialog.getByRole("button", { name: "Подключить Telegram" }).click();
+    await expect(dialog.getByRole("link", { name: /Открыть бота и подключить/ })).toHaveAttribute("href", START_LINK);
+    expect(actionsOf(calls, "status")).toHaveLength(1);
+    expect(actionsOf(calls, "create_code")).toHaveLength(1);
+    expect(calls.every((c) => c.userId === undefined)).toBe(true);
+    await dialogShot(page, "operator-dialog");
+  });
+
+  test("owner keeps the panel in «Настройки» and gets no top-bar entry", async ({ page }) => {
+    await openSettings(page);
+    await expect(page.getByTestId("tma-link-open")).toHaveCount(0);
   });
 
   test("touch targets ≥44 px and no horizontal scroll at 390", async ({ page }) => {

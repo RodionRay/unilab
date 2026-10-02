@@ -99,8 +99,11 @@ Source: read-only scout of origin/dev @671338d + Telegram docs (core.telegram.or
   workspaces share one bot token (link lookup keyed by (ownerId, tgUserId)).
 
 ### Linking
-- REQ-L1 When a member presses «Подключить Telegram» in web settings, the system shall mint a single-use code (≥128
-  bit, base64url ≤ 60 chars, TTL 10 min) and show `t.me/<bot>?start=link_<code>`.
+- REQ-L1 When a member presses «Подключить Telegram» — in «Настройки», or, for a member without settings access, in
+  the top-bar «Telegram-приложение» dialog (`components/product/tma-link-dialog.tsx`, D-11) — the system shall mint a
+  single-use code (≥128 bit, base64url ≤ 60 chars, TTL 10 min) and show `t.me/<bot>?start=link_<code>`.
+  `/api/tma/link` authorizes any member of the workspace for their OWN link (status/code/unlink/DM opt-in); unlinking
+  another member stays owner/admin only.
 - REQ-L2 When the bot poller receives `/start link_<code>` in a private chat, the system shall bind `from.id` to that
   member (one tg user ↔ one member per workspace), consume the code, reply with confirmation and set the chat's menu
   button to the mini app URL. If `from.id` is already linked to ANOTHER member of that workspace, the system shall

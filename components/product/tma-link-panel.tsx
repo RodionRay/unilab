@@ -39,6 +39,8 @@ import {
 type Props = {
   /** false = no bot token saved (owner view); null = unknown (token is hidden from non-owners). */
   botConfigured: boolean | null;
+  /** `card` in «Настройки»; `dialog` inside TmaLinkDialog, whose surface already is the card. */
+  variant?: 'card' | 'dialog';
 };
 
 type LinkResult = { ok: true; status: LinkStatus } | { ok: false; failure: LinkFailure };
@@ -75,7 +77,7 @@ function retryAction(failure: LinkFailure): LinkAction {
   return failure.action === 'set_dm_notices' || failure.kind === 'not_linked' ? 'status' : failure.action;
 }
 
-export function TmaLinkPanel({ botConfigured }: Props) {
+export function TmaLinkPanel({ botConfigured, variant = 'card' }: Props) {
   const [state, dispatch] = useReducer(linkReducer, botConfigured, initialLinkState);
   const [now, setNow] = useState(() => Date.now());
   const [confirmUnlink, setConfirmUnlink] = useState(false);
@@ -163,8 +165,9 @@ export function TmaLinkPanel({ botConfigured }: Props) {
   const cooldown = cooldownLeftSec(state.failure, now);
 
   return (
-    <section className="settings-card" aria-labelledby="tma-link-title" data-testid="tma-link-panel">
-      <div className="settings-card-head">
+    <section className={variant === 'card' ? 'settings-card' : 'grid gap-[18px]'} aria-labelledby="tma-link-title" data-testid="tma-link-panel">
+      {/* The dialog's close button sits in the top-right corner: keep the badge clear of it. */}
+      <div className={variant === 'card' ? 'settings-card-head' : 'settings-card-head pr-8'}>
         <div className="title-icon">
           <div className="icon-box"><Smartphone size={20} aria-hidden /></div>
           <div>
