@@ -1,7 +1,7 @@
 /**
  * One run of VK calls on the owner's account pool (spec vk-lead-source REQ-1b, REQ-2, REQ-9,
  * REQ-10, AM-8, AM-9): lease the least used account, send batches through the worker, count
- * calls, apply the error policy to the account and fail over to the next account within the run.
+ * calls, keep each account within its daily newsfeed.search cap, apply the error policy to the account and fail over to the next account within the run.
  * The token is unsealed only for the leased account and never leaves this module except in the
  * worker request body.
  */
@@ -29,6 +29,7 @@ import {
   releaseVkAccount,
   type VkAccountData,
   type VkDailyCaps,
+  vkUsageToday,
 } from '@/lib/vk/pool';
 import {loadVkAccounts, loadVkProxy, mutateVkAccount, swapVkAccount, type StoredVkAccount} from '@/lib/vk/records';
 
@@ -37,7 +38,8 @@ export const VK_MAX_ACCOUNTS_PER_RUN = 3;
 /** Pool exhausted: no account could take the calls (all busy, cooling, dead or without proxy). */
 export const VK_CODE_NO_ACCOUNT = -10;
 
-type Leased = {id: string; leaseId: string; token: string; proxy: VkProxy};
+/** `searchCalls`: today's newsfeed.search count (persisted counter + this run), re-read after every batch. */
+type Leased = {id: string; leaseId: string; token: string; proxy: VkProxy; searchCalls: number};
 
 export type VkSessionStats = {accountsUsed: string[]; failovers: number; noAccount: boolean; outOfTime: boolean; lastError: string};
 
@@ -62,6 +64,24 @@ export type VkSessionOptions = {
 /** The strictest method among pending calls decides which accounts qualify. */
 function poolMethod(calls: readonly VkCall[]): string {
   return calls.some((c) => c.method === VK_SEARCH_METHOD) ? VK_SEARCH_METHOD : String(calls[0]?.method ?? '');
+}
+
+/**
+ * REQ-10: splits a slice into calls the account may send and search calls past its daily cap,
+ * so a run never pushes the account's newsfeed.search counter above the cap.
+ */
+function withinSearchCap(slice: readonly number[], calls: readonly VkCall[], left: number): {send: number[]; over: number[]} {
+  const send: number[] = [];
+  const over: number[] = [];
+  let room = left;
+  for (const i of slice) {
+    if (calls[i].method !== VK_SEARCH_METHOD) send.push(i);
+    else if (room > 0) {
+      send.push(i);
+      room -= 1;
+    } else over.push(i);
+  }
+  return {send, over};
 }
 
 function countByMethod(calls: readonly VkCall[]): Map<string, number> {
@@ -96,7 +116,7 @@ export async function openVkSession(opts: VkSessionOptions): Promise<VkSession> 
     } catch {
       token = '';
     }
-    if (proxy.ok && token) return {id: row.id, leaseId, token, proxy: proxy.proxy};
+    if (proxy.ok && token) return {id: row.id, leaseId, token, proxy: proxy.proxy, searchCalls: vkUsageToday(leased, now()).searchCalls};
     // Proxy gone/unsafe → the account cannot run (A-7: no proxy rotation); a broken secret is an account error.
     await mutateVkAccount(opts.db, opts.owner, row.id, (d) => {
       const freed = releaseVkAccount(d, leaseId);
@@ -135,8 +155,15 @@ export async function openVkSession(opts: VkSessionOptions): Promise<VkSession> 
       if (shouldFailOver(cls)) errors.push({cls, method: calls[i].method});
     });
     if (errors.length) stats.lastError = `VK ${errors[0].cls.code}: ${errors[0].cls.reason}`;
-    await mutateVkAccount(opts.db, opts.owner, acc.id, (d) => afterBatch(d, calls, errors, now()));
+    const saved = await mutateVkAccount(opts.db, opts.owner, acc.id, (d) => afterBatch(d, calls, errors, now()));
+    const sentSearch = calls.filter((c) => c.method === VK_SEARCH_METHOD).length;
+    acc.searchCalls = Math.max(acc.searchCalls + sentSearch, saved ? vkUsageToday(saved, now()).searchCalls : 0);
     return {results, failed: errors.length > 0};
+  }
+
+  /** Search calls the account may still send today; a cap ≤ 0 means no cap. */
+  function searchLeft(acc: Leased): number {
+    return opts.caps.search > 0 ? opts.caps.search - acc.searchCalls : Number.POSITIVE_INFINITY;
   }
 
   async function run(calls: readonly VkCall[]): Promise<VkResult[]> {
@@ -159,7 +186,9 @@ export async function openVkSession(opts: VkSessionOptions): Promise<VkSession> 
       }
       const next: number[] = [];
       for (let at = 0; at < pending.length; at += VK_MAX_BATCH) {
-        const slice = pending.slice(at, at + VK_MAX_BATCH);
+        const {send: slice, over} = withinSearchCap(pending.slice(at, at + VK_MAX_BATCH), calls, searchLeft(current));
+        next.push(...over);
+        if (!slice.length) continue;
         const sent = await sendOnce(current, slice.map((i) => calls[i]));
         sent.results.forEach((r, k) => {
           results[slice[k]] = r;
