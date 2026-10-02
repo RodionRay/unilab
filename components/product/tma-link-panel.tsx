@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
 import { AlertTriangle, ExternalLink, Loader2, RefreshCw, Smartphone, Unlink } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
@@ -16,12 +16,16 @@ import {
 } from '@/components/ui/alert-dialog';
 import type { LinkStatus } from '@/lib/tma/contract';
 import {
+  badgeFor,
   classifyFailure,
+  cooldownLeftSec,
   createLinkPoller,
   describeDmError,
+  formatCooldown,
   initialLinkState,
   linkReducer,
   minutesLeft,
+  noticesOffHint,
   pluralMinutes,
   type LinkAction,
   type LinkFailure,
@@ -49,11 +53,11 @@ async function postLink(action: LinkAction, extra: { enabled?: boolean } = {}): 
       body: JSON.stringify({ action, ...extra }),
     });
   } catch {
-    return { ok: false, failure: classifyFailure(action, null, null, null) };
+    return { ok: false, failure: classifyFailure(action, null, null, null, Date.now()) };
   }
   const body: unknown = await res.json().catch(() => null);
   if (res.ok && body && typeof body === 'object' && 'linked' in body) return { ok: true, status: body as LinkStatus };
-  return { ok: false, failure: classifyFailure(action, res.ok ? 502 : res.status, body, res.headers.get('Retry-After')) };
+  return { ok: false, failure: classifyFailure(action, res.ok ? 502 : res.status, body, res.headers.get('Retry-After'), Date.now()) };
 }
 
 const LINK_CLASS = 'rounded-full min-h-10 max-sm:min-h-11! px-[18px] font-semibold';
@@ -61,16 +65,14 @@ const BTN_CLASS = 'max-sm:min-h-11!';
 /** `.settings-check span { flex: 1 }` (globals.css) would stretch the switch thumb; keep it a fixed circle. */
 const SWITCH_CLASS = 'mt-1 data-[state=unchecked]:bg-white/20! [&>[data-slot=switch-thumb]]:flex-none! [&>[data-slot=switch-thumb]]:p-0! [&>[data-slot=switch-thumb]]:bg-white!';
 
+/** Tonal destructive pill: the spike error colour on its light fill (the accent gradient stays for safe actions). */
+const DANGER_CLASS = 'bg-[var(--spike-error-light)]! text-[var(--spike-error)]! border! border-[rgba(251,151,125,0.35)]! hover:bg-[rgba(251,151,125,0.22)]!';
+/** Spinner next to 12 px hint text: sits on the first line instead of centring on a wrapped paragraph. */
+const HINT_SPINNER = 'mt-[2px] shrink-0 animate-spin';
+
 /** A failed toggle or a lost link is retried as a status refresh, never as a blind repeat. */
 function retryAction(failure: LinkFailure): LinkAction {
   return failure.action === 'set_dm_notices' || failure.kind === 'not_linked' ? 'status' : failure.action;
-}
-
-function badgeFor(state: LinkState): { tone: 'success' | 'warning' | 'neutral'; text: string } {
-  if (state.phase === 'linked') return { tone: 'success', text: 'Подключено' };
-  if (state.phase === 'pending') return { tone: 'warning', text: 'Ждём подтверждения' };
-  if (state.phase === 'no_bot') return { tone: 'neutral', text: 'Нужен бот' };
-  return { tone: 'neutral', text: 'Не подключено' };
 }
 
 export function TmaLinkPanel({ botConfigured }: Props) {
@@ -83,7 +85,11 @@ export function TmaLinkPanel({ botConfigured }: Props) {
   const settle = useCallback(async (action: LinkAction, extra: { enabled?: boolean } = {}) => {
     const result = await postLink(action, extra);
     if (!mounted.current) return;
-    if (!result.ok) return dispatch({ type: 'failed', failure: result.failure });
+    if (!result.ok) {
+      // Start the rate-limit countdown from the response moment, not from the last clock tick.
+      setNow(Date.now());
+      return dispatch({ type: 'failed', failure: result.failure });
+    }
     if (action === 'status') dispatch({ type: 'status_loaded', status: result.status });
     else if (action === 'create_code') {
       const nowMs = Date.now();
@@ -141,7 +147,20 @@ export function TmaLinkPanel({ botConfigured }: Props) {
     };
   }, [state.phase, expiresAtMs]);
 
+  // Rate limit: tick once a second until Retry-After elapses so the disabled buttons count down and re-enable.
+  const retryAtMs = state.failure?.retryAtMs ?? 0;
+  useEffect(() => {
+    if (!retryAtMs) return;
+    const tick = setInterval(() => {
+      const nowMs = Date.now();
+      setNow(nowMs);
+      if (nowMs >= retryAtMs) clearInterval(tick);
+    }, 1000);
+    return () => clearInterval(tick);
+  }, [retryAtMs]);
+
   const badge = badgeFor(state);
+  const cooldown = cooldownLeftSec(state.failure, now);
 
   return (
     <section className="settings-card" aria-labelledby="tma-link-title" data-testid="tma-link-panel">
@@ -153,11 +172,11 @@ export function TmaLinkPanel({ botConfigured }: Props) {
             <p className="small-note">Лиды, ответы клиентам и задачи с телефона: мини-приложение открывается в боте уведомлений</p>
           </div>
         </div>
-        <span className={`badge ${badge.tone}`}>{badge.text}</span>
+        {badge && <span className={`badge ${badge.tone}`}>{badge.text}</span>}
       </div>
       <div className="settings-fields">
-        <PanelBody state={state} now={now} run={run} onCancel={() => dispatch({ type: 'cancel_code' })} onUnlink={() => setConfirmUnlink(true)}/>
-        {state.failure && <FailureLine failure={state.failure} busy={state.busy !== null} onRetry={() => void run(retryAction(state.failure!))}/>}
+        <PanelBody state={state} now={now} cooldown={cooldown} run={run} onCancel={() => dispatch({ type: 'cancel_code' })} onUnlink={() => setConfirmUnlink(true)}/>
+        {state.failure && <FailureLine failure={state.failure} busy={state.busy !== null} cooldown={cooldown} onRetry={() => void run(retryAction(state.failure!))}/>}
         <p className="sr-only" aria-live="polite" role="status">{state.announce}</p>
       </div>
       <AlertDialog open={confirmUnlink} onOpenChange={setConfirmUnlink}>
@@ -169,8 +188,10 @@ export function TmaLinkPanel({ botConfigured }: Props) {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Оставить</AlertDialogCancel>
-            <AlertDialogAction onClick={() => void run('unlink')}>Отключить</AlertDialogAction>
+            <AlertDialogCancel variant="default">Оставить</AlertDialogCancel>
+            <AlertDialogAction variant="outline" className={DANGER_CLASS} onClick={() => void run('unlink')}>
+              <Unlink size={15} aria-hidden/>Отключить
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -181,12 +202,14 @@ export function TmaLinkPanel({ botConfigured }: Props) {
 type BodyProps = {
   state: LinkState;
   now: number;
+  /** Seconds left of a rate-limit wait: connecting again is disabled meanwhile. */
+  cooldown: number;
   run: (action: LinkAction, extra?: { enabled?: boolean }) => Promise<void>;
   onCancel: () => void;
   onUnlink: () => void;
 };
 
-function PanelBody({ state, now, run, onCancel, onUnlink }: BodyProps) {
+function PanelBody({ state, now, cooldown, run, onCancel, onUnlink }: BodyProps) {
   if (state.phase === 'no_bot') {
     return (
       <p className="settings-hint" data-testid="tma-no-bot">
@@ -197,8 +220,8 @@ function PanelBody({ state, now, run, onCancel, onUnlink }: BodyProps) {
   if (state.phase === 'loading') {
     if (state.busy === null) return null;
     return (
-      <p className="settings-hint inline-flex items-center gap-2">
-        <Loader2 size={14} className="animate-spin" aria-hidden/>Проверяем подключение…
+      <p className="settings-hint flex items-start gap-2">
+        <Loader2 size={13} className={HINT_SPINNER} aria-hidden/>Проверяем подключение…
       </p>
     );
   }
@@ -218,11 +241,11 @@ function PanelBody({ state, now, run, onCancel, onUnlink }: BodyProps) {
               <ExternalLink size={15} aria-hidden/>Открыть бота и подключить<span className="sr-only"> (откроется в новой вкладке)</span>
             </a>
           </Button>
-          <Button variant="ghost" className={BTN_CLASS} onClick={onCancel}>Отмена</Button>
+          <Button variant="ghost" className={BTN_CLASS} onClick={onCancel}>Скрыть ссылку</Button>
         </div>
-        <p className="settings-hint inline-flex items-center gap-2" data-testid="tma-countdown">
-          <Loader2 size={13} className="animate-spin" aria-hidden/>
-          Ждём подтверждения. Ссылка одноразовая, действует ещё {pluralMinutes(left)}.
+        <p className="settings-hint flex items-start gap-2" data-testid="tma-countdown">
+          <Loader2 size={13} className={HINT_SPINNER} aria-hidden/>
+          <span>Проверяем подключение каждые несколько секунд. Ссылка одноразовая, действует ещё {pluralMinutes(left)}.</span>
         </p>
       </>
     );
@@ -231,7 +254,7 @@ function PanelBody({ state, now, run, onCancel, onUnlink }: BodyProps) {
   return (
     <>
       {expired
-        ? <p className="settings-hint" data-testid="tma-expired">Ссылка истекла, подключение не завершено. Получите новую ссылку.</p>
+        ? <Note testId="tma-expired">Ссылка истекла, подключение не завершено. Получите новую ссылку.</Note>
         : (
           <ol className="settings-steps">
             <li>Нажмите <strong>Подключить Telegram</strong>: появится личная ссылка на бота уведомлений.</li>
@@ -240,7 +263,7 @@ function PanelBody({ state, now, run, onCancel, onUnlink }: BodyProps) {
           </ol>
         )}
       <div className="settings-actions-btns">
-        <Button className={BTN_CLASS} disabled={state.busy !== null} onClick={() => void run('create_code')}>
+        <Button className={BTN_CLASS} disabled={state.busy !== null || cooldown > 0} onClick={() => void run('create_code')}>
           {state.busy === 'create_code' ? <Loader2 size={15} className="animate-spin" aria-hidden/> : <Smartphone size={15} aria-hidden/>}
           {expired ? 'Получить новую ссылку' : 'Подключить Telegram'}
         </Button>
@@ -257,46 +280,57 @@ type LinkedProps = {
 };
 
 function LinkedBody({ status, busy, run, onUnlink }: LinkedProps) {
-  const dmText = describeDmError(status.dmError);
+  const dm = describeDmError(status.dmError);
+  const offHint = noticesOffHint(status);
+  const describedBy = [dm && 'tma-dm-error', offHint && 'tma-notices-off'].filter(Boolean).join(' ') || undefined;
   return (
     <>
       <div data-testid="tma-linked">
         <p className="text-sm font-semibold text-[var(--spike-text)] [overflow-wrap:anywhere]">
-          <span className="text-[var(--spike-muted)] font-medium">Подключено: </span>
-          {status.tgUsername ? `@${status.tgUsername}` : 'Telegram без username'}
+          <span className="text-[var(--spike-muted)] font-medium">Аккаунт Telegram: </span>
+          {status.tgUsername ? `@${status.tgUsername}` : 'без username'}
         </p>
         <p className="settings-hint mt-1">Приложение открывается кнопкой в чате с ботом. Права те же, что у вас в кабинете.</p>
       </div>
-      <label className="settings-check" htmlFor="tma-dm-switch">
-        <span>
-          Личные уведомления о горячих лидах и ответах
-          <span className="settings-hint block mt-1">Бот пишет вам в личный чат с кнопкой «Открыть» на нужного лида</span>
-          {dmText && (
-            <span id="tma-dm-error" role="alert" className="mt-2 flex items-start gap-1.5 text-xs font-medium leading-snug text-[var(--spike-error)]">
-              <AlertTriangle size={13} className="mt-px shrink-0" aria-hidden/>{dmText}
+      <div className="grid gap-2">
+        <label className="settings-check" htmlFor="tma-dm-switch">
+          <span>
+            Личные уведомления о горячих лидах и ответах
+            <span className="settings-hint block mt-1">Бот пишет вам в личный чат с кнопкой «Открыть» на нужного лида. Сохраняется сразу.</span>
+          </span>
+          {busy === 'set_dm_notices' && <Loader2 size={14} className="animate-spin mt-1 shrink-0" aria-hidden/>}
+          <Switch
+            id="tma-dm-switch"
+            className={SWITCH_CLASS}
+            checked={status.dmNotices}
+            disabled={busy !== null}
+            aria-describedby={describedBy}
+            onCheckedChange={(v) => void run('set_dm_notices', { enabled: v })}
+          />
+        </label>
+        {dm && (
+          <p id="tma-dm-error" role="alert" className="flex items-start gap-1.5 px-1 text-xs font-medium leading-snug text-[var(--spike-error)]">
+            <AlertTriangle size={13} className="mt-px shrink-0" aria-hidden/>
+            <span>
+              {dm.text}
+              {dm.openBot && status.botLink && (
+                <> <a className="underline underline-offset-2 font-semibold" href={status.botLink} target="_blank" rel="noopener noreferrer">Открыть бота<span className="sr-only"> (откроется в новой вкладке)</span></a></>
+              )}
             </span>
-          )}
-        </span>
-        {busy === 'set_dm_notices' && <Loader2 size={14} className="animate-spin mt-1 shrink-0" aria-hidden/>}
-        <Switch
-          id="tma-dm-switch"
-          className={SWITCH_CLASS}
-          checked={status.dmNotices}
-          disabled={busy !== null}
-          aria-describedby={dmText ? 'tma-dm-error' : undefined}
-          onCheckedChange={(v) => void run('set_dm_notices', { enabled: v })}
-        />
-      </label>
+          </p>
+        )}
+        {offHint && <Note id="tma-notices-off" testId="tma-notices-off">{offHint}</Note>}
+      </div>
       {!status.appUrl && (
         <p className="settings-hint" data-testid="tma-no-app-url">
-          Кнопка «Открыть приложение» появится, когда у UniLab будет публичный https-адрес (APP_URL): Telegram открывает только https.
+          Кнопка приложения в боте появится, когда администратор подключит домен UniLab.
         </p>
       )}
       <div className="settings-actions-btns">
-        {status.appUrl && (
+        {status.botLink && (
           <Button asChild className={LINK_CLASS}>
-            <a href={status.appUrl} target="_blank" rel="noopener noreferrer">
-              <ExternalLink size={15} aria-hidden/>Открыть приложение<span className="sr-only"> (откроется в новой вкладке)</span>
+            <a href={status.botLink} target="_blank" rel="noopener noreferrer">
+              <ExternalLink size={15} aria-hidden/>Открыть бота<span className="sr-only"> (откроется в новой вкладке)</span>
             </a>
           </Button>
         )}
@@ -308,13 +342,28 @@ function LinkedBody({ status, busy, run, onUnlink }: LinkedProps) {
   );
 }
 
-function FailureLine({ failure, busy, onRetry }: { failure: LinkFailure; busy: boolean; onRetry: () => void }) {
+/** Warning-tone notice (expired link, notices switched off): spike warning on its light fill. */
+function Note({ id, testId, children }: { id?: string; testId: string; children: ReactNode }) {
+  return (
+    <p id={id} data-testid={testId} className="flex items-start gap-2 rounded-[14px] border border-[rgba(255,213,138,0.22)] bg-[var(--spike-warning-light)] px-3.5 py-2.5 text-[0.8125rem] font-medium leading-snug text-[var(--spike-warning)]">
+      <AlertTriangle size={14} className="mt-[2px] shrink-0" aria-hidden/>
+      <span>{children}</span>
+    </p>
+  );
+}
+
+type FailureProps = { failure: LinkFailure; busy: boolean; cooldown: number; onRetry: () => void };
+
+function FailureLine({ failure, busy, cooldown, onRetry }: FailureProps) {
+  // With a known Retry-After the countdown lives on the disabled button, so the text drops the stale «через 9 минут».
+  const text = failure.retryAtMs ? 'Слишком много попыток подключения.' : failure.message;
   return (
     <div className="form-error flex flex-wrap items-center justify-between gap-2" role="alert" data-testid="tma-error">
-      <span>{failure.message}</span>
+      {/* .form-error text (#9a4a36) is made for light cards; on the dark settings card it needs the spike error tone. */}
+      <span className="text-[var(--spike-error)] font-medium">{text}</span>
       {failure.kind !== 'session' && (
-        <Button variant="outline" size="sm" className={BTN_CLASS} disabled={busy} onClick={onRetry}>
-          <RefreshCw size={14} aria-hidden/>Повторить
+        <Button variant="outline" size="sm" className={`${BTN_CLASS} tabular-nums`} disabled={busy || cooldown > 0} onClick={onRetry}>
+          <RefreshCw size={14} aria-hidden/>{cooldown > 0 ? `Повторить через ${formatCooldown(cooldown)}` : 'Повторить'}
         </Button>
       )}
     </div>
