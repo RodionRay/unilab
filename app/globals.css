@@ -6126,6 +6126,16 @@ body:has(.chats-panel[data-chat-open="true"]) [data-sonner-toaster][data-y-posit
   outline-offset: 2px !important;
 }
 
+/* destructive confirm: the kit's coral fill with white ink is ~2.3:1; use a deep red (6.4:1) */
+[data-slot="alert-dialog-content"] button[data-variant="destructive"] {
+  background: #b42318 !important;
+  color: #ffffff !important;
+  border-color: #b42318 !important;
+}
+[data-slot="alert-dialog-content"] button[data-variant="destructive"]:hover:not(:disabled) {
+  background: #9a1d13 !important;
+}
+
 /* alert dialogs over the light chat theme (portaled: themed via body:has) */
 body:has(.chats-panel[data-chat-theme="light"]) [data-slot="alert-dialog-overlay"] {
   background: rgba(20, 17, 13, 0.32) !important;
