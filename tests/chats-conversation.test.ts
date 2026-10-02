@@ -1,7 +1,7 @@
 import {describe,expect,it} from 'vitest';
 import {
   INBOX_CURSOR_MARGIN_SEC,SEND_BLOCK_WINDOW_MS,type ReplyEntry,
-  findSendBlock,hasIncomingDm,nextInboxCursor,
+  applySendOutcome,findSendBlock,hasIncomingDm,leadReplies,nextInboxCursor,withPendingSend,
 } from '@/lib/lead-conversation';
 
 const T0=Date.parse('2026-09-30T10:00:00.000Z');
@@ -38,6 +38,29 @@ describe('lead-conversation · блок повторной отправки',()=
 
     expect(findSendBlock(lead,{clientMsgId:'',text:'Другое',mode:'dm'},T0)).toBeNull();
     expect(findSendBlock(lead,{clientMsgId:'',text:'Привет',mode:'dm'},T0)?.kind).toBe('inflight');
+  });
+
+  it('повтор с тем же ключом после failed: исход ложится на новую запись, зависшей pending нет',()=>{
+    const ctx={sendKey:'k-1',mode:'dm' as const,accountId:'a1',peerId:'42',accessHash:'',nowIso:new Date(T0).toISOString()};
+    const failed=applySendOutcome(
+      withPendingSend({replies:[]},ours({status:'pending',sendKey:'k-1'})),ctx,{status:'failed',error:'boom'},
+    );
+    expect(findSendBlock(failed,{clientMsgId:'k-1',text:'Привет',mode:'dm'},T0)).toBeNull();
+
+    const retried=applySendOutcome(withPendingSend(failed,ours({status:'pending',sendKey:'k-1'})),ctx,{status:'sent',error:''});
+
+    const mine=leadReplies(retried).filter(x=>x.sendKey==='k-1');
+    expect(mine.map(x=>x.status)).toEqual(['sent']);
+    expect(findSendBlock(retried,{clientMsgId:'k-1',text:'Привет',mode:'dm'},T0)?.kind).toBe('delivered');
+  });
+
+  it('исход ищет последнюю запись с ключом, даже если старая failed осталась в истории',()=>{
+    const ctx={sendKey:'k-2',mode:'dm' as const,accountId:'a1',peerId:'42',accessHash:'',nowIso:new Date(T0).toISOString()};
+    const lead={replies:[ours({status:'failed',sendKey:'k-2'}),ours({status:'pending',sendKey:'k-2'})]};
+
+    const out=leadReplies(applySendOutcome(lead,ctx,{status:'failed',error:'boom'}));
+
+    expect(out.map(x=>x.status)).toEqual(['failed','failed']);
   });
 });
 
