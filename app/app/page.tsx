@@ -710,9 +710,6 @@ function WorkspaceHome(){
   const aiKeyReady=!!(settings?.hasSecret||aiMeta?.hasEnvKey);
   const freshLeads=list('lead').filter(r=>!r.data.viewed);
   const viewedLeads=list('lead').filter(r=>!!r.data.viewed);
-  const chatLeads=list('lead').filter(r=>(!!r.data.draft||!!r.data.conversationOpen));
-  const freshChats=chatLeads.filter(r=>!r.data.viewed);
-  const viewedChats=chatLeads.filter(r=>!!r.data.viewed);
   const chatGroupRefs=useMemo(()=>Object.fromEntries(records.filter(r=>r.kind==='group').map(g=>[g.id,{name:String(g.data.name||''),url:String(g.data.url||'')}])),[records]);
   const chatAccountNames=useMemo(()=>Object.fromEntries(records.filter(r=>r.kind==='account').map(a=>[a.id,accountDisplayName(a.data)])),[records]);
   const chatCounts=useMemo(()=>{

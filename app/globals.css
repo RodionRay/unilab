@@ -6111,6 +6111,18 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   .chats-panel .chat-search .chat-search-input {
     font-size: 16px !important;
   }
+  /* primary touch targets ≥44px on phones */
+  .chats-panel .chat-search .chat-search-input {
+    height: 44px;
+    min-height: 44px;
+  }
+  .chats-panel .chat-folder {
+    height: 44px;
+  }
+  .chats-panel button.chat-add-lead[data-slot="button"] {
+    height: 44px;
+    min-height: 44px;
+  }
   .chats-panel button.chat-send[data-slot="button"] {
     width: 48px;
     height: 48px;
