@@ -13,6 +13,7 @@ import {InvitePanel,InviteModePicker,InviteTaskFields} from '@/components/produc
 import {MailingPanel,MailingTaskFields,MailingDeliveriesView} from '@/components/product/mailing-panel';
 import {TaskLogDialog} from '@/components/product/task-log-dialog';
 import {EmployeesPanel} from '@/components/product/employees-panel';
+import {ChatsPanel} from '@/components/product/chats/chats-panel';
 import {DEFAULT_DM_SOFT_CLOSE,DEFAULT_MAILING_TASK} from '@/lib/mailing';
 import {canAccessNav,type CrmAccess,type WorkspaceInvite,type WorkspaceMember} from '@/lib/staff-types';
 import {DEFAULT_NAV} from '@/components/product/workspace-nav';
@@ -652,7 +653,7 @@ function WorkspaceHome(){
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[records]);
-  const navigate=(name:NavName)=>{setView(name);setQuery('');setFilter('all');setLeadGroupFilter('all');setAccountSelected([]);setGroupFilter('all');setGroupSelected([]);setAudienceSearch('');setInviteSearch('');setMailingSearch('')};
+  const navigate=(name:NavName)=>{setView(name);setDetail(null);setQuery('');setFilter('all');setLeadGroupFilter('all');setAccountSelected([]);setGroupFilter('all');setGroupSelected([]);setAudienceSearch('');setInviteSearch('');setMailingSearch('')};
   const openTask=(kind:'audience_task'|'invite_task'|'mailing_task',item?:RecordItem)=>{
     setInviteWizardStep(item?2:1);
     setModal({kind,item});
@@ -3287,23 +3288,40 @@ function WorkspaceHome(){
             )
           )}
 
-          {view!=='Обзор'&&view!=='Уведомления'&&view!=='AI-ассистент'&&view!=='Настройки'&&view!=='Сбор аудитории'&&view!=='Инвайтинг'&&view!=='Рассылка'&&view!=='Сотрудники'&&<>
+          {view==='Переписки'&&(
+            <ChatsPanel
+              leads={listRows}
+              activeLead={detail?(records.find(r=>r.id===detail.id)??detail):null}
+              loading={loading}
+              folder={filter==='viewed'?'viewed':'all'}
+              counts={{fresh:freshChats.length,viewed:viewedChats.length}}
+              query={query}
+              groups={Object.fromEntries(list('group').map(g=>[g.id,{name:String(g.data.name||''),url:String(g.data.url||'')}]))}
+              accounts={Object.fromEntries(list('account').map(a=>[a.id,accountDisplayName(a.data)]))}
+              text={chatText}
+              mode={chatMode}
+              sending={busy}
+              readOnly={!!workspaceMeta&&!workspaceMeta.isOwner&&workspaceMeta.role==='viewer'}
+              onFolderChange={setFilter}
+              onQueryChange={setQuery}
+              onTextChange={setChatText}
+              onModeChange={setChatMode}
+              onOpen={lead=>{const item=records.find(r=>r.id===lead.id);if(item)void openLead(item)}}
+              onBack={()=>{setDetail(null);setChatText('')}}
+              onSend={()=>{void sendLeadReply()}}
+              onDraft={async()=>{if(!detail)return;await draft(detail);const updated=records.find(r=>r.id===detail.id)||detail;setChatText(prev=>prev||updated.data.draft||'')}}
+              onEdit={()=>{if(detail){open('lead',detail);setDetail(null)}}}
+              onDelete={()=>{setDeleting(detail);setDetail(null)}}
+              onCopy={async()=>{try{await navigator.clipboard.writeText(chatText);toast.success('Скопировано')}catch{toast.error('Не удалось скопировать')}}}
+            />
+          )}
+          {view!=='Обзор'&&view!=='Уведомления'&&view!=='AI-ассистент'&&view!=='Настройки'&&view!=='Сбор аудитории'&&view!=='Инвайтинг'&&view!=='Рассылка'&&view!=='Сотрудники'&&view!=='Переписки'&&<>
             <div className="toolbar">
               <div className="relative w-full sm:w-80">
                 <Search className="absolute left-3 top-2.5 text-[var(--spike-muted)]" size={16}/>
                 <Input className="pl-9" placeholder="Поиск по списку…" aria-label="Поиск по списку" value={query} onChange={e=>setQuery(e.target.value)}/>
               </div>
-              {view==='Переписки'?(
-                <div className="flex flex-wrap items-center gap-3">
-                  <Tabs value={filter==='viewed'?'viewed':'all'} onValueChange={(v)=>setFilter(v)}>
-                    <TabsList>
-                      <TabsTrigger value="all">Новые{freshChats.length?` (${freshChats.length})`:''}</TabsTrigger>
-                      <TabsTrigger value="viewed">Просмотренные{viewedChats.length?` (${viewedChats.length})`:''}</TabsTrigger>
-                    </TabsList>
-                  </Tabs>
-                  <span className="badge neutral">{chatLeads.length} диалогов</span>
-                </div>
-              ):currentKind==='lead'?(
+              {currentKind==='lead'?(
                 <div className="flex flex-wrap items-center gap-3">
                   <Button
                     disabled={busy||!telegramConnected||autoRescanRunning}
@@ -4939,7 +4957,7 @@ function WorkspaceHome(){
         </DialogContent>
       </Dialog>
 
-      <Dialog open={!!detail} onOpenChange={o=>{if(!o){setDetail(null);setChatText('')}}}>
+      <Dialog open={!!detail&&view!=='Переписки'} onOpenChange={o=>{if(!o){setDetail(null);setChatText('')}}}>
         <DialogContent className="max-h-[92vh] overflow-hidden flex flex-col sm:max-w-2xl p-0 gap-0">
           <DialogHeader className="px-6 pt-5 pb-3 border-b border-[var(--spike-border)]">
             <DialogTitle className="flex flex-wrap items-center gap-2">
