@@ -122,6 +122,19 @@ describe('бот · привязка Telegram в личке (REQ-L2)',()=>{
   expect(text).not.toContain('manager-1');
  });
 
+ it('setChatMenuButton не удался → ответ не отсылает к кнопке меню, а даёт кнопку «Открыть UniLab» (web_app)',async()=>{
+  const {code}=await createLinkCode(db(),OWNER,OWNER);
+  const w=stubWorkerAndBot(noWorker,(call)=>call.method==='setChatMenuButton'?{ok:false,description:'Bad Request: chat not found'}:undefined);
+  w.queueUpdates([privateMsg(10,`/start link_${code}`)]);
+
+  await pollBot();
+
+  expect(await findActiveLink(db(),OWNER,TG)).not.toBeNull();
+  const reply=w.sent()[0];
+  expect(String(reply?.body.text)).not.toContain('кнопкой меню');
+  expect(buttonsOf(reply)).toEqual([{text:'Открыть UniLab',web_app:{url:`https://app.test/tma/${await wsKeyOf()}`}}]);
+ });
+
  it('адрес кабинета не публичный https → привязка есть, меню не ставится, ответ про https',async()=>{
   vi.stubEnv('APP_URL','http://localhost:5180');
   const {code}=await createLinkCode(db(),OWNER,OWNER);

@@ -26,6 +26,7 @@ const DM_BUDGET_MS = 20_000;
 
 const TEXT = {
   linked: "Telegram подключён к UniLab — откройте приложение кнопкой меню.",
+  linkedNoMenu: "Telegram подключён к UniLab — откройте приложение кнопкой «Открыть UniLab» ниже или через /start.",
   linkedNoHttps: "Telegram подключён к UniLab. Приложение откроется, когда у кабинета будет публичный адрес https.",
   invalid: "Ссылка недействительна или устарела — получите новую в настройках UniLab",
   rateLimited: "Слишком много попыток, попробуйте позже",
@@ -70,6 +71,10 @@ async function publicMiniAppUrl(db: D1LikeDatabase, owner: string): Promise<stri
   return appUrl ? miniAppUrl(appUrl, await getOrCreateWorkspaceKey(db, owner)) : "";
 }
 
+function openAppKeyboard(url: string): ReplyMarkup {
+  return { inline_keyboard: [[{ text: "Открыть UniLab", web_app: { url } }]] };
+}
+
 async function say(token: string, chatId: string, text: string, replyMarkup?: ReplyMarkup): Promise<void> {
   const r = await sendBotMessage(token, chatId, { html: text, plain: text, ...(replyMarkup ? { replyMarkup } : {}) });
   if (!r.ok) console.error("[tma] bot_private_reply:", r.error.slice(0, 200));
@@ -86,15 +91,17 @@ async function redeemFromStart(db: D1LikeDatabase, owner: string, token: string,
   const url = await publicMiniAppUrl(db, owner);
   if (!url) return say(token, cmd.chatId, TEXT.linkedNoHttps);
   const menu = await setChatMenuButton(token, cmd.tg.id, url);
-  if (!menu.ok) console.error("[tma] menu_button:", menu.error.slice(0, 200));
-  return say(token, cmd.chatId, TEXT.linked);
+  if (menu.ok) return say(token, cmd.chatId, TEXT.linked);
+  console.error("[tma] menu_button:", menu.error.slice(0, 200));
+  // No menu button to point at: give the inline web_app button instead.
+  return say(token, cmd.chatId, TEXT.linkedNoMenu, openAppKeyboard(url));
 }
 
 async function answerMember(db: D1LikeDatabase, owner: string, token: string, cmd: Extract<BotCommand, { kind: "private_message" }>) {
   if (!(await findActiveLink(db, owner, cmd.tgUserId))) return say(token, cmd.chatId, TEXT.onboarding);
   if (!cmd.start) return say(token, cmd.chatId, TEXT.replyHint);
   const url = await publicMiniAppUrl(db, owner);
-  return say(token, cmd.chatId, TEXT.help, url ? { inline_keyboard: [[{ text: "Открыть UniLab", web_app: { url } }]] } : undefined);
+  return say(token, cmd.chatId, TEXT.help, url ? openAppKeyboard(url) : undefined);
 }
 
 /**
