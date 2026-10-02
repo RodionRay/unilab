@@ -52,6 +52,9 @@ Runtime DB is Cloudflare D1 (local file under `.wrangler/state`). `better-sqlite
 Telegram authorization / tdata import, joining groups, proxy connectivity checks, background message collection, automatic lead qualification and Telegram sending. These require a separate long-running Telegram connector; Sites has no raw TCP support. UI labels these limitations.
 
 ## Validation
+Unit tests: `npm test` (vitest). Browser journey for «Переписки»: `npm run test:e2e` (Playwright, needs a running
+server + the synthetic seed — see `docs/project/specs/tg-chat-ui.md` §Running the checks).
+
 Build and TypeScript pass. Local HTTP checks cover authentication, origin rejection, input validation, secret redaction, CRUD, references and missing AI configuration. Live Telegram and OpenAI calls have not been tested.
 
 Motion references: Fade Slide Tabs by Ruixen UI and Animate Digits by unlumen on 21st.dev. Admin visual language inspired by Spike (WrapPixel): Plus Jakarta Sans, `#0085db`, light paper cards on `#F0F5F9`.

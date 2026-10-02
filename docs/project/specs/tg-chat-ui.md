@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: implemented (awaiting UI panel)
 size: full
 model: session model (inherit)
 budget: 600M tokens
@@ -46,3 +46,41 @@ List of lead rows + modal Dialog with thread and composer (`app/app/page.tsx` `r
 
 ## Out of scope
 Real read receipts, media, avatars from Telegram, per-message reply-to (not stored); a global light theme.
+
+## Status (2026-10-02)
+REQ-1..REQ-12 implemented on `task/tg-chat-ui-2026-10-01`. Evidence: `tests/chat-view.test.ts` (view model),
+`e2e/chats.spec.ts` (journey), screenshot rounds in `artifacts/ui-qa/tg-chat-ui/round-*` (not committed).
+Known limits: the source post has no stored timestamp (lead creation time is used; hidden when it is later than the
+first reply); «прочитано» (✓✓) is inferred from a later client message; incoming messages that arrive while a chat is
+open re-mark it unread until it is reopened (no auto mark-viewed on poll).
+
+## Component map
+- View model (pure): `lib/chat-view.ts` — `buildThread` (date separators, 5-minute grouping, ticks, reply quote,
+  unread divider, optimistic pending), `chatListItem` (preview prefixes, time label, unread count, failed flag),
+  `unreadCountOf`, `unsentDraft`, `listTimeLabel`, `dateSeparatorLabel`, `initials`, `avatarTone`, `isSendShortcut`.
+- Shell: `components/product/chats/chats-panel.tsx::ChatsPanel` — two panes, narrow container (<700px) = one column
+  with back; keeps an opened «Новые» chat in place while it is open; captures the unread state at click time
+  (opening marks the lead viewed in the same render); optimistic pending bubble while `sending`.
+- `chat-list.tsx::ChatList` (search, folder tabs «Новые/Просмотренные», rows, skeleton, empty states),
+  `chat-header.tsx::ChatHeader` (badges slot `[data-slot=chat-header-badges]`, theme toggle, open in Telegram,
+  ⋮ Правки / Копировать / Удалить), `chat-thread.tsx::ChatThreadView` (scroll to divider or bottom, keep bottom on new
+  messages, «вниз» button), `chat-composer.tsx::ChatComposer` (Enter/Shift+Enter, reply bar for «Ответ в группе»,
+  AI draft), `chat-theme.ts::useChatTheme` (localStorage `unilab.chatTheme`), `chat-ticks.tsx::ChatTick`,
+  `chat-avatar.tsx::ChatAvatar`.
+- Wiring: `app/app/page.tsx` — `<ChatsPanel>` for view «Переписки» (active chat = `detail`, callbacks =
+  `openLead` / `sendLeadReply` / `draft` / `open('lead')` / `setDeleting`); the `<Dialog open={!!detail&&view!=='Переписки'}>`
+  stays for «Лиды»; `navigate` clears `detail`. Read-only = staff role `viewer`.
+- Styles: `app/globals.css` section «Переписки — Telegram-style chats» — `--chat-*` palette under
+  `[data-chat-theme=dark|light]`, full-bleed workspace via `.workspace:has(> [data-chats-panel])`.
+- Test hooks: `data-chat-item` + `data-lead-id` (+ `data-unread`), `data-chat-thread`, `data-chat-msg` with
+  `data-side=out|in` and `data-status=pending|sent|read|failed|unknown|received`, `data-unread-divider`,
+  `data-chat-composer`, `data-chat-send`, `data-chat-back`.
+
+## Running the checks
+- Unit: `npx vitest run tests/chat-view.test.ts` (part of `npm test`).
+- E2E (`npm run test:e2e`, `playwright.config.ts`, chromium): needs a running production server
+  (`npm run build && cp .env dist/server/.dev.vars && npm run start -- --port 5481`) and the synthetic seed in a local,
+  disposable cabinet: `DEMO_URL=http://127.0.0.1:5481 DEMO_PASSWORD=<admin password> node scripts/seed-demo-chats.mjs`
+  (run on an empty local D1; it only adds fictional records). Env: `E2E_BASE_URL` (default `http://127.0.0.1:5481`),
+  `E2E_EMAIL`, `E2E_PASSWORD` (defaults: the local demo admin). The Telegram edge is mocked inside the spec
+  (worker flag, `send_lead_message`, `mark_lead_viewed`), so the run does not change the seed and can be repeated.
