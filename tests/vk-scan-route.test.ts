@@ -165,6 +165,17 @@ describe('workspace API: scan_vk_source',()=>{
       expect(record(ACC_A).counters?.searchCalls).toBe(4);
     });
 
+    it('without strong keywords marks the source scanned with an error and calls no VK',async()=>{
+      setSettings({keywords:''});
+
+      const r=await scan(SEARCH_ID);
+
+      expect(r.status).toBe(400);
+      expect(record(SEARCH_ID)).toMatchObject({lastScanAt:new Date(NOW).toISOString(),error:'Нет ключевых слов'});
+      expect(vkWorker.batches).toHaveLength(0);
+      expect(record(ACC_A).leaseId).toBeUndefined();
+    });
+
     it('cuts a long post to 8000 characters (AM-3)',async()=>{
       feed().items[0]!.text=leadText(501)+' x'.repeat(6000);
 
@@ -485,6 +496,15 @@ describe('workspace API: scan_vk_source',()=>{
 
       testDb().sqlite.prepare("UPDATE records SET data=json_set(data,'$.lastScanAt',?) WHERE id=?").run(new Date(NOW-31*60_000).toISOString(),SEARCH_ID);
       expect((await due()).vkSourceIds).toEqual([GROUP_ID,SEARCH_ID]);
+    });
+
+    it('skips the search source while settings have no strong keyword, lists it again once they do',async()=>{
+      setSettings({keywords:''});
+
+      expect((await due()).vkSourceIds).toEqual([GROUP_ID]);
+
+      setSettings();
+      expect((await due()).vkSourceIds).toEqual([SEARCH_ID,GROUP_ID]);
     });
 
     it('lists none while no VK account can scan',async()=>{

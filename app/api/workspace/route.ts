@@ -20,7 +20,7 @@ import {
 } from '@/lib/processes/scan-flow';
 import {qualifyLeadsWithAi} from '@/lib/processes/lead-ai';
 import {pickLeads} from '@/lib/processes/lead-ingest';
-import {scanVkSource,type VkActionResult,type VkScanDeps} from '@/lib/processes/vk-scan';
+import {scanVkSource,vkSourceBlocker,type VkActionResult,type VkScanDeps} from '@/lib/processes/vk-scan';
 import {addVkGroupSource,deleteVkAccounts,deleteVkSource,importVkAccounts,setVkAccountProxy,type VkAccountDeps} from '@/lib/processes/vk-accounts';
 import {VK_SOURCE_KIND,loadVkAccounts,loadVkSources} from '@/lib/vk/records';
 import {noUsableVkAccount} from '@/lib/vk/session';
@@ -1489,12 +1489,16 @@ async function vkAccountDeps(db:D1LikeDatabase,owner:string):Promise<VkAccountDe
 
 function vkReply(r:VkActionResult){return reply(r.body,r.status)}
 
-/** REQ-8 / AM-12: VK sources due for auto-rescan (oldest first, ≤3 per tick); none without a usable account. */
+/**
+ * REQ-8 / AM-12: VK sources due for auto-rescan (oldest first, ≤3 per tick); none without a usable
+ * account, and never a source the settings cannot scan (search without strong keywords).
+ */
 const VK_SOURCES_PER_TICK=3;
-async function dueVkSourceIds(db:D1LikeDatabase,owner:string,needMs:number,force:boolean,now:number){
+async function dueVkSourceIds(db:D1LikeDatabase,owner:string,settings:Record<string,unknown>,needMs:number,force:boolean,now:number){
  const sources=await loadVkSources(db,owner);
  if(!sources.length||noUsableVkAccount(await loadVkAccounts(db,owner),now))return {ids:[] as string[],total:0};
  const due=sources
+  .filter(s=>!vkSourceBlocker(s.data,settings))
   .map(s=>({id:s.id,last:Date.parse(String(s.data.lastScanAt||''))||0}))
   .filter(s=>force||!s.last||now-s.last>=needMs)
   .sort((a,b)=>a.last-b.last);
@@ -2965,7 +2969,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   }
   due.sort((a,b)=>a.last-b.last);
   const ids=due.slice(0,limit).map(x=>x.id);
-  const vkDue=await dueVkSourceIds(db,owner,needMs,force,now);
+  const vkDue=await dueVkSourceIds(db,owner,settings,needMs,force,now);
   return reply({
    ok:true,
    groupIds:ids,
