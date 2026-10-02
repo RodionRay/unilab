@@ -1,5 +1,5 @@
 ---
-status: implemented (awaiting UI panel)
+status: implemented (panel round 9)
 size: full
 model: session model (inherit)
 budget: 600M tokens
@@ -48,6 +48,14 @@ List of lead rows + modal Dialog with thread and composer (`app/app/page.tsx` `r
 
 ## Out of scope
 Real read receipts, media, avatars from Telegram, per-message reply-to (not stored); a global light theme.
+
+## Status (2026-10-02, after panel round 9)
+Implemented; panel rounds 1–9 applied. Round 8–9 additions: retry turns the failed bubble itself into «sending» (and
+its list row shows the clock), the server's text+mode retry fallback stops at the newest same message, toasts sit at the
+top of the thread pane under its header (`components/product/chats/use-chat-layout.ts::usePaneToastAnchor`), Telegram
+status is unknown (null) until the first successful load, the delete confirm uses a deep-red action on this view.
+Known leftovers: at 390px a two-sentence draft wraps in 5–6 lines (16px input + two icons beside it); the list column
+is sparse when there are few chats; the header has no presence/online status (not available in the data).
 
 ## Status (2026-10-02, after panel round 7)
 Send flow: async send/draft results update only the chat they belong to (`app/app/page.tsx::openLeadIdRef`); the
