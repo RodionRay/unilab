@@ -28,8 +28,8 @@ describe("describeSendFailure", () => {
   it("504 = unknown outcome: check Telegram before sending again", () => {
     const f = describeSendFailure({ code: "http", status: 504, message: "Нет ответа Telegram-воркера" });
     expect(f.kind).toBe("unknown");
-    expect(f.text).toContain("Статус неизвестен");
-    expect(f.text).toContain("Telegram");
+    expect(f.text).toContain("могло уйти");
+    expect(f.text).toContain("Проверьте переписку в Telegram");
   });
   it("409 = the same text is held to avoid a duplicate: explains the wait instead of «send again»", () => {
     const f = describeSendFailure({ code: "http", status: 409, message: "Результат прошлой отправки этого сообщения неизвестен…" });

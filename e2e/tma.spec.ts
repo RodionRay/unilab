@@ -207,7 +207,7 @@ test.describe("lead", () => {
     await page.getByTestId("inbox-row").filter({ hasText: "Анна Петрова" }).click();
     await expect(page.getByLabel("Ответ лиду")).toHaveValue(fx.ANNA_DRAFT);
     await tapMainButton(page);
-    await expect(page.getByRole("alert")).toContainText("Статус неизвестен");
+    await expect(page.getByRole("alert")).toContainText("сообщение могло уйти");
     await expect(page.getByTestId("bubble-unknown")).toHaveCount(1);
     await expect(page.getByTestId("bubble-pending")).toHaveCount(0);
     await expect(page.getByText("Статус неизвестен, проверьте в Telegram")).toBeVisible();

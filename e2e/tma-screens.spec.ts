@@ -5,7 +5,7 @@
 import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import * as fx from "./fixtures/data";
-import { installTelegram, mockApi, tmaUrl, type ApiOptions, type Scheme, type TelegramOptions } from "./fixtures/tma";
+import { installTelegram, mockApi, tapMainButton, tmaUrl, type ApiOptions, type Scheme, type TelegramOptions } from "./fixtures/tma";
 
 const OUT = process.env.TMA_SHOTS_DIR ?? path.join(process.cwd(), ".sites-runtime/tma-shots");
 const HEIGHT = 844;
@@ -83,6 +83,21 @@ test.describe("states 390", () => {
       await boot(page, 390, { scheme, startParam: `lead_${fx.LEAD_OLEG}` });
       await expect(page.getByRole("heading", { name: "Олег Кравец" })).toBeVisible();
       await shot(page, `390-${scheme}-state-lead-blocked`);
+    });
+
+    test(`state send unknown ${scheme}`, async ({ page }) => {
+      const anna = fx.leads[fx.LEAD_ANNA]!;
+      const withUnknown = { ...anna, lead: { ...anna.lead, messages: [{ from: "us", text: fx.ANNA_DRAFT, at: fx.NOW.toISOString(), status: "pending" }] } };
+      let leadFetches = 0;
+      await boot(page, 390, { scheme, startParam: `lead_${fx.LEAD_ANNA}` }, {
+        feed: (view) => (view === "lead" && ++leadFetches > 1 ? { status: 200, body: withUnknown } : undefined),
+        action: (a) => (a === "send_lead_message" ? { status: 504, body: { ok: false, unknown: true, error: "Нет ответа Telegram-воркера" } } : undefined),
+      });
+      await expect(page.getByRole("heading", { name: "Анна Петрова" })).toBeVisible();
+      await expect(page.getByLabel("Ответ лиду")).toHaveValue(fx.ANNA_DRAFT);
+      await tapMainButton(page);
+      await expect(page.getByTestId("bubble-unknown")).toBeVisible();
+      await shot(page, `390-${scheme}-state-send-unknown`);
     });
 
     test(`gates ${scheme}`, async ({ page }) => {

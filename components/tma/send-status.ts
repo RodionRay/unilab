@@ -27,8 +27,9 @@ const BLOCK_MINUTES = Math.round(SEND_BLOCK_WINDOW_MS / 60_000);
 
 export function describeSendFailure(err: { code: string; status: number; message: string }): SendFailure {
   if (err.code === "network") return { kind: "network", text: "Нет соединения, сообщение не отправлено. Нажмите «Отправить» ещё раз." };
+  // The bubble itself reads «Статус неизвестен»; this line says what to do, without repeating it.
   if (err.status === 504) {
-    return { kind: "unknown", text: "Статус неизвестен: сообщение могло уйти. Проверьте переписку в Telegram, прежде чем отправлять снова." };
+    return { kind: "unknown", text: "Ответа от Telegram нет, сообщение могло уйти. Проверьте переписку в Telegram, прежде чем отправлять снова." };
   }
   if (err.status === 409) {
     return {
