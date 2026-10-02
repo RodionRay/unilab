@@ -32,6 +32,7 @@ import {
   addVkTombstones,
   loadVkAccounts,
   loadVkProxy,
+  loadVkSource,
   loadVkSources,
   mutateVkAccount,
   vkRecordId,
@@ -123,12 +124,22 @@ async function insertAccount(deps: VkAccountDeps, data: VkAccountData & Record<s
 }
 
 /** REQ-12: one search source appears with the first active account; deterministic id = no duplicates. */
-export async function ensureVkSearchSource(db: D1LikeDatabase, owner: string): Promise<void> {
+export async function ensureVkSearchSource(db: D1LikeDatabase, owner: string): Promise<{id: string; created: boolean}> {
+  const id = await vkRecordId(owner, 'vk-source:search');
   const data: VkSourceData = {type: 'search', title: SEARCH_SOURCE_TITLE, cursor: {}, lastScanAt: '', error: '', leadTombstones: []};
-  await db
+  const res = await db
     .prepare('INSERT OR IGNORE INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)')
-    .bind(await vkRecordId(owner, 'vk-source:search'), owner, VK_SOURCE_KIND, JSON.stringify(data), null, new Date().toISOString())
+    .bind(id, owner, VK_SOURCE_KIND, JSON.stringify(data), null, new Date().toISOString())
     .run();
+  return {id, created: res.meta.changes === 1};
+}
+
+/** Action `vk_source_ensure_search`: the UI asks for the search source explicitly; idempotent. */
+export async function ensureVkSearchSourceAction(deps: VkAccountDeps): Promise<VkActionResult> {
+  const {id, created} = await ensureVkSearchSource(deps.db, deps.owner);
+  const row = await loadVkSource(deps.db, deps.owner, id);
+  if (!row) return fail(500, 'Источник поиска VK не сохранился');
+  return ok({id, created, source: row.data});
 }
 
 /** Action `vk_accounts_import`: ≤20 lines per request (AM-10), one result per non-empty line. */

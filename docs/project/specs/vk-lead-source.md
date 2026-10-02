@@ -99,8 +99,9 @@ core + AI pipeline as Telegram, in the same Leads view and Telegram notification
 - Worker `POST /vk-call` (Bearer `TG_WORKER_TOKEN`): `{ token, proxy, calls:[{method, params}] }` → `{ results:[{ok, response?, error:{code,msg}?}] }`; ≤25 calls per request, 3 rps pacing inside.
 - `vk_source.data`: `{ type, title, vkGroupId?, screenName?, cursor:{ searchStartTime?, wallMaxPostId?, boardSince? }, lastScanAt, scanLockUntil, error?, aiRejected[], leadTombstones[] }`.
 - `lead.data` additions: `platform`, `msgKey` (D4), `url`, `vkSourceId`; Telegram leads keep `tgMsgId`.
-- `R` actions: `vk_accounts_import`, `vk_account_delete`, `vk_account_set_proxy`, `vk_source_add`, `vk_source_delete`, `scan_vk_source`; read
-  actions extend the existing workspace list payload.
+- `R` actions: `vk_accounts_import`, `vk_account_delete`, `vk_account_set_proxy`, `vk_source_add`, `vk_source_delete`, `scan_vk_source`,
+  `vk_source_ensure_search` (idempotent, access as `vk_source_add`: `{}` → `{ok, id, created, source}` where `source` = `vk_source.data`);
+  read actions extend the existing workspace list payload; `rescan_groups` adds `vkSourceIds` (≤3 due ids) and `vkTotal`.
 
 ## NFRs
 - VK API version pinned (`v=5.199`), timeout 15 s per call, retries only on network/5xx (max 2).

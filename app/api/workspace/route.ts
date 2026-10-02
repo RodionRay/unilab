@@ -21,7 +21,7 @@ import {
 import {qualifyLeadsWithAi} from '@/lib/processes/lead-ai';
 import {pickLeads} from '@/lib/processes/lead-ingest';
 import {scanVkSource,vkSourceBlocker,type VkActionResult,type VkScanDeps} from '@/lib/processes/vk-scan';
-import {addVkGroupSource,deleteVkAccounts,deleteVkSource,importVkAccounts,setVkAccountProxy,type VkAccountDeps} from '@/lib/processes/vk-accounts';
+import {addVkGroupSource,deleteVkAccounts,deleteVkSource,ensureVkSearchSourceAction,importVkAccounts,setVkAccountProxy,type VkAccountDeps} from '@/lib/processes/vk-accounts';
 import {VK_SOURCE_KIND,VK_TOMBSTONE_KIND,addVkTombstones,loadVkAccounts,loadVkSources} from '@/lib/vk/records';
 import {noUsableVkAccount} from '@/lib/vk/session';
 import {VK_LEAD_URL} from '@/lib/vk/url';
@@ -4836,6 +4836,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
  if(b.action==='vk_account_delete')return vkReply(await deleteVkAccounts(await vkAccountDeps(db,owner),{id:b.id,ids:b.ids}));
  if(b.action==='vk_account_set_proxy')return vkReply(await setVkAccountProxy(await vkAccountDeps(db,owner),{id:b.id,proxyId:b.proxyId}));
  if(b.action==='vk_source_add')return vkReply(await addVkGroupSource(await vkAccountDeps(db,owner),{url:b.url}));
+ if(b.action==='vk_source_ensure_search')return vkReply(await ensureVkSearchSourceAction(await vkAccountDeps(db,owner)));
  if(b.action==='vk_source_delete')return vkReply(await deleteVkSource(await vkAccountDeps(db,owner),{id:b.id}));
  if(b.action==='scan_vk_source'){
   const id=z.string().uuid().parse(b.id);
