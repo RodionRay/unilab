@@ -105,7 +105,8 @@ open re-mark it unread until it is reopened (no auto mark-viewed on poll).
   (`npm run build && cp .env dist/server/.dev.vars && npm run start -- --port 5481`) and the synthetic seed in a local,
   disposable cabinet: `DEMO_URL=http://127.0.0.1:5481 DEMO_PASSWORD=<admin password> node scripts/seed-demo-chats.mjs`
   (run on an empty local D1; it only adds fictional records). Env: `E2E_BASE_URL` (default `http://127.0.0.1:5481`),
-  `E2E_EMAIL`, `E2E_PASSWORD` (defaults: the local demo admin of a disposable local cabinet; override in any other
-  setup). Journeys: send (Enter / Shift+Enter, unread divider), mobile back + focus + Esc, pending clock, failed +
-  «Повторить», Telegram offline, viewer read-only. The seed refuses non-local `DEMO_URL`. The Telegram edge is mocked inside the spec
+  `E2E_EMAIL` (default the local demo admin email), `E2E_PASSWORD` (required, no default: the run fails fast without
+  it, like the seed's `DEMO_PASSWORD`). Example: `E2E_PASSWORD=<local admin password> npm run test:e2e`. Journeys: send
+  (Enter / Shift+Enter, unread divider), mobile back + focus + Esc, pending clock, failed + «Повторить» in place,
+  Telegram offline, viewer read-only, switching chats during an in-flight send. The seed refuses non-local `DEMO_URL`. The Telegram edge is mocked inside the spec
   (worker flag, `send_lead_message`, `mark_lead_viewed`), so the run does not change the seed and can be repeated.

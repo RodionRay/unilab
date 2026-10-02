@@ -14,6 +14,9 @@
 /coverage
 /test-results/
 /playwright-report/
+# local QA output and server logs (screenshots may show local data)
+/artifacts/
+/logs/
 
 # next.js
 /.next/

@@ -8,7 +8,9 @@ import { expect, test, type Page } from "@playwright/test";
  * for the next run). Everything else hits the real server.
  */
 const EMAIL = process.env.E2E_EMAIL || "admin@uniseller.local";
-const PASSWORD = process.env.E2E_PASSWORD || "demo-pass-123";
+const PASSWORD = process.env.E2E_PASSWORD ?? "";
+// no baked-in credential: the run must name the password of its disposable local cabinet
+if (!PASSWORD) throw new Error("E2E_PASSWORD is required (password of the local demo admin)");
 
 type Reply = Record<string, unknown> & { text: string; from: string; at: string };
 type Lead = { id: string; kind: string; data: Record<string, unknown> & { replies?: Reply[] } };
