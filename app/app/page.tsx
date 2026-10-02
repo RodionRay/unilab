@@ -3894,9 +3894,6 @@ function WorkspaceHome(){
                         <FilterX size={14}/>Сбросить фильтры
                       </Button>
                     )}
-                    <span className="groups-filterbar-count" aria-live="polite">
-                      Показано <strong>{sortedList.length}</strong> из {groupsAll.length}
-                    </span>
                   </div>
 
                   <div className={`groups-actionbar ${groupSelected.length?'has-sel':''}`}>
@@ -3909,7 +3906,9 @@ function WorkspaceHome(){
                         </>
                       ):(
                         <>
-                          <span className="muted text-sm">Чекбоксы слева — массовые действия</span>
+                          <span className="groups-filterbar-count" aria-live="polite">
+                            Показано <strong>{sortedList.length}</strong> из {groupsAll.length}
+                          </span>
                           {sortedList.length>0&&(
                             <Button size="sm" variant="outline" onClick={()=>setGroupSelected(sortedList.map(r=>r.id))}>
                               Выбрать все ({sortedList.length})
@@ -3963,7 +3962,7 @@ function WorkspaceHome(){
                       >
                         {byLimitRunning?<Loader2 size={14} className="animate-spin"/>:<Gauge size={14}/>}
                         {byLimitRunning?'Распределяем…':'Распределить по лимитам'}
-                        {byLimitCount>0&&!byLimitRunning&&<span className="groups-filter-count">{byLimitCount}</span>}
+                        {groupSelected.length>0&&!byLimitRunning&&` · ${groupSelected.length}`}
                       </Button>
                       {!farmAccounts.length&&(
                         <span id="groups-bylimit-hint" className="groups-bylimit-hint">Нет активных аккаунтов для вступления</span>
@@ -5640,7 +5639,7 @@ function WorkspaceHome(){
           <AlertDialogHeader>
             <AlertDialogTitle>Распределить по лимитам — групп: {byLimitPlan?.total??0}</AlertDialogTitle>
             <AlertDialogDescription>
-              {groupSelected.length?'Выбранные группы':'Все группы текущего списка'} получат активные аккаунты: каждому — не больше, чем он может вступить сегодня (прогрев, лимит приглашений, уже назначенные группы). Только назначение — вступление идёт как обычно.
+              {groupSelected.length?'Выбранным группам':'Всем группам текущего списка'} — активные аккаунты, каждому не больше, чем он может вступить сегодня. Только назначение: вступление идёт как обычно.
             </AlertDialogDescription>
           </AlertDialogHeader>
           {byLimitPlan&&(
