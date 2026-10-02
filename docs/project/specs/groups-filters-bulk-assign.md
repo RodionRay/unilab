@@ -1,7 +1,7 @@
 ---
 slug: groups-filters-bulk-assign
 size: quick
-status: approved (owner 2026-10-01: bulk = assignment only, no server-side mass join)
+status: implemented (verification pending; owner 2026-10-01: bulk = assignment only, no server-side mass join)
 branch: task/groups-filters-bulk-assign-2026-10-01 (from fix/join-skip-tab-2026-10-01 3511bba)
 model: session model (Opus 5.5), effort default
 budget: 60M

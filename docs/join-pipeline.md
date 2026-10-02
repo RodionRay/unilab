@@ -187,3 +187,56 @@ retried after 30 min (`TME_UNKNOWN_RETRY_MS`), live after 7 days (`TME_LIVE_RECH
   `tmeMissing` / `tmeProbe` / `tmeProbeAt` (explicit retry).
 - Catalog upkeep: `npx tsx scripts/probe-catalog.ts [--json]` probes every catalog username
   (concurrency ≤ 4) and lists dead / unknown ones for removal from `lib/group-catalog.ts`.
+
+## 7. Groups page filters and «Распределить по лимитам»
+
+Spec: `docs/project/specs/groups-filters-bulk-assign.md`. Bulk = assignment only; joining stays per row
+(«Вступить») and the farm — no new mass or background join.
+
+### Filters — `lib/group-filters.ts`
+
+| URL param | Values (anything else → default) | Rule |
+|---|---|---|
+| `g_q` | text, ≤ 200 chars (`GROUP_SEARCH_MAX`) | case-insensitive substring of `name`, `username`, `url` or a `joinRelevance.reasons` entry (`matchesSearch`), not the whole JSON |
+| `g_band` | `all` · `auto` (Рекомендуем) · `review` (На подтверждение) · `skip` (Не вступать) | `joinRelevance.band`, else derived from `score` (`RELEVANCE_AUTO_MIN` / `RELEVANCE_REVIEW_MIN`, §1); unscored groups match only `all` |
+| `g_min` | integer 0–100 (`^\d{1,3}$`, ≤ 100) | score ≥ min; with min > 0 unscored groups are hidden |
+| `g_sort` | `default` · `score_desc` · `score_asc` | `sortGroups`: stable by score, unscored last in both directions |
+| `g_tab` | `all` · `need` · `review` · `skip` · `joined` · `pending` · `error` | the tab of §6 (`groupInTab`), applied after the filters |
+
+- `parseGroupFilters` reads the query (invalid → `DEFAULT_GROUP_FILTERS`); `serializeGroupFilters` writes only
+  non-default values and keeps foreign params (`view`, …). `app/app/page.tsx::WorkspaceHome` keeps the state in
+  the URL with `history.replaceState` (no navigation; refresh/back restore it); leaving the groups view drops
+  the `g_*` params.
+- `groupMatchesFilters` = search + band + min; the list is `groupMatchesFilters && groupInTab`, then
+  `sortGroups`. Tab chip counts use the same `groupMatchesFilters`, so they follow search and filters.
+- The groups view has its own search in the filter bar; the global toolbar search is hidden there and keeps
+  its `JSON.stringify` match on other views.
+- `groupFiltersActive` (search, band, min, sort — not the tab) shows «Сбросить фильтры» in the bar; it resets
+  those four and keeps the tab. An empty filtered list names the active filters and offers the reset.
+
+### `assign_group_accounts` mode `by_limit` — `lib/join-capacity.ts`
+
+Button «Распределить по лимитам» in the groups actionbar: targets the selected groups (in the visible order),
+or — nothing selected — every group of the current filtered list, at most 500 per request (zod cap; the page
+sends the first 500, `BY_LIMIT_MAX_GROUPS`). Disabled with «Нет активных аккаунтов» when the join farm is empty.
+The confirm dialog previews the plan with the same helpers the server uses (`page.tsx::byLimitPreview`).
+
+- Pool: `route.ts::listJoinFarmCandidates` (`isJoinFarmCandidate`: ready or only paced); optional `accountIds`
+  narrows it to the intersection. Empty pool → `400`.
+- Capacity per account (`accountJoinCapacity`): `min(joinsLeftToday(account, ageDays)` — pacing cap with
+  warm-up, §2 — `, invite quota left)` minus open assignments, never below 0. Invite quota left =
+  `limits.invite` (default `DEFAULT_ACCOUNT_LIMITS.invite`, the `hasInviteQuota` limit) − `joinsToday`; a
+  limit ≤ 0 means no own ceiling.
+- Open assignments (`countOpenAssignments`): groups with this `accountId` that are not members and have no
+  join error (`groupIsMember`, `groupHasJoinError`), excluding the groups being planned — so a re-run on the
+  same set never exceeds any account's capacity (idempotent).
+- Plan (`planAssignmentByLimit`): groups in the given order; members/requests are skipped (no capacity used);
+  the rest go round-robin over accounts, most capacity first (ties by id); each account gets at most its
+  capacity. Groups beyond the total stay **unassigned** — their current account is left untouched.
+- Write (`route.ts::assignGroupsByLimit`): only owner-scoped existing ids (unknown/foreign → `rejected`);
+  an unchanged account is not rewritten; a different account clears `error` and the account-side error of §5.
+- Response: `{mode:'by_limit', updated, assignments, unassigned, skipped, capacity, rejected, message}`;
+  `byLimitMessage`: «Назначено N (ёмкость K)», with overflow «Назначено N, без аккаунта M — лимит на сегодня
+  исчерпан (ёмкость K)», with total capacity 0 nothing is written and «Лимит на сегодня исчерпан у всех
+  аккаунтов — ничего не назначено (ёмкость 0)»; skipped members add «· вступившие и заявки пропущены: S».
+  The page shows it as a dismissible line under the actionbar (warning tone on overflow or capacity 0).
