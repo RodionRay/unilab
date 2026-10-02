@@ -187,8 +187,8 @@ Live VK (real token, ≥1 real lead from search and from a group) → stand, evi
   (A-7, token may be IP-bound), validated on `vk_account_set_proxy`; slots are planned before validation, so an
   invalid token holds a slot only inside its own chunk; re-pasted unvalidated tokens found by `tokenFp`
   (8-byte SHA-256 of owner+token, in data). Search: first 8 strong keywords (`strongPlusTerms`), one 200-post page each,
-  `start_time = max(depth, cursor − 300 s)`; daily search cap is checked at account pick, so one run may exceed it by
-  ≤7 calls. Group: wall page 100 (posts filtered by `wallMaxPostId`), comments of the 10 newest posts in depth
+  `start_time = max(depth, cursor − 300 s)`; daily search cap re-checked per batch (`session.ts::withinSearchCap`,
+  persisted counter + this run): overshoot 0, calls past it fail over or stop with the cursor kept. Group: wall page 100 (posts filtered by `wallMaxPostId`), comments of the 10 newest posts in depth
   (re-read every run, dedup by key), board topics updated since `boardSince` (5 per run). Failover: ≤3 accounts per
   run; a run sends new batches for 45 s. Lead id = SHA-256(owner+msgKey) shaped as UUID v5. Source state written
   with `json_set` (tombstones written meanwhile survive). Deleting a source moves its tombstones to another source;
