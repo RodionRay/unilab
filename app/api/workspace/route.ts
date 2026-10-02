@@ -1129,7 +1129,8 @@ async function listJoinFarmCandidates(owner:string):Promise<FarmJoinCandidate[]>
 /**
  * «Распределить по лимитам» (assign_group_accounts mode by_limit): каждому join-кандидату — не больше его
  * свободной ёмкости на сегодня (lib/join-capacity), группы в присланном (видимом) порядке; сверх ёмкости
- * группа остаётся со своим прежним аккаунтом. Чужие/неизвестные id не пишутся. docs/join-pipeline.md §7.
+ * группа остаётся со своим прежним аккаунтом; группа на аккаунте фермы его сохраняет; не для вступления —
+ * пропуск. Чужие/неизвестные id не пишутся. docs/join-pipeline.md §7.
  */
 async function assignGroupsByLimit(owner:string,groupIds:readonly string[],accountIds:readonly string[]|null):Promise<{status:number;body:Record<string,unknown>}>{
  const db=database();
@@ -1145,30 +1146,40 @@ async function assignGroupsByLimit(owner:string,groupIds:readonly string[],accou
  const targets=unique.map(id=>byId.get(id)).filter((g):g is CapacityGroup=>!!g);
  const open=countOpenAssignments(all,new Set(targets.map(g=>g.id)));
  const plan=planAssignmentByLimit(targets,pool.map(a=>({id:a.id,data:a.data,created:a.created,assignedOpen:open.get(a.id)||0})));
+ let written=0;
  for(const {groupId,accountId} of plan.assignments){
-  const gdata:Record<string,unknown>=byId.get(groupId)!.data;
-  const clearsAccountError=String(gdata.joinAccountErrorId||'')!==accountId&&!!String(gdata.joinAccountError||gdata.joinAccountErrorId||'');
-  if(gdata.accountId===accountId&&!clearsAccountError)continue;
-  const next={
-   ...gdata,
-   accountId,
-   error:gdata.accountId===accountId?gdata.error:'',
-   ...(clearsAccountError?{joinAccountError:'',joinAccountErrorId:''}:{}),
-  };
-  await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify(next),owner,groupId,'group').run();
+  if(await writeByLimitAssignment(owner,groupId,String(byId.get(groupId)!.data.accountId||''),accountId))written++;
  }
- const summary={assigned:plan.assignments.length,unassigned:plan.unassigned.length,capacity:plan.capacity,skipped:plan.skipped.length};
+ const summary={assigned:plan.assignments.length+plan.kept.length,unassigned:plan.unassigned.length,capacity:plan.capacity,skipped:plan.skipped.length};
  return {status:200,body:{
   ok:true,
   mode:'by_limit',
-  updated:plan.assignments.length,
+  updated:written,
   assignments:plan.assignments,
+  kept:plan.kept.length,
+  replaced:plan.replaced,
   unassigned:plan.unassigned,
   skipped:plan.skipped.length,
   capacity:plan.capacity,
   rejected:unique.length-targets.length,
   message:byLimitMessage(summary),
  }};
+}
+
+/**
+ * One by_limit write, atomic on the current row: only accountId and the error fields change (json_set),
+ * and only while the group still has the account the plan saw and is not a member/request/error — a
+ * join tick that landed between the plan and this write is never overwritten. true = row written.
+ */
+async function writeByLimitAssignment(owner:string,groupId:string,planned:string,accountId:string){
+ const res=await database().prepare(
+  "UPDATE records SET data=json_set(data,'$.accountId',?,'$.error','','$.joinAccountError','','$.joinAccountErrorId','') "+
+  "WHERE owner=? AND id=? AND kind='group' AND COALESCE(json_extract(data,'$.accountId'),'')=? "+
+  "AND COALESCE(json_extract(data,'$.membership'),'') NOT IN ('joined','pending') "+
+  "AND COALESCE(json_extract(data,'$.status'),'') NOT IN ('pending','error') "+
+  "AND COALESCE(json_extract(data,'$.joinedAt'),'')=''",
+ ).bind(accountId,owner,groupId,planned).run();
+ return Number(res?.meta?.changes)>0;
 }
 
 /** Куда пересаживать группу, которой предстоит вступление: join-кандидаты, сначала готовые, потом по нагрузке. */

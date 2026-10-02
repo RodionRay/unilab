@@ -152,3 +152,25 @@ export function sortGroups<T extends { data: GroupFilterData }>(rows: readonly T
     })
     .map((x) => x.row);
 }
+
+/**
+ * Order of «Распределить по лимитам» targets: the visible order, its ties broken by score (higher
+ * first, unscored last). `tieKey` = the visible sort value; null = no explicit order, all rows tie.
+ */
+export function byLimitTargetOrder<T extends { data: GroupFilterData }>(
+  rows: readonly T[],
+  tieKey: ((row: T) => unknown) | null,
+): T[] {
+  const out: T[] = [];
+  let run: T[] = [];
+  const flush = () => {
+    out.push(...sortGroups(run, "score_desc"));
+    run = [];
+  };
+  for (const row of rows) {
+    if (run.length && tieKey && tieKey(run[0]!) !== tieKey(row)) flush();
+    run.push(row);
+  }
+  flush();
+  return out;
+}
