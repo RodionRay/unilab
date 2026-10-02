@@ -27,8 +27,13 @@ import {
 } from '@/lib/vk/records';
 import {noUsableVkAccount, openVkSession, type VkSession} from '@/lib/vk/session';
 
-/** NFR: one source scan ≤ 60 s; the last batch must still fit, so new batches stop earlier. */
+/** VK reading part of a scan; the last batch must still fit, so new batches stop earlier. */
 export const VK_SCAN_BUDGET_MS = 45_000;
+/**
+ * Items sent to AI per run (3 batches of lib/processes/lead-ai.ts): with the 45 s fetch budget the
+ * whole scan stays inside the cron's 150 s per-scan timeout. The rest wait for the next run.
+ */
+export const VK_AI_ITEMS_PER_RUN = 60;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export type VkLeadContext = {
@@ -223,7 +228,10 @@ async function finishScan(
     aiRejects: aiActive,
     depthCutoff: t - depthDays * DAY_MS,
     qualify: ctx.qualify,
+    maxJudged: VK_AI_ITEMS_PER_RUN,
   });
+  // Deferred items are neither leads nor AI rejects yet: the cursor must not pass them.
+  const cursor = picked.deferred ? src.data.cursor ?? {} : fetched.cursor;
   const inserted = await insertLeads(deps, src, picked.kept, ctx.settings.notifyEnabled === true);
   try {
     await deps.flushNotifications(ctx.settings);
@@ -233,10 +241,11 @@ async function finishScan(
   const {funnel} = picked;
   const metrics = await sourceMetrics(deps.db, deps.owner, src.id);
   const partial = fetched.incomplete ? ` · не всё прочитано (${session.stats.lastError || 'повтор позже'})` : '';
-  const line = `VK · +${inserted.added} · запросов ${fetched.calls} · найдено ${funnel.fetched} → ядро ${funnel.core} → AI/match ${funnel.matched}${funnel.aiUsed ? ' · AI' : ''}${partial}`;
+  const later = picked.deferred ? ` · ${picked.deferred} на AI в следующий скан` : '';
+  const line = `VK · +${inserted.added} · запросов ${fetched.calls} · найдено ${funnel.fetched} → ядро ${funnel.core} → AI/match ${funnel.matched}${funnel.aiUsed ? ' · AI' : ''}${partial}${later}`;
   const lastScanAt = new Date(t).toISOString();
   await saveSourceState(deps, src.id, {
-    cursor: fetched.cursor,
+    cursor,
     lastScanAt,
     error: fetched.sourceError,
     aiRejected: ctx.qualify && funnel.fresh ? rememberAiRejects(aiActive, picked.rejectedIds, sig, t) : src.data.aiRejected ?? null,
@@ -253,7 +262,8 @@ async function finishScan(
     addedByTemp: inserted.addedByTemp,
     aiUsed: funnel.aiUsed,
     partial: fetched.incomplete,
-    more: session.stats.outOfTime,
+    more: session.stats.outOfTime || picked.deferred > 0,
+    deferred: picked.deferred,
     accountsUsed: session.stats.accountsUsed.length,
     failovers: session.stats.failovers,
     error: fetched.sourceError || (fetched.incomplete ? session.stats.lastError : ''),

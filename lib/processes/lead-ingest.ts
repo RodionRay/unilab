@@ -24,6 +24,11 @@ export type PickLeadsInput<T extends IngestItem> = {
   depthCutoff: number;
   /** null = AI off: every core candidate is judged by the core. */
   qualify: QualifyFn | null;
+  /**
+   * AI work cap for one run: beyond it items stay undecided (`deferred`), neither kept nor
+   * rejected, so a caller that keeps its cursor meets them again next run. Unset = no cap.
+   */
+  maxJudged?: number;
 };
 
 export type PickedLead<T> = { item: T; core: LeadScoreResult; temperature: "hot" | "warm"; reason: string };
@@ -37,7 +42,7 @@ export type IngestFunnel = {
   aiUsed: boolean;
 };
 
-export type PickLeadsResult<T> = { kept: PickedLead<T>[]; rejectedIds: string[]; funnel: IngestFunnel };
+export type PickLeadsResult<T> = { kept: PickedLead<T>[]; rejectedIds: string[]; funnel: IngestFunnel; deferred: number };
 
 type Candidate<T> = { item: T; core: LeadScoreResult };
 
@@ -89,7 +94,9 @@ async function askAi<T extends IngestItem>(qualify: QualifyFn, candidates: Candi
 export async function pickLeads<T extends IngestItem>(input: PickLeadsInput<T>): Promise<PickLeadsResult<T>> {
   const core = coreCandidates(input.items, input.coreSettings, input.depthCutoff);
   const fresh = unseen(core, input.seen);
-  const judged = input.qualify ? fresh.filter(({ item }) => !input.aiRejects[item.key]) : fresh;
+  const open = input.qualify ? fresh.filter(({ item }) => !input.aiRejects[item.key]) : fresh;
+  const cap = input.qualify && input.maxJudged !== undefined ? Math.max(0, input.maxJudged) : open.length;
+  const judged = open.slice(0, cap);
   const batches = input.qualify ? await askAi(input.qualify, judged) : null;
   const verdict = applyAiVerdicts(
     judged.map(({ item, core: c }) => ({ tgMsgId: item.key, core: c })),
@@ -107,9 +114,10 @@ export async function pickLeads<T extends IngestItem>(input: PickLeadsInput<T>):
       fetched: input.items.length,
       core: core.length,
       fresh: fresh.length,
-      aiRemembered: fresh.length - judged.length,
+      aiRemembered: fresh.length - open.length,
       matched: kept.length,
       aiUsed: !!batches?.some((b) => b.ok),
     },
+    deferred: open.length - judged.length,
   };
 }

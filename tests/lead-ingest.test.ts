@@ -165,3 +165,23 @@ describe("pickLeads · AI qualification (REQ-L1, REQ-L11)", () => {
     expect(r.kept).toEqual([]);
   });
 });
+
+describe("pickLeads · AI work cap per run (VK scan budget)", () => {
+  it("asks AI about at most maxJudged items and defers the rest undecided", async () => {
+    const qualify = vi.fn(async (msgs: Parameters<QualifyFn>[0]) => [
+      { ids: msgs.map((m) => m.tgMsgId), ok: true, picked: msgs.map((m) => ({ tgMsgId: m.tgMsgId, reason: "ищет", temperature: "hot" as const })) },
+    ]);
+
+    const r = await run([lead("1"), lead("2"), lead("3"), lead("4")], { qualify, maxJudged: 3 });
+
+    expect(qualify.mock.calls[0]![0].map((m) => m.tgMsgId)).toEqual(["1", "2", "3"]);
+    expect(keys(r)).toEqual(["1", "2", "3"]);
+    expect(r.rejectedIds).toEqual([]);
+    expect(r.deferred).toBe(1);
+  });
+
+  it("defers nothing without AI or under the cap", async () => {
+    expect((await run([lead("1"), lead("2")], { maxJudged: 1 })).deferred).toBe(0);
+    expect((await run([lead("1")], { qualify: okBatch(["1"], ["1"]), maxJudged: 5 })).deferred).toBe(0);
+  });
+});

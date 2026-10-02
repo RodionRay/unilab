@@ -11,6 +11,7 @@ vi.mock('@/lib/auth',async(importOriginal)=>({
 import {POST} from '@/app/api/workspace/route';
 import {seal} from '@/lib/server-store';
 import {moscowDayKey,moscowNextMidnightIso} from '@/lib/telegram-accounts';
+import {VK_AI_ITEMS_PER_RUN} from '@/lib/processes/vk-scan';
 
 const NOW=Date.parse('2026-10-01T10:00:00Z');
 const SEARCH_ID='a0000000-0000-4000-8000-000000000001';
@@ -44,7 +45,7 @@ type Stored={
   searchBlockedUntil?:Record<string,string>;
 };
 type LeadRow={[k:string]:unknown;msgKey:string;message:string;url:string;notifiedAt?:string};
-type ScanReply={[k:string]:unknown;added:number;failovers?:number;accountsUsed?:number;partial?:boolean;locked?:boolean;skipped?:boolean;noAccount?:boolean};
+type ScanReply={[k:string]:unknown;added:number;more?:boolean;failovers?:number;accountsUsed?:number;partial?:boolean;locked?:boolean;skipped?:boolean;noAccount?:boolean};
 type Feed={items:Record<string,unknown>[]};
 const feed=()=>vkWorker.responses['newsfeed.search'] as Feed;
 const calls={tg:[] as string[]};
@@ -257,6 +258,34 @@ describe('workspace API: scan_vk_source',()=>{
       expect(leads().filter(l=>l.data.msgKey==='vk:-22000_9001')).toHaveLength(1);
       expect(s.body.added+g.body.added).toBe(leads().length);
       expect(new Set(vkWorker.batches.map(b=>b.token)).size).toBe(2);
+    });
+  });
+
+  describe('AI work per run (cron budget)',()=>{
+    beforeEach(()=>{
+      setSettings({aiQualify:true});
+      vi.stubEnv('AI_API_KEY','sk-test-not-real');
+      feed().items=Array.from({length:70},(_,i)=>({id:2000+i,owner_id:700300,from_id:700300,date:1790000000+i,text:leadText(2000+i)}));
+    });
+
+    it('sends at most 60 items to AI per run, keeps the cursor and asks for more',async()=>{
+      const r=await scan(SEARCH_ID);
+
+      expect(r.status).toBe(200);
+      expect(r.body.added).toBe(VK_AI_ITEMS_PER_RUN);
+      expect(r.body.more).toBe(true);
+      expect(record(SEARCH_ID).cursor?.searchStartTime).toBeUndefined();
+    });
+
+    it('the next run qualifies the rest and then moves the cursor',async()=>{
+      await scan(SEARCH_ID);
+
+      const r=await scan(SEARCH_ID);
+
+      expect(r.body.added).toBe(70-VK_AI_ITEMS_PER_RUN);
+      expect(r.body.more).toBe(false);
+      expect(leads()).toHaveLength(70);
+      expect(record(SEARCH_ID).cursor?.searchStartTime).toBe(Math.floor(NOW/1000));
     });
   });
 
