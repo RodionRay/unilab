@@ -71,3 +71,23 @@ Remaining gaps (not fixed, round budget spent):
 3. 390 actionbar is 4 rows (LEAD 4 rows) and the filter bar adds ~172px above the list on a phone; a collapsible
    «Фильтры» sheet would be the next step (ui-engineering-qa §A.11), not done in this small edit.
 Best round = 5: only round with every captured state at LEAD parity on the 1440 one-row floor and 0px overflow.
+
+## Round 6 (`round-6/`, commits 3fd135e + 888ca7f; review fix list L1–L8, U1–U11)
+Seeded in the isolated D1 only (synthetic): Анна 18/20 joins today, Борис invite limit 3, Вера 3 of warm-up 5
+→ capacity 7; one target on a farm account (kept), one on the frozen Глеб (replaced). Zero-capacity state:
+every farm account has capacity 1 and one open assignment outside the target (`g_q=Казань`).
+States: top, default, filtered, filters-open (390/768), empty, confirm (overflow: Назначим 7 / Не назначено 4 /
+Ёмкость 7, «Сменим аккаунт: 1», «оставим: 1», «Пропущено 20»), confirm-zero (0/1/0, action disabled), result
+(1440, warning «Назначено 7, не назначено 4 — … (ёмкость 7) · пропущено 20 — не для вступления»), noaccounts
+(disabled button at opacity .5 + link «Нет активных аккаунтов»), focus-ring, focus-return (activeElement =
+«Распределить по лимитам» after Enter → Esc at 390/768/1440), filtered-sel. Overflow 0px everywhere; 1440
+actionbar 1 row in every state without a selection (filterbar «rows 2» in notes.txt = the hidden «Фильтры»
+toggle counted at y=0, bar height 36–40px = one row).
+Fixed vs round 5: 390 filter bar 172px → one row (search + «Фильтры»), first list row higher by ~130px;
+«Воркер офлайн» shares the groups action row (no lone row); chip counts without opacity (≈5.9:1);
+`.groups-page` 80px bottom room for the chat bubble; dialog numbers on one baseline at 390.
+Remaining gaps:
+1. 390/768 search placeholder clips next to «Фильтры» («Название, ссылка, пр»).
+2. `1440-filtered-sel`: 3-row actionbar with a selection (out of scope: «Ещё ▾» follow-up).
+3. 390/768 row layout overlap — pre-existing in LEAD, out of scope.
+Best round = 6: every reviewed blocker (contrast, focus return, focus ring) and the 390 regression closed.

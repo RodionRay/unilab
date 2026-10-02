@@ -1,0 +1,11 @@
+1440-empty: overflow 0px · filterbar rows 2 h40 · actionbar rows 1 h62
+1440-confirm: overflow 0px · filterbar rows 2 h36 · actionbar rows 1 h62
+1440-noaccounts: overflow 0px · filterbar rows 2 h36 · actionbar rows 1 h62
+1440-focus-ring: activeElement is «Распределить по лимитам» = true
+1440-focus-ring: overflow 0px · filterbar rows 2 h36 · actionbar rows 1 h62
+1440-focus-return: activeElement is «Распределить по лимитам» = true
+1440-focus-return: overflow 0px · filterbar rows 2 h36 · actionbar rows 1 h62
+1440-filtered-sel: overflow 0px · filterbar rows 2 h40 · actionbar rows 3 h160
+1440-result: overflow 0px · filterbar rows 2 h36 · actionbar rows 1 h62
+390-confirm-zero: overflow 0px · filterbar rows 2 h40 · actionbar rows 4 h208
+1440-confirm-zero: overflow 0px · filterbar rows 2 h40 · actionbar rows 1 h62
