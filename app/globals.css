@@ -2759,6 +2759,19 @@ textarea:focus-visible,
   display: grid;
   gap: 12px;
   container: groups-page / inline-size;
+  /* Room for the fixed «Спросить UniLab» bubble below the last row. */
+  padding-bottom: 80px;
+}
+
+/* One visible ring for every control of the groups page and the by-limit dialog (WCAG 2.4.7). */
+.groups-page :is(button, select, input, a):focus-visible,
+.groups-bylimit-dialog button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.groups-worker-badge {
+  margin-left: auto;
 }
 
 .groups-top {
@@ -2806,7 +2819,6 @@ textarea:focus-visible,
 .groups-filter-count {
   margin-left: 2px;
   font-variant-numeric: tabular-nums;
-  opacity: 0.75;
 }
 
 /* Фильтры групп (lib/group-filters): поиск, релевантность, балл, сортировка — одной строкой под вкладками. */
@@ -2815,6 +2827,14 @@ textarea:focus-visible,
   flex-wrap: wrap;
   align-items: center;
   gap: 8px 12px;
+}
+
+.groups-filterbar-more {
+  display: contents;
+}
+
+.groups-filterbar-toggle {
+  display: none;
 }
 
 .groups-filterbar-search {
@@ -2879,17 +2899,31 @@ textarea:focus-visible,
   font-weight: 650;
 }
 
-/* Narrow list (phone, tablet with the sidebar open): labels above controls, two columns. */
+/* Narrow list (phone, tablet with the sidebar open): search + «Фильтры · N»; the rest opens below,
+   labels above controls, two columns. */
 @container groups-page (max-width: 640px) {
   .groups-filterbar {
     display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: 10px;
+  }
+  .groups-filterbar-search {
+    max-width: none;
+  }
+  .groups-filterbar-toggle {
+    display: inline-flex;
+    height: 36px;
+  }
+  .groups-filterbar-more {
+    display: none;
+  }
+  .groups-filterbar-more.is-open {
+    display: grid;
+    grid-column: 1 / -1;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     align-items: end;
     gap: 10px 12px;
-  }
-  .groups-filterbar-search {
-    grid-column: 1 / -1;
-    max-width: none;
   }
   .groups-filterbar-field {
     display: grid;
@@ -2901,16 +2935,37 @@ textarea:focus-visible,
     width: 100%;
   }
   /* Reset fills its half-width cell instead of pushing past the viewport edge. */
-  .groups-filterbar > button {
+  .groups-filterbar-reset {
     justify-self: stretch;
     min-width: 0;
     padding-inline: 10px;
   }
 }
 
+/* Phones: iOS zooms into inputs under 16px. */
+@media (max-width: 430px) {
+  .groups-filterbar input,
+  .groups-filterbar select {
+    font-size: 16px !important;
+  }
+}
+
+.groups-bylimit-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: auto;
+}
+
+/* Disabled reason that leads to the fix: the accounts view. */
 .groups-bylimit-hint {
+  padding: 0;
+  border: 0;
+  background: none;
   font-size: 0.75rem;
-  color: var(--spike-muted);
+  color: var(--spike-text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
 }
 
 .groups-bylimit-result {
@@ -2954,7 +3009,9 @@ textarea:focus-visible,
 }
 
 .groups-bylimit-stats > div {
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
   gap: 2px;
   padding: 12px 14px;
   background: var(--spike-paper);
