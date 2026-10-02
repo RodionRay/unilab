@@ -133,6 +133,9 @@ const CODE_BY_REASON: ReadonlyArray<[string, number]> = KNOWN_CODES
 const NO_PROXY_RE = /нет свободного активного прокси/i;
 const NO_KEYWORDS_RE = /ключев(?:ые|ых) слов/i;
 const NO_ACCOUNT_RE = /нет (?:активного|свободного) vk-аккаунта/i;
+/** lib/vk/import.ts::parseLine format reasons (English field names) → one Russian sentence. */
+const BAD_LINE_RE = /^Ожидается token|не похожа на токен VK|^Токен не похож на токен VK/i;
+export const VK_BAD_LINE_TEXT = 'Не похоже на аккаунт VK: нужен токен (vk1.a…) или логин:пароль:токен';
 
 export type VkErrorView = {
   /** Russian, says what happened and what to do; the raw server string never shows here. */
@@ -161,21 +164,22 @@ export function vkErrorView(raw: unknown, opts: {until?: string; perProxyCap?: n
   const until = moscowClock(opts.until);
   const cap = opts.perProxyCap && opts.perProxyCap > 0 ? opts.perProxyCap : 3;
   const view = (text: string): VkErrorView => ({text, code, raw: str});
-  if (code === 5) return view('Токен недействителен — вставьте новый');
-  if (code === 9) return view(until ? `VK ограничил частоту, пауза до ${until}` : 'VK ограничил частоту — аккаунт на паузе');
-  if (code === 14) return view(until ? `VK запросил капчу, пауза до ${until}` : 'VK запросил капчу — аккаунт на паузе');
-  if (code !== null && ACCOUNT_DEAD_CODES.has(code)) return view('Аккаунт заблокирован или требует проверки — войдите в VK и пройдите проверку');
+  if (code === 5) return view('Токен недействителен: вставьте новый');
+  if (code === 9) return view(until ? `VK ограничил частоту, пауза до ${until}` : 'VK ограничил частоту, аккаунт на паузе');
+  if (code === 14) return view(until ? `VK запросил капчу, пауза до ${until}` : 'VK запросил капчу, аккаунт на паузе');
+  if (code !== null && ACCOUNT_DEAD_CODES.has(code)) return view('Аккаунт заблокирован или требует проверки. Войдите в VK и пройдите проверку');
   if (code === 29) return view('Дневной лимит поиска исчерпан до 00:00 МСК');
-  if (code === VK_CODE_PROXY) return view('Прокси не отвечает — выберите другой');
+  if (code === VK_CODE_PROXY) return view('Прокси не отвечает, выберите другой');
   if (code !== null && CLOSED_CODES.has(code)) {
-    return view('Сообщество закрыто — аккаунт не видит стену. Вступите в него с VK-аккаунта или удалите источник');
+    return view('Сообщество закрыто: аккаунт не видит стену. Вступите в него с VK-аккаунта или удалите источник');
   }
   if (NO_PROXY_RE.test(str)) {
     return view(`Все прокси заняты (по ${cap} ${pluralRu(cap, ['аккаунту', 'аккаунта', 'аккаунтов'])}). Добавьте прокси в разделе «Прокси»`);
   }
-  if (NO_KEYWORDS_RE.test(str)) return view('Нет ключевых слов — добавьте их в настройках AI');
-  if (NO_ACCOUNT_RE.test(str)) return view('Нет VK-аккаунта, который может сканировать — привяжите прокси в «Аккаунтах»');
-  if (code !== null && (code < 0 || code === 1 || code === 6 || code === 10)) return view('VK не ответил вовремя — повторим при следующем обходе');
+  if (BAD_LINE_RE.test(str)) return view(VK_BAD_LINE_TEXT);
+  if (NO_KEYWORDS_RE.test(str)) return view('Нет ключевых слов. Добавьте их в настройках AI');
+  if (NO_ACCOUNT_RE.test(str)) return view('Нет VK-аккаунта, который может сканировать. Привяжите прокси в «Аккаунтах»');
+  if (code !== null && (code < 0 || code === 1 || code === 6 || code === 10)) return view('VK не ответил вовремя, повторим при следующем обходе');
   // Unknown: drop the technical prefix, keep the server's own words.
   return view(str.replace(/^(?:Токен не принят|Не удалось проверить):\s*/, '').replace(/\bVK\s+-?\d+:?\s*/, '').trim() || str);
 }
@@ -207,7 +211,7 @@ export function countVkStatuses(views: readonly {view: {status: VkAccountData['s
   return out;
 }
 
-/** «Проверено N строк: добавлено A · дубликатов D · ошибок E» (+ без прокси when any). */
+/** «Проверено N строк: добавлено A, дубликатов D, ошибок E» (+ без прокси when any). */
 export function vkImportHeadline(results: readonly VkImportLineResult[]): string {
   const t = tallyVkImport(results);
   const n = results.length;
@@ -215,7 +219,7 @@ export function vkImportHeadline(results: readonly VkImportLineResult[]): string
   const parts = [`добавлено ${t.added}`];
   if (t.no_proxy) parts.push(`без прокси ${t.no_proxy}`);
   parts.push(`дубликатов ${t.duplicate}`, `ошибок ${t.invalid}`);
-  return `${verb} ${n} ${pluralRu(n, ['строка', 'строки', 'строк'])}: ${parts.join(' · ')}`;
+  return `${verb} ${n} ${pluralRu(n, ['строка', 'строки', 'строк'])}: ${parts.join(', ')}`;
 }
 
 /**
@@ -268,4 +272,55 @@ export function vkPoolCanScan(accounts: readonly {data: VkAccountData}[], now: n
     const st = effectiveVkStatus(a.data, now);
     return (st === 'active' || st === 'cooldown') && Boolean(a.data.proxyId);
   });
+}
+
+/** «Вызовов: 12, поисков: 3 из 500» — today's usage as one labelled line (no `A · B` meta string). */
+export function vkUsageLine(view: Pick<VkAccountView, 'calls' | 'searchCalls' | 'searchCap'>): string {
+  const search = view.searchCap > 0 ? `${view.searchCalls} из ${view.searchCap}` : `${view.searchCalls}, без лимита`;
+  return `Вызовов: ${view.calls}, поисков: ${search}`;
+}
+
+/** «2 лида, из них 1 горячий» for a VK source row. */
+export function vkSourceLeadsLine(total: number, hot: number): string {
+  const n = Math.max(0, Math.trunc(total) || 0);
+  const h = Math.max(0, Math.trunc(hot) || 0);
+  const head = `${n} ${pluralRu(n, ['лид', 'лида', 'лидов'])}`;
+  return h > 0 ? `${head}, из них ${h} ${pluralRu(h, ['горячий', 'горячих', 'горячих'])}` : head;
+}
+
+/** The page «Поиск по списку» also narrows VK rows: name, VK id (id123 / vk.com/id123) or proxy label. */
+export function matchesVkAccountQuery(data: Pick<VkAccountData, 'name' | 'vkUserId'>, proxyLabel: string, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  const id = data.vkUserId ? String(data.vkUserId) : '';
+  const hay = [data.name || '', id, id ? `vk.com/id${id}` : '', proxyLabel].join('\n').toLowerCase();
+  return hay.includes(q);
+}
+
+/** Rows that need a hand come first: error, then no proxy, then cooldown, then active; stable inside a group. */
+const TRIAGE_ORDER: Record<VkAccountData['status'], number> = {error: 0, no_proxy: 1, cooldown: 2, active: 3};
+
+export function sortVkAccountsForTriage<T extends {view: {status: VkAccountData['status']}}>(rows: readonly T[]): T[] {
+  return rows
+    .map((row, i) => ({row, i}))
+    .sort((a, b) => TRIAGE_ORDER[a.row.view.status] - TRIAGE_ORDER[b.row.view.status] || a.i - b.i)
+    .map((x) => x.row);
+}
+
+/** 50–200 accounts: render a page at a time, «Показать ещё» adds the next one. */
+export const VK_ACCOUNTS_PAGE = 50;
+
+export function vkAccountsPage<T>(rows: readonly T[], pages: number, size: number = VK_ACCOUNTS_PAGE): {shown: T[]; rest: number} {
+  const limit = Math.max(1, pages) * size;
+  return {shown: rows.slice(0, limit), rest: Math.max(0, rows.length - limit)};
+}
+
+/** Groups page lede in a workspace with VK (panel r2 fix 8): names both platforms. */
+export const VK_GROUPS_LEDE = 'Лиды из чатов Telegram и сообществ VK: группы ищутся по темам под AI, сообщества VK добавляются по ссылке.';
+
+/** Leads info note with VK in the workspace; with the VK filter it speaks about VK only (panel r2 fix 5). */
+export function vkLeadsNote(filter: LeadPlatformFilter, minutes: number): string {
+  if (filter === 'vk') return `Источники VK обходятся круглосуточно, каждые ${minutes} мин на источник. «Собрать лиды» запускает обход сейчас`;
+  if (filter === 'telegram') return `Группы Telegram обходятся круглосуточно, каждые ${minutes} мин на группу. «Собрать лиды» запускает обход сейчас`;
+  return `«Собрать лиды» обходит группы Telegram и источники VK сейчас. Автообход круглосуточно: каждые ${minutes} мин на группу Telegram и на источник VK`;
 }

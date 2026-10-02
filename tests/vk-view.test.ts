@@ -5,6 +5,7 @@ import type {VkAccountData} from '@/lib/vk/pool';
 import {
   countVkStatuses,failedChunkResults,leadPlatform,matchesLeadPlatform,matchesLeadSource,planVkImportChunks,pluralRu,planVkAutoProxy,
   remapChunkResults,safeVkHref,tallyVkImport,vkAccountView,vkErrorView,vkImportHeadline,vkLinesToRetry,vkPoolCanScan,
+  VK_BAD_LINE_TEXT,VK_GROUPS_LEDE,matchesVkAccountQuery,vkLeadsNote,sortVkAccountsForTriage,vkAccountsPage,vkSourceLeadsLine,vkUsageLine,
 } from '@/lib/vk/view';
 
 const NOW=Date.parse('2026-10-01T12:00:00Z');
@@ -128,7 +129,7 @@ describe('vkAccountView (REQ-12 status, reason, usage)',()=>{
 
   it('error and no_proxy read as an action, not a code',()=>{
     expect(vkAccountView(account({status:'error',error:'VK 5: Токен недействителен или истёк'}),{now:NOW}))
-      .toMatchObject({tone:'danger',detail:'Токен недействителен — вставьте новый'});
+      .toMatchObject({tone:'danger',detail:'Токен недействителен: вставьте новый'});
     expect(vkAccountView(account({status:'no_proxy',proxyId:'',error:'Нет свободного активного прокси'}),{now:NOW,perProxyCap:3}))
       .toMatchObject({tone:'warning',label:'Нет прокси',detail:'Все прокси заняты (по 3 аккаунта). Добавьте прокси в разделе «Прокси»'});
   });
@@ -149,15 +150,15 @@ describe('vkAccountView (REQ-12 status, reason, usage)',()=>{
 describe('vkErrorView (panel fix 3: Russian actionable text, raw code only in the title)',()=>{
   const until=new Date(NOW+30*60_000).toISOString();
   it.each([
-    ['VK 5: Токен недействителен или истёк',5,'Токен недействителен — вставьте новый'],
-    ['Токен не принят: VK 5 User authorization failed: invalid access_token (4).',5,'Токен недействителен — вставьте новый'],
-    ['VK 17: Требуется проверка аккаунта (validation required)',17,'Аккаунт заблокирован или требует проверки — войдите в VK и пройдите проверку'],
-    ['VK 18: Страница удалена или заблокирована',18,'Аккаунт заблокирован или требует проверки — войдите в VK и пройдите проверку'],
+    ['VK 5: Токен недействителен или истёк',5,'Токен недействителен: вставьте новый'],
+    ['Токен не принят: VK 5 User authorization failed: invalid access_token (4).',5,'Токен недействителен: вставьте новый'],
+    ['VK 17: Требуется проверка аккаунта (validation required)',17,'Аккаунт заблокирован или требует проверки. Войдите в VK и пройдите проверку'],
+    ['VK 18: Страница удалена или заблокирована',18,'Аккаунт заблокирован или требует проверки. Войдите в VK и пройдите проверку'],
     ['VK 29: Дневной лимит метода',29,'Дневной лимит поиска исчерпан до 00:00 МСК'],
-    ['VK -5: Прокси недоступен',-5,'Прокси не отвечает — выберите другой'],
-    ['Сообщество закрыто или стена недоступна (VK 15 Access denied)',15,'Сообщество закрыто — аккаунт не видит стену. Вступите в него с VK-аккаунта или удалите источник'],
-    ['Нет доступа к сообществу',203,'Сообщество закрыто — аккаунт не видит стену. Вступите в него с VK-аккаунта или удалите источник'],
-    ['Не удалось проверить: VK -2 Временная ошибка VK',-2,'VK не ответил вовремя — повторим при следующем обходе'],
+    ['VK -5: Прокси недоступен',-5,'Прокси не отвечает, выберите другой'],
+    ['Сообщество закрыто или стена недоступна (VK 15 Access denied)',15,'Сообщество закрыто: аккаунт не видит стену. Вступите в него с VK-аккаунта или удалите источник'],
+    ['Нет доступа к сообществу',203,'Сообщество закрыто: аккаунт не видит стену. Вступите в него с VK-аккаунта или удалите источник'],
+    ['Не удалось проверить: VK -2 Временная ошибка VK',-2,'VK не ответил вовремя, повторим при следующем обходе'],
   ])('%s',(raw,code,text)=>{
     expect(vkErrorView(raw)).toEqual({text,code,raw});
   });
@@ -165,7 +166,7 @@ describe('vkErrorView (panel fix 3: Russian actionable text, raw code only in th
   it('flood and captcha name the Moscow time the pause ends',()=>{
     expect(vkErrorView('VK 9: Flood control',{until}).text).toBe('VK ограничил частоту, пауза до 15:30 МСК');
     expect(vkErrorView('VK 14: Captcha',{until}).text).toBe('VK запросил капчу, пауза до 15:30 МСК');
-    expect(vkErrorView('VK 9: Flood control').text).toBe('VK ограничил частоту — аккаунт на паузе');
+    expect(vkErrorView('VK 9: Flood control').text).toBe('VK ограничил частоту, аккаунт на паузе');
   });
 
   it('every reason the server classifier writes without a code maps back to its code',()=>{
@@ -175,11 +176,11 @@ describe('vkErrorView (panel fix 3: Russian actionable text, raw code only in th
   });
 
   it('no keywords, no proxy, no scanning account and unknown errors',()=>{
-    expect(vkErrorView('Добавьте ключевые слова в настройках').text).toBe('Нет ключевых слов — добавьте их в настройках AI');
-    expect(vkErrorView('Нет ключевых слов').text).toBe('Нет ключевых слов — добавьте их в настройках AI');
+    expect(vkErrorView('Добавьте ключевые слова в настройках').text).toBe('Нет ключевых слов. Добавьте их в настройках AI');
+    expect(vkErrorView('Нет ключевых слов').text).toBe('Нет ключевых слов. Добавьте их в настройках AI');
     expect(vkErrorView('Нет свободного активного прокси',{perProxyCap:5}).text).toBe('Все прокси заняты (по 5 аккаунтов). Добавьте прокси в разделе «Прокси»');
-    expect(vkErrorView('Нет активного VK-аккаунта с прокси').text).toBe('Нет VK-аккаунта, который может сканировать — привяжите прокси в «Аккаунтах»');
-    expect(vkErrorView('Ожидается token или строка с access_token')).toMatchObject({code:null,text:'Ожидается token или строка с access_token'});
+    expect(vkErrorView('Нет активного VK-аккаунта с прокси').text).toBe('Нет VK-аккаунта, который может сканировать. Привяжите прокси в «Аккаунтах»');
+    expect(vkErrorView('Сервер вернул пустой ответ')).toMatchObject({code:null,text:'Сервер вернул пустой ответ'});
     expect(vkErrorView('')).toEqual({text:'',code:null,raw:''});
     expect(vkErrorView(undefined).text).toBe('');
   });
@@ -195,9 +196,9 @@ describe('import result helpers (panel fixes 4, 6, 7)',()=>{
   ];
 
   it('headline counts lines with Russian plurals',()=>{
-    expect(vkImportHeadline(results)).toBe('Проверено 5 строк: добавлено 1 · без прокси 1 · дубликатов 1 · ошибок 2');
-    expect(vkImportHeadline([{line:1,status:'added'}])).toBe('Проверена 1 строка: добавлено 1 · дубликатов 0 · ошибок 0');
-    expect(vkImportHeadline([{line:1,status:'added'},{line:2,status:'duplicate'}])).toBe('Проверены 2 строки: добавлено 1 · дубликатов 1 · ошибок 0');
+    expect(vkImportHeadline(results)).toBe('Проверено 5 строк: добавлено 1, без прокси 1, дубликатов 1, ошибок 2');
+    expect(vkImportHeadline([{line:1,status:'added'}])).toBe('Проверена 1 строка: добавлено 1, дубликатов 0, ошибок 0');
+    expect(vkImportHeadline([{line:1,status:'added'},{line:2,status:'duplicate'}])).toBe('Проверены 2 строки: добавлено 1, дубликатов 1, ошибок 0');
   });
 
   it('keeps only the failed lines, in paste order, trimmed',()=>{
@@ -222,5 +223,89 @@ describe('planVkAutoProxy (bulk proxy binding, cap per proxy)',()=>{
     const accounts=[acc('a','p1'),acc('b','p1'),acc('c'),acc('d','dead'),acc('e'),acc('f')];
     const plan=planVkAutoProxy(['a','c','d','e','f'],accounts,['p1','p2'],2);
     expect(Object.fromEntries(plan)).toEqual({a:'p1',c:'p2',d:'p2',e:null,f:null});
+  });
+});
+
+describe('import line format errors read in Russian (panel r2 fix 7)',()=>{
+  it.each([
+    'Ожидается token или login:password:token',
+    'Последняя часть строки не похожа на токен VK (vk1.a.… или 85+ символов)',
+    'Токен не похож на токен VK',
+  ])('%s',(raw)=>{
+    expect(vkErrorView(raw)).toEqual({text:VK_BAD_LINE_TEXT,code:null,raw});
+  });
+
+  it('names the accepted shapes without English field names',()=>{
+    expect(VK_BAD_LINE_TEXT).toBe('Не похоже на аккаунт VK: нужен токен (vk1.a…) или логин:пароль:токен');
+  });
+});
+
+describe('VK copy without em-dashes or dot-separated meta strings (panel r2 fix 6)',()=>{
+  it('every mapped error text is free of em-dashes and middle dots',()=>{
+    const raws=['VK 5: x','VK 9: x','VK 14: x','VK 17: x','VK 29: x','VK -5: x','VK 15: x','VK -2: x',
+      'Нет ключевых слов','Нет свободного активного прокси','Нет активного VK-аккаунта с прокси','Токен не похож на токен VK'];
+    for(const raw of raws)expect(vkErrorView(raw).text).not.toMatch(/[—·]/);
+  });
+
+  it('usage line labels each counter',()=>{
+    expect(vkUsageLine({calls:0,searchCalls:0,searchCap:500})).toBe('Вызовов: 0, поисков: 0 из 500');
+    expect(vkUsageLine({calls:480,searchCalls:12,searchCap:0})).toBe('Вызовов: 480, поисков: 12, без лимита');
+  });
+
+  it('source leads line is a plain phrase with plurals',()=>{
+    expect(vkSourceLeadsLine(2,1)).toBe('2 лида, из них 1 горячий');
+    expect(vkSourceLeadsLine(5,3)).toBe('5 лидов, из них 3 горячих');
+    expect(vkSourceLeadsLine(1,0)).toBe('1 лид');
+    expect(vkSourceLeadsLine(0,0)).toBe('0 лидов');
+  });
+});
+
+describe('VK accounts list at 50–200 rows (panel r2 fix 11)',()=>{
+  const row=(id:string,status:VkAccountData['status'])=>({id,view:{status}});
+
+  it('page search matches name, VK id and proxy label, case-insensitive; empty query passes',()=>{
+    const data={name:'Мария Тестова',vkUserId:1001};
+    expect(matchesVkAccountQuery(data,'203.0.113.12:1080','мария')).toBe(true);
+    expect(matchesVkAccountQuery(data,'203.0.113.12:1080','id1001')).toBe(true);
+    expect(matchesVkAccountQuery(data,'203.0.113.12:1080','1001')).toBe(true);
+    expect(matchesVkAccountQuery(data,'203.0.113.12:1080','113.12')).toBe(true);
+    expect(matchesVkAccountQuery(data,'203.0.113.12:1080','ольга')).toBe(false);
+    expect(matchesVkAccountQuery({name:'',vkUserId:0},'','  ')).toBe(true);
+    expect(matchesVkAccountQuery({name:'',vkUserId:0},'','id')).toBe(false);
+  });
+
+  it('sorts error, then no proxy, then cooldown, then active, keeping order inside a status',()=>{
+    const rows=[row('a1','active'),row('c1','cooldown'),row('e1','error'),row('n1','no_proxy'),row('a2','active'),row('e2','error')];
+    expect(sortVkAccountsForTriage(rows).map(r=>r.id)).toEqual(['e1','e2','n1','c1','a1','a2']);
+    expect(rows[0]?.id).toBe('a1');
+  });
+
+  it('shows 50 per page and counts the rest',()=>{
+    const rows=Array.from({length:120},(_,i)=>i);
+    expect(vkAccountsPage(rows,1)).toMatchObject({rest:70});
+    expect(vkAccountsPage(rows,1).shown).toHaveLength(50);
+    expect(vkAccountsPage(rows,2).shown).toHaveLength(100);
+    expect(vkAccountsPage(rows,3)).toMatchObject({rest:0});
+    expect(vkAccountsPage(rows,3).shown).toHaveLength(120);
+    expect(vkAccountsPage([1,2],0).shown).toEqual([1,2]);
+  });
+});
+
+describe('platform-aware copy in a VK workspace (panel r2 fixes 5, 8)',()=>{
+  it('the leads note with the VK filter speaks about VK only',()=>{
+    const vk=vkLeadsNote('vk',30);
+    expect(vk).toContain('Источники VK');
+    expect(vk).toContain('30 мин на источник');
+    expect(vk).not.toMatch(/Telegram|групп/);
+  });
+
+  it('the leads note for all platforms names both, and none of the notes uses an em-dash',()=>{
+    expect(vkLeadsNote('all',15)).toMatch(/группы Telegram и источники VK/);
+    expect(vkLeadsNote('telegram',15)).not.toMatch(/VK/);
+    for(const f of ['all','vk','telegram'] as const)expect(vkLeadsNote(f,15)).not.toMatch(/—/);
+  });
+
+  it('the groups lede mentions VK communities',()=>{
+    expect(VK_GROUPS_LEDE).toContain('сообществ VK');
   });
 });
