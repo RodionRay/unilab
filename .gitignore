@@ -64,3 +64,6 @@ tdata/
 *.sqlite*
 .cursor/
 # .env.bak* is already covered by .env* above
+
+# Local QA evidence (screenshots, stand tools that mint sessions); never versioned
+/artifacts/

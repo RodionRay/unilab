@@ -24,6 +24,8 @@ const USERS:Record<string,number>={[TOKENS.a]:700101,[TOKENS.b]:700102,[TOKENS.c
 
 function defaults():Record<string,unknown>{
  const search=fixture('newsfeed.search.json').response;
+ // One page by default; paging tests answer start_from through `override`.
+ delete search.next_from;
  search.items[0].text=leadText(501);
  search.items[2].text=leadText(77);
  const wall=fixture('wall.get.json').response;

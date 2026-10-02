@@ -20,9 +20,9 @@ import {
 } from '@/lib/processes/scan-flow';
 import {qualifyLeadsWithAi} from '@/lib/processes/lead-ai';
 import {pickLeads} from '@/lib/processes/lead-ingest';
-import {scanVkSource,type VkActionResult,type VkScanDeps} from '@/lib/processes/vk-scan';
-import {addVkGroupSource,deleteVkAccounts,deleteVkSource,importVkAccounts,setVkAccountProxy,type VkAccountDeps} from '@/lib/processes/vk-accounts';
-import {VK_SOURCE_KIND,loadVkAccounts,loadVkSources} from '@/lib/vk/records';
+import {scanVkSource,vkSourceBlocker,type VkActionResult,type VkScanDeps} from '@/lib/processes/vk-scan';
+import {addVkGroupSource,deleteVkAccounts,deleteVkSource,ensureVkSearchSourceAction,importVkAccounts,setVkAccountProxy,type VkAccountDeps} from '@/lib/processes/vk-accounts';
+import {VK_SOURCE_KIND,VK_TOMBSTONE_KIND,addVkTombstones,loadVkAccounts,loadVkSources} from '@/lib/vk/records';
 import {noUsableVkAccount} from '@/lib/vk/session';
 import {VK_LEAD_URL} from '@/lib/vk/url';
 import {appendLearnExamples,extractTermsFromHotMessages,mergeKeywords,mergeKeywordsPreferNew,parseKeywordCsv} from '@/lib/ai-keywords';
@@ -1374,22 +1374,25 @@ async function rememberDeletedLead(owner:string,leadId:string){
 }
 
 /**
- * REQ-14 / AM-2: a deleted VK lead's msgKey is tombstoned on its vk_source (or any other source when
- * that one is gone); every VK scan treats the union of tombstones as seen. CAS: parallel deletes keep both.
+ * REQ-14 / AM-2: a deleted VK lead's msgKey is tombstoned on its vk_source, or on the owner-level
+ * holder when that source is gone; every VK scan treats the union as seen. CAS: parallel deletes keep both.
  */
 async function rememberDeletedVkLead(db:D1LikeDatabase,owner:string,msgKey:string,sourceId:string){
  if(!msgKey)return;
- for(let attempt=0;attempt<5;attempt++){
-  const own=sourceId?await db.prepare('SELECT id,data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,sourceId,VK_SOURCE_KIND).first<{id:string;data:string}>():null;
-  const target=own??await db.prepare('SELECT id,data FROM records WHERE owner=? AND kind=? ORDER BY created LIMIT 1').bind(owner,VK_SOURCE_KIND).first<{id:string;data:string}>();
-  if(!target)return;
-  let data:Record<string,unknown>;
-  try{data=JSON.parse(String(target.data))}catch{return}
-  const next={...data,leadTombstones:addLeadTombstone(data.leadTombstones,msgKey)};
-  const res=await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=? AND data=?').bind(JSON.stringify(next),owner,target.id,VK_SOURCE_KIND,String(target.data)).run();
-  if(res.meta.changes===1)return;
+ try{
+  for(let attempt=0;attempt<5;attempt++){
+   const own=sourceId?await db.prepare('SELECT id,data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,sourceId,VK_SOURCE_KIND).first<{id:string;data:string}>():null;
+   if(!own){await addVkTombstones(db,owner,[msgKey]);return}
+   let data:Record<string,unknown>;
+   try{data=JSON.parse(String(own.data))}catch{await addVkTombstones(db,owner,[msgKey]);return}
+   const next={...data,leadTombstones:addLeadTombstone(data.leadTombstones,msgKey)};
+   const res=await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=? AND data=?').bind(JSON.stringify(next),owner,own.id,VK_SOURCE_KIND,String(own.data)).run();
+   if(res.meta.changes===1)return;
+  }
+  console.error('[workspace] vk tombstone: concurrent update conflict');
+ }catch(e){
+  console.error('[workspace] vk tombstone:',String((e as Error)?.message||e).slice(0,200));
  }
- console.error('[workspace] vk tombstone: concurrent update conflict');
 }
 
 /** Message of the worker /scan-group answer (fields scan_group reads). */
@@ -1489,12 +1492,16 @@ async function vkAccountDeps(db:D1LikeDatabase,owner:string):Promise<VkAccountDe
 
 function vkReply(r:VkActionResult){return reply(r.body,r.status)}
 
-/** REQ-8 / AM-12: VK sources due for auto-rescan (oldest first, ≤3 per tick); none without a usable account. */
+/**
+ * REQ-8 / AM-12: VK sources due for auto-rescan (oldest first, ≤3 per tick); none without a usable
+ * account, and never a source the settings cannot scan (search without strong keywords).
+ */
 const VK_SOURCES_PER_TICK=3;
-async function dueVkSourceIds(db:D1LikeDatabase,owner:string,needMs:number,force:boolean,now:number){
+async function dueVkSourceIds(db:D1LikeDatabase,owner:string,settings:Record<string,unknown>,needMs:number,force:boolean,now:number){
  const sources=await loadVkSources(db,owner);
  if(!sources.length||noUsableVkAccount(await loadVkAccounts(db,owner),now))return {ids:[] as string[],total:0};
  const due=sources
+  .filter(s=>!vkSourceBlocker(s.data,settings))
   .map(s=>({id:s.id,last:Date.parse(String(s.data.lastScanAt||''))||0}))
   .filter(s=>force||!s.last||now-s.last>=needMs)
   .sort((a,b)=>a.last-b.last);
@@ -1855,7 +1862,7 @@ export async function GET(){const session=await getSessionUser();if(!session?.us
  try{await healStuckProxyChecks(owner,45_000)}catch{/* */}
  try{await healCorruptGroupJoinFields(owner)}catch{/* */}
  // audience_user не отдаём в список кабинета (тысячи строк) — только задачи и остальное
- const result=await database().prepare("SELECT id,kind,data,created,secret IS NOT NULL AS hasSecret FROM records WHERE owner=? AND kind!='ai_guard' AND kind!='audience_user' AND kind!='mailing_recipient' ORDER BY created DESC").bind(owner).all();
+ const result=await database().prepare("SELECT id,kind,data,created,secret IS NOT NULL AS hasSecret FROM records WHERE owner=? AND kind!='ai_guard' AND kind!='audience_user' AND kind!='mailing_recipient' AND kind!=? ORDER BY created DESC").bind(owner,VK_TOMBSTONE_KIND).all();
  let telegramConnected=false;
  try{const h=await fetch(workerUrl()+'/health',{signal:AbortSignal.timeout(1500)});telegramConnected=h.ok}catch{telegramConnected=false}
  const envKey=!!envAiApiKey();
@@ -2965,7 +2972,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   }
   due.sort((a,b)=>a.last-b.last);
   const ids=due.slice(0,limit).map(x=>x.id);
-  const vkDue=await dueVkSourceIds(db,owner,needMs,force,now);
+  const vkDue=await dueVkSourceIds(db,owner,settings,needMs,force,now);
   return reply({
    ok:true,
    groupIds:ids,
@@ -4829,6 +4836,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
  if(b.action==='vk_account_delete')return vkReply(await deleteVkAccounts(await vkAccountDeps(db,owner),{id:b.id,ids:b.ids}));
  if(b.action==='vk_account_set_proxy')return vkReply(await setVkAccountProxy(await vkAccountDeps(db,owner),{id:b.id,proxyId:b.proxyId}));
  if(b.action==='vk_source_add')return vkReply(await addVkGroupSource(await vkAccountDeps(db,owner),{url:b.url}));
+ if(b.action==='vk_source_ensure_search')return vkReply(await ensureVkSearchSourceAction(await vkAccountDeps(db,owner)));
  if(b.action==='vk_source_delete')return vkReply(await deleteVkSource(await vkAccountDeps(db,owner),{id:b.id}));
  if(b.action==='scan_vk_source'){
   const id=z.string().uuid().parse(b.id);

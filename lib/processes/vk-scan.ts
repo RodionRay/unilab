@@ -20,6 +20,7 @@ import {
   loadVkAccounts,
   loadVkSource,
   loadVkSources,
+  loadVkTombstones,
   releaseVkSourceLock,
   vkLeadId,
   type StoredVkSource,
@@ -27,8 +28,13 @@ import {
 } from '@/lib/vk/records';
 import {noUsableVkAccount, openVkSession, type VkSession} from '@/lib/vk/session';
 
-/** NFR: one source scan ≤ 60 s; the last batch must still fit, so new batches stop earlier. */
+/** VK reading part of a scan; the last batch must still fit, so new batches stop earlier. */
 export const VK_SCAN_BUDGET_MS = 45_000;
+/**
+ * Items sent to AI per run (3 batches of lib/processes/lead-ai.ts): with the 45 s fetch budget the
+ * whole scan stays inside the cron's 150 s per-scan timeout. The rest wait for the next run.
+ */
+export const VK_AI_ITEMS_PER_RUN = 60;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export type VkLeadContext = {
@@ -59,7 +65,7 @@ function throttleWait(data: VkSourceData, settings: Record<string, unknown>, now
   return Math.max(0, Math.ceil((last + minutes * 60_000 - now) / 1000));
 }
 
-/** REQ-6 + AM-2: keys of every VK lead of the owner and every tombstone on any VK source. */
+/** REQ-6 + AM-2: keys of every VK lead of the owner, every tombstone on any VK source and the owner-level holder. */
 async function seenVkKeys(db: D1LikeDatabase, owner: string, sources: readonly StoredVkSource[]): Promise<Set<string>> {
   const rows = await db
     .prepare("SELECT json_extract(data,'$.msgKey') AS k FROM records WHERE owner=? AND kind='lead' AND json_extract(data,'$.platform')='vk'")
@@ -67,6 +73,7 @@ async function seenVkKeys(db: D1LikeDatabase, owner: string, sources: readonly S
     .all();
   const seen = new Set<string>(rows.results.map((r) => String(r.k ?? '')).filter(Boolean));
   for (const s of sources) for (const t of Array.isArray(s.data.leadTombstones) ? s.data.leadTombstones : []) seen.add(String(t));
+  for (const t of await loadVkTombstones(db, owner)) seen.add(t);
   return seen;
 }
 
@@ -80,16 +87,22 @@ async function sourceMetrics(db: D1LikeDatabase, owner: string, sourceId: string
   return {leadsTotal: counts.hot + counts.warm + counts.cold, leadsHot: counts.hot, leadsWarm: counts.warm, leadsCold: counts.cold, rating: ratingFromTemperatures(counts)};
 }
 
-function fetchSource(session: VkSession, src: VkSourceData, settings: Record<string, unknown>, now: number): Promise<VkFetchOutcome> | null {
+/** Shown on a source that cannot be scanned with the current settings; such a source is not due (REQ-8). */
+export const VK_NO_KEYWORDS_ERROR = 'Нет ключевых слов';
+const VK_NO_GROUP_ERROR = 'У источника нет группы VK';
+
+/** '' = scannable; otherwise the user-facing reason, decided before any VK call or account lease. */
+export function vkSourceBlocker(src: VkSourceData, settings: Record<string, unknown>): string {
+  if (src.type === 'group') return src.vkGroupId ? '' : VK_NO_GROUP_ERROR;
+  return strongPlusTerms(String(settings.keywords || '')).length ? '' : VK_NO_KEYWORDS_ERROR;
+}
+
+function fetchSource(session: VkSession, src: VkSourceData, settings: Record<string, unknown>, now: number): Promise<VkFetchOutcome> {
   const depthDays = Math.max(1, Math.min(90, Number(settings.scanDepthDays) || 7));
   const depthCutoffSec = Math.floor((now - depthDays * DAY_MS) / 1000);
   const cursor = src.cursor ?? {};
-  if (src.type === 'group') {
-    if (!src.vkGroupId) return null;
-    return fetchVkGroup(session.run, {groupId: src.vkGroupId, cursor, depthCutoffSec});
-  }
+  if (src.type === 'group') return fetchVkGroup(session.run, {groupId: Number(src.vkGroupId), cursor, depthCutoffSec});
   const keywords = strongPlusTerms(String(settings.keywords || ''));
-  if (!keywords.length) return null;
   return fetchVkSearch(session.run, {keywords, cursor, depthCutoffSec, nowSec: Math.floor(now / 1000)});
 }
 
@@ -126,7 +139,7 @@ async function insertLeads(
     const id = await vkLeadId(deps.owner, k.item.key);
     const res = await deps.db
       .prepare('INSERT OR IGNORE INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)')
-      .bind(id, deps.owner, 'lead', JSON.stringify(lead), null, new Date().toISOString())
+      .bind(id, deps.owner, 'lead', JSON.stringify(lead), null, new Date((deps.now ?? Date.now)()).toISOString())
       .run();
     if (res.meta.changes !== 1) continue;
     added += 1;
@@ -171,6 +184,12 @@ export async function scanVkSource(deps: VkScanDeps, input: {id: string; force: 
 
 async function scanLocked(deps: VkScanDeps, src: StoredVkSource, ctx: VkLeadContext, now: () => number): Promise<VkActionResult> {
   const started = now();
+  const blocker = vkSourceBlocker(src.data, ctx.settings);
+  if (blocker) {
+    // lastScanAt moves so a manual or cron run does not retry it every tick; keywords re-enable it.
+    await saveSourceState(deps, src.id, {error: blocker, lastScanAt: new Date(started).toISOString()});
+    return {status: 400, body: {error: blocker === VK_NO_KEYWORDS_ERROR ? 'Нет ключевых слов — добавьте их в настройках' : blocker}};
+  }
   const accounts = await loadVkAccounts(deps.db, deps.owner);
   if (noUsableVkAccount(accounts, started)) {
     const error = 'Нет активного VK-аккаунта с прокси';
@@ -181,9 +200,7 @@ async function scanLocked(deps: VkScanDeps, src: StoredVkSource, ctx: VkLeadCont
   const session = await openVkSession({db: deps.db, owner: deps.owner, post: deps.post, caps, deadlineAt: started + VK_SCAN_BUDGET_MS, now});
   let fetched: VkFetchOutcome;
   try {
-    const run = fetchSource(session, src.data, ctx.settings, started);
-    if (!run) return {status: 400, body: {error: src.data.type === 'search' ? 'Добавьте ключевые слова в настройках' : 'У источника нет группы VK'}};
-    fetched = await run;
+    fetched = await fetchSource(session, src.data, ctx.settings, started);
   } finally {
     await session.close();
   }
@@ -213,7 +230,10 @@ async function finishScan(
     aiRejects: aiActive,
     depthCutoff: t - depthDays * DAY_MS,
     qualify: ctx.qualify,
+    maxJudged: VK_AI_ITEMS_PER_RUN,
   });
+  // Deferred items are neither leads nor AI rejects yet: the cursor must not pass them.
+  const cursor = picked.deferred ? src.data.cursor ?? {} : fetched.cursor;
   const inserted = await insertLeads(deps, src, picked.kept, ctx.settings.notifyEnabled === true);
   try {
     await deps.flushNotifications(ctx.settings);
@@ -223,10 +243,11 @@ async function finishScan(
   const {funnel} = picked;
   const metrics = await sourceMetrics(deps.db, deps.owner, src.id);
   const partial = fetched.incomplete ? ` · не всё прочитано (${session.stats.lastError || 'повтор позже'})` : '';
-  const line = `VK · +${inserted.added} · запросов ${fetched.calls} · найдено ${funnel.fetched} → ядро ${funnel.core} → AI/match ${funnel.matched}${funnel.aiUsed ? ' · AI' : ''}${partial}`;
+  const later = picked.deferred ? ` · ${picked.deferred} на AI в следующий скан` : '';
+  const line = `VK · +${inserted.added} · запросов ${fetched.calls} · найдено ${funnel.fetched} → ядро ${funnel.core} → AI/match ${funnel.matched}${funnel.aiUsed ? ' · AI' : ''}${partial}${later}`;
   const lastScanAt = new Date(t).toISOString();
   await saveSourceState(deps, src.id, {
-    cursor: fetched.cursor,
+    cursor,
     lastScanAt,
     error: fetched.sourceError,
     aiRejected: ctx.qualify && funnel.fresh ? rememberAiRejects(aiActive, picked.rejectedIds, sig, t) : src.data.aiRejected ?? null,
@@ -243,7 +264,8 @@ async function finishScan(
     addedByTemp: inserted.addedByTemp,
     aiUsed: funnel.aiUsed,
     partial: fetched.incomplete,
-    more: session.stats.outOfTime,
+    more: session.stats.outOfTime || picked.deferred > 0,
+    deferred: picked.deferred,
     accountsUsed: session.stats.accountsUsed.length,
     failovers: session.stats.failovers,
     error: fetched.sourceError || (fetched.incomplete ? session.stats.lastError : ''),
