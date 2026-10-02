@@ -191,7 +191,7 @@ export function VkAccountsPanel({ accounts, proxies, searchCap, perProxyCap, loa
           </h2>
           <p className="small-note mt-1">Только чтение: ищут посты и комментарии с запросами клиентов. До {perProxyCap} аккаунтов на один прокси.</p>
         </div>
-        <span className="badge neutral">Активных {activeCount} из {accounts.length}</span>
+        {accounts.length > 0 && <span className="badge neutral">Активных {activeCount} из {accounts.length}</span>}
       </div>
 
       <div className="panel vk-import">
@@ -231,6 +231,7 @@ export function VkAccountsPanel({ accounts, proxies, searchCap, perProxyCap, loa
         {results ? <ImportResults results={results} progress={progress} /> : <ImportFormats />}
       </div>
 
+      {accounts.length > 0 && (
       <div className={`groups-actionbar ${selected.length ? 'has-sel' : ''}`}>
         <div className="groups-actionbar-left">
           {selected.length ? <strong>Выбрано {selected.length}</strong> : <span className="muted text-sm">Отметьте аккаунты для массового удаления</span>}
@@ -246,6 +247,7 @@ export function VkAccountsPanel({ accounts, proxies, searchCap, perProxyCap, loa
           )}
         </div>
       </div>
+      )}
 
       <div className="panel table-panel vk-list">
         {loading ? (
@@ -265,7 +267,7 @@ export function VkAccountsPanel({ accounts, proxies, searchCap, perProxyCap, loa
               <span>Прокси</span>
               <span>Статус</span>
               <span>Сегодня</span>
-              <span className="text-right">Действие</span>
+              <span className="sr-only">Действие</span>
             </div>
             {views.map(({ id, data, view }) => {
               const Icon = STATUS_ICON[view.tone];

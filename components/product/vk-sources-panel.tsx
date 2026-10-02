@@ -124,6 +124,7 @@ export function VkSourcesPanel({ sources, canScan, hasAccounts, loading, run, on
           </h2>
           <p className="small-note mt-1">Поиск по ключевым словам из настроек и стены сообществ: посты, комментарии, обсуждения.</p>
         </div>
+        {hasAccounts && (
         <form
           className="vk-source-add"
           onSubmit={(e) => { e.preventDefault(); void addSource(); }}
@@ -145,6 +146,7 @@ export function VkSourcesPanel({ sources, canScan, hasAccounts, loading, run, on
             {adding ? <Loader2 className="animate-spin" size={15} /> : <Plus size={15} />}Сообщество
           </Button>
         </form>
+        )}
       </div>
       {urlError && <p id="vk-source-error" className="vk-field-error vk-source-error" role="alert">{urlError}</p>}
 

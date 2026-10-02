@@ -5146,7 +5146,9 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.vk-import-line.is-danger .vk-import-text { color: #ffb4a0; }
+.vk-import-line .vk-import-text { color: var(--spike-muted); }
+.vk-import-line.is-success .vk-import-text { color: var(--spike-text); }
+.vk-import-line .badge { justify-self: start; }
 .vk-import-text em {
   font-style: normal;
   color: var(--spike-warning);
@@ -5164,7 +5166,7 @@ button[data-slot="button"][data-variant="ghost"]:hover {
 }
 .vk-rows-cols,
 .vk-row {
-  grid-template-columns: 36px minmax(0, 1.3fr) minmax(170px, 1fr) minmax(150px, 1fr) minmax(96px, 0.6fr) 48px;
+  grid-template-columns: 36px minmax(0, 1.3fr) minmax(0, 0.9fr) minmax(0, 1.1fr) 92px 40px;
 }
 .vk-src-cols,
 .vk-src-row {
@@ -5215,10 +5217,17 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   white-space: nowrap;
 }
 .vk-row-proxy {
+  justify-content: flex-start;
+  gap: 8px;
   width: 100%;
   max-width: 230px;
   height: 34px;
   font-size: 0.78rem;
+}
+.vk-row-proxy [data-slot="select-value"] {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
 }
 .vk-status-detail {
   max-width: 220px !important;
@@ -5300,8 +5309,8 @@ button[data-slot="button"][data-variant="ghost"]:hover {
     grid-template-columns: 28px minmax(0, 1fr) auto;
     grid-template-areas:
       "check main actions"
-      "check status status"
-      "check proxy usage";
+      "check status usage"
+      "check proxy proxy";
     gap: 8px 10px;
     padding: 12px;
   }
@@ -5309,7 +5318,9 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   .vk-row > .vk-cell-main { grid-area: main; }
   .vk-row > .vk-cell-proxy { grid-area: proxy; }
   .vk-row > .vk-cell-status { grid-area: status; }
-  .vk-row > .vk-cell-usage { grid-area: usage; flex-direction: row; gap: 12px; justify-content: flex-end; }
+  .vk-row > .vk-cell-usage { grid-area: usage; align-self: start; align-items: flex-end; }
+  .vk-import-formats ul { display: none; }
+  .vk-import-formats { padding: 12px 14px; }
   .vk-row > .vk-cell-actions { grid-area: actions; }
   .vk-row-proxy { max-width: none; }
   .vk-src-row {
