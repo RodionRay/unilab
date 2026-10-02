@@ -8,9 +8,11 @@ vi.mock('@/lib/auth',async(importOriginal)=>({
   getSessionUser:async()=>(await import('./helpers/workspace-harness')).authState.user,
 }));
 
-import {POST} from '@/app/api/workspace/route';
+import {GET,POST} from '@/app/api/workspace/route';
 import {seal} from '@/lib/server-store';
 import {moscowDayKey,moscowNextMidnightIso} from '@/lib/telegram-accounts';
+import {VK_AI_ITEMS_PER_RUN,scanVkSource} from '@/lib/processes/vk-scan';
+import {VK_TOMBSTONE_KIND} from '@/lib/vk/records';
 
 const NOW=Date.parse('2026-10-01T10:00:00Z');
 const SEARCH_ID='a0000000-0000-4000-8000-000000000001';
@@ -44,7 +46,7 @@ type Stored={
   searchBlockedUntil?:Record<string,string>;
 };
 type LeadRow={[k:string]:unknown;msgKey:string;message:string;url:string;notifiedAt?:string};
-type ScanReply={[k:string]:unknown;added:number;failovers?:number;accountsUsed?:number;partial?:boolean;locked?:boolean;skipped?:boolean;noAccount?:boolean};
+type ScanReply={[k:string]:unknown;added:number;more?:boolean;failovers?:number;accountsUsed?:number;partial?:boolean;locked?:boolean;skipped?:boolean;noAccount?:boolean};
 type Feed={items:Record<string,unknown>[]};
 const feed=()=>vkWorker.responses['newsfeed.search'] as Feed;
 const calls={tg:[] as string[]};
@@ -165,6 +167,54 @@ describe('workspace API: scan_vk_source',()=>{
       expect(record(ACC_A).counters?.searchCalls).toBe(4);
     });
 
+    it('without strong keywords marks the source scanned with an error and calls no VK',async()=>{
+      setSettings({keywords:''});
+
+      const r=await scan(SEARCH_ID);
+
+      expect(r.status).toBe(400);
+      expect(record(SEARCH_ID)).toMatchObject({lastScanAt:new Date(NOW).toISOString(),error:'Нет ключевых слов'});
+      expect(vkWorker.batches).toHaveLength(0);
+      expect(record(ACC_A).leaseId).toBeUndefined();
+    });
+
+    describe('paging (next_from)',()=>{
+      const post=(id:number)=>({id,owner_id:700400,from_id:700400,date:1790000000+id,text:leadText(id)});
+      const PAGES:Record<string,{items:Record<string,unknown>[];next_from?:string}>={
+        '':{items:[post(1)],next_from:'p2'},
+        p2:{items:[post(2)],next_from:'p3'},
+        p3:{items:[post(3)],next_from:'p4'},
+        p4:{items:[post(4)]},
+      };
+      const searched=()=>vkWorker.batches.flatMap(b=>b.params).filter(p=>p.q==='остатки');
+      beforeEach(()=>{
+        vkWorker.override=(m,p)=>m!=='newsfeed.search'?undefined
+          :{ok:true,response:p.q==='остатки'?{...PAGES[String(p.start_from??'')]!,profiles:[],groups:[]}:{items:[],profiles:[],groups:[]}};
+      });
+
+      it('follows next_from up to 3 pages per keyword in one pinned interval and keeps the cursor',async()=>{
+        const r=await scan(SEARCH_ID);
+
+        expect(r.body.added).toBe(3);
+        expect(searched().map(p=>p.start_from)).toEqual([undefined,'p2','p3']);
+        expect(searched().every(p=>p.end_time===Math.floor(NOW/1000))).toBe(true);
+        expect(record(SEARCH_ID).cursor).toEqual({searchPaging:{endTime:Math.floor(NOW/1000),next:{'остатки':'p4'}}});
+      });
+
+      it('the next run finishes only the unfinished keyword, then moves the cursor to the interval end',async()=>{
+        await scan(SEARCH_ID);
+        vkWorker.batches.length=0;
+        vi.setSystemTime(NOW+60_000);
+
+        const r=await scan(SEARCH_ID);
+
+        expect(r.body.added).toBe(1);
+        expect(vkWorker.batches.flatMap(b=>b.params).map(p=>[p.q,p.start_from,p.end_time])).toEqual([['остатки','p4',Math.floor(NOW/1000)]]);
+        expect(record(SEARCH_ID).cursor).toEqual({searchStartTime:Math.floor(NOW/1000)});
+        expect(leads()).toHaveLength(4);
+      });
+    });
+
     it('cuts a long post to 8000 characters (AM-3)',async()=>{
       feed().items[0]!.text=leadText(501)+' x'.repeat(6000);
 
@@ -249,6 +299,34 @@ describe('workspace API: scan_vk_source',()=>{
     });
   });
 
+  describe('AI work per run (cron budget)',()=>{
+    beforeEach(()=>{
+      setSettings({aiQualify:true});
+      vi.stubEnv('AI_API_KEY','sk-test-not-real');
+      feed().items=Array.from({length:70},(_,i)=>({id:2000+i,owner_id:700300,from_id:700300,date:1790000000+i,text:leadText(2000+i)}));
+    });
+
+    it('sends at most 60 items to AI per run, keeps the cursor and asks for more',async()=>{
+      const r=await scan(SEARCH_ID);
+
+      expect(r.status).toBe(200);
+      expect(r.body.added).toBe(VK_AI_ITEMS_PER_RUN);
+      expect(r.body.more).toBe(true);
+      expect(record(SEARCH_ID).cursor?.searchStartTime).toBeUndefined();
+    });
+
+    it('the next run qualifies the rest and then moves the cursor',async()=>{
+      await scan(SEARCH_ID);
+
+      const r=await scan(SEARCH_ID);
+
+      expect(r.body.added).toBe(70-VK_AI_ITEMS_PER_RUN);
+      expect(r.body.more).toBe(false);
+      expect(leads()).toHaveLength(70);
+      expect(record(SEARCH_ID).cursor?.searchStartTime).toBe(Math.floor(NOW/1000));
+    });
+  });
+
   describe('REQ-14 deleted VK lead',()=>{
     it('is tombstoned on its source and not re-created by any source',async()=>{
       feed().items.push({id:9001,owner_id:-22000,from_id:-22000,date:1790001000,text:leadText(9001)});
@@ -263,6 +341,60 @@ describe('workspace API: scan_vk_source',()=>{
       expect(record(SEARCH_ID).leadTombstones).toEqual(['vk:-22000_9001']);
       expect(keys()).not.toContain('vk:-22000_9001');
     });
+
+    const NEW_SEARCH_ID='a0000000-0000-4000-8000-000000000009';
+    const readdSearch=()=>addRecord(NEW_SEARCH_ID,'vk_source',{type:'search',title:'Поиск VK',cursor:{},lastScanAt:'',leadTombstones:[]});
+
+    it('survives deleting the last VK source',async()=>{
+      await scan(SEARCH_ID);
+      const victim=leads().find(l=>l.data.msgKey==='vk:-11000_501')!;
+      await POST(postRequest({action:'delete',kind:'lead',id:victim.id}));
+
+      for(const id of [GROUP_ID,SEARCH_ID])expect((await POST(postRequest({action:'vk_source_delete',id}))).status).toBe(200);
+      readdSearch();
+      await scan(NEW_SEARCH_ID);
+
+      expect(keys()).toEqual(['vk:700300_77']);
+    });
+
+    it('is stored even when the lead\'s source and every other source are gone',async()=>{
+      await scan(SEARCH_ID);
+      const victim=leads().find(l=>l.data.msgKey==='vk:-11000_501')!;
+      testDb().sqlite.prepare("DELETE FROM records WHERE kind='vk_source'").run();
+
+      await POST(postRequest({action:'delete',kind:'lead',id:victim.id}));
+      readdSearch();
+      await scan(NEW_SEARCH_ID);
+
+      expect(keys()).toEqual(['vk:700300_77']);
+    });
+
+    it('the tombstone holder never reaches the client record list',async()=>{
+      await scan(SEARCH_ID);
+      const victim=leads()[0]!;
+      testDb().sqlite.prepare("DELETE FROM records WHERE kind='vk_source'").run();
+      await POST(postRequest({action:'delete',kind:'lead',id:victim.id}));
+
+      const list=await (await GET()).json() as {records:{kind:string}[]};
+
+      expect(list.records.map(r=>r.kind)).not.toContain(VK_TOMBSTONE_KIND);
+    });
+  });
+
+  it('stamps created leads with the scan clock',async()=>{
+    const later=NOW+3_600_000;
+
+    await scanVkSource({
+      db:testDb().db as never,owner:OWNER,now:()=>later,
+      post:async(_path,body)=>(await vkCallResponse(body as Parameters<typeof vkCallResponse>[0])).json(),
+      leadContext:async()=>({settings:SETTINGS,coreSettings:{keywords:SETTINGS.keywords,minusKeywords:SETTINGS.minusKeywords,avoidTopics:'',leadCriteria:SETTINGS.leadCriteria,hotSignals:SETTINGS.hotSignals,product:SETTINGS.product},qualify:null}),
+      flushNotifications:async()=>{},
+      log:async()=>{},
+    },{id:SEARCH_ID,force:true});
+
+    const created=testDb().sqlite.prepare("SELECT created FROM records WHERE kind='lead'").all() as {created:string}[];
+    expect(created.length).toBeGreaterThan(0);
+    expect(created.every(r=>r.created===new Date(later).toISOString())).toBe(true);
   });
 
   describe('REQ-2 / REQ-9 / AM-8 VK errors',()=>{
@@ -485,6 +617,15 @@ describe('workspace API: scan_vk_source',()=>{
 
       testDb().sqlite.prepare("UPDATE records SET data=json_set(data,'$.lastScanAt',?) WHERE id=?").run(new Date(NOW-31*60_000).toISOString(),SEARCH_ID);
       expect((await due()).vkSourceIds).toEqual([GROUP_ID,SEARCH_ID]);
+    });
+
+    it('skips the search source while settings have no strong keyword, lists it again once they do',async()=>{
+      setSettings({keywords:''});
+
+      expect((await due()).vkSourceIds).toEqual([GROUP_ID]);
+
+      setSettings();
+      expect((await due()).vkSourceIds).toEqual([SEARCH_ID,GROUP_ID]);
     });
 
     it('lists none while no VK account can scan',async()=>{

@@ -17,9 +17,12 @@ export const maxDuration = 300;
 const TICK_BUDGET_MS = 210_000;
 const JOIN_TIMEOUT_MS = 90_000;
 const SCAN_TIMEOUT_MS = 150_000;
-/** AM-12: a VK source scan is capped at 60 s; start one only with ≥70 s of tick left. */
-const VK_SCAN_TIMEOUT_MS = 60_000;
-const VK_SCAN_MIN_LEFT_MS = 70_000;
+/**
+ * A VK scan = ≤45 s of VK calls + ≤60 items of AI (lib/processes/vk-scan.ts::VK_AI_ITEMS_PER_RUN),
+ * so it gets the Telegram scan timeout and starts only while that much work still fits the tick.
+ */
+const VK_SCAN_TIMEOUT_MS = SCAN_TIMEOUT_MS;
+const VK_SCAN_MIN_LEFT_MS = 120_000;
 const BOOT_TIMEOUT_MS = 20_000;
 const MAX_JOINS = 3;
 const MAX_SCANS_AUTO = 6;
@@ -290,12 +293,15 @@ async function tickOwner(
     let added = 0;
     let skipped = 0;
     let vkScanned = 0;
+    let vkStopped = false;
 
     for (const { kind, id } of interleaveScans(ids, vkIds)) {
       if (kind === "vk") {
-        if (left() < VK_SCAN_MIN_LEFT_MS) {
+        // A slow or aborted VK scan stops the VK part only; Telegram groups keep their turn.
+        if (vkStopped || left() < VK_SCAN_MIN_LEFT_MS) {
           stoppedEarly = true;
-          break;
+          vkStopped = true;
+          continue;
         }
         try {
           const r = await scanVkItem(origin, cookie, id, force, opTimeout(VK_SCAN_TIMEOUT_MS));
@@ -308,8 +314,8 @@ async function tickOwner(
           }
         } catch {
           stoppedEarly = true;
+          vkStopped = true;
           errors.push(`vk timeout:${id.slice(0, 8)}`);
-          break;
         }
         continue;
       }

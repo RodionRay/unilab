@@ -9,6 +9,7 @@ vi.mock('@/lib/auth',async(importOriginal)=>({
 }));
 
 import {GET,POST} from '@/app/api/workspace/route';
+import {ACTION_RULES,authorizeWorkspaceAction} from '@/lib/security/workspace-authz';
 
 const PROXY_2='66666666-6666-4666-8666-666666666666';
 const PASSWORD='MarketplacePass:with:colons';
@@ -29,7 +30,7 @@ async function call(body:Record<string,unknown>){
   return {status:res.status,body:await res.json() as Reply};
 }
 
-type Reply={error?:string;duplicate?:boolean;removed?:number;results:{line:number;status:string;reason?:string}[]};
+type Reply={ok?:boolean;id?:string;created?:boolean;source?:Record<string,unknown>;error?:string;duplicate?:boolean;removed?:number;results:{line:number;status:string;reason?:string}[]};
 
 const importText=(lines:string[],extra:Record<string,unknown>={})=>call({action:'vk_accounts_import',text:lines.join('\n'),...extra});
 
@@ -247,7 +248,28 @@ describe('workspace API: VK accounts and sources',()=>{
       expect(r.status).toBe(422);
     });
 
-    it('deleting a source keeps its tombstones on another source',async()=>{
+    it('vk_source_ensure_search creates the search source once and returns it on every call',async()=>{
+      // The import above already made it; the user then deleted it.
+      testDb().sqlite.prepare("DELETE FROM records WHERE kind='vk_source'").run();
+
+      const first=await call({action:'vk_source_ensure_search'});
+      const second=await call({action:'vk_source_ensure_search'});
+
+      expect(first.status).toBe(200);
+      expect(first.body).toMatchObject({ok:true,created:true,source:{type:'search',cursor:{},lastScanAt:''}});
+      expect(second.body).toMatchObject({ok:true,created:false,id:first.body.id});
+      expect(rows('vk_source').filter(r=>r.data.type==='search').map(r=>r.id)).toEqual([first.body.id]);
+    });
+
+    it('vk_source_ensure_search has the vk_source_add access rule (owner, admin, staff with groups)',()=>{
+      const staff=(groups:boolean)=>({userId:'u',ownerId:OWNER,isOwner:false,role:'manager' as const,access:{groups} as never});
+
+      expect(ACTION_RULES.vk_source_ensure_search).toEqual(ACTION_RULES.vk_source_add);
+      expect(authorizeWorkspaceAction(staff(true),'vk_source_ensure_search',undefined)).toEqual({ok:true});
+      expect(authorizeWorkspaceAction(staff(false),'vk_source_ensure_search',undefined).ok).toBe(false);
+    });
+
+    it('deleting a source keeps its tombstones on the owner-level holder',async()=>{
       await call({action:'vk_source_add',url:'vk.com/niche_test'});
       const group=rows('vk_source').find(s=>s.data.type==='group')!;
       testDb().sqlite.prepare("UPDATE records SET data=json_set(data,'$.leadTombstones',json(?)) WHERE id=?").run(JSON.stringify(['vk:-22000_1']),group.id);
@@ -255,9 +277,8 @@ describe('workspace API: VK accounts and sources',()=>{
       const r=await call({action:'vk_source_delete',id:group.id});
 
       expect(r.status).toBe(200);
-      const left=rows('vk_source');
-      expect(left).toHaveLength(1);
-      expect(left[0]!.data.leadTombstones).toEqual(['vk:-22000_1']);
+      expect(rows('vk_source')).toHaveLength(1);
+      expect(rows('vk_tombstones').map(r=>r.data.leadTombstones)).toEqual([['vk:-22000_1']]);
     });
   });
 });

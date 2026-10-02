@@ -96,6 +96,7 @@ export const ACTION_RULES:Readonly<Record<string,ActionRule>>={
  vk_account_delete:rule(['accounts']),
  vk_account_set_proxy:rule(['accounts']),
  vk_source_add:rule(['groups']),
+ vk_source_ensure_search:rule(['groups']),
  vk_source_delete:rule(['groups']),
  scan_vk_source:rule(['groups']),
 };

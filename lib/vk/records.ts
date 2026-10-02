@@ -9,14 +9,22 @@ import {checkProxyTarget} from '@/lib/security/net-guard';
 import {unseal} from '@/lib/server-store';
 import type {VkProxy} from '@/lib/vk/client';
 import type {VkAccountData} from '@/lib/vk/pool';
+import {MAX_LEAD_TOMBSTONES} from '@/lib/processes/scan-flow';
 
 export const VK_ACCOUNT_KIND = 'vk_account';
 export const VK_SOURCE_KIND = 'vk_source';
+/**
+ * Owner-level holder of VK lead tombstones (AM-2) that outlives every vk_source: keys of deleted
+ * leads whose source is gone. Server-only: never listed to the client, never saved generically.
+ */
+export const VK_TOMBSTONE_KIND = 'vk_tombstones';
 /** One scan run is capped at 60 s; the lock outlives it (AI batches) and frees itself after a crash. */
 export const VK_SOURCE_LOCK_TTL_MS = 5 * 60_000;
 
 export type VkSourceType = 'search' | 'group';
-export type VkSourceCursor = {searchStartTime?: number; wallMaxPostId?: number; boardSince?: number};
+/** Search interval still paging: its pinned end and next_from per unfinished keyword ('' = first page). */
+export type VkSearchPaging = {endTime: number; next: Record<string, string>};
+export type VkSourceCursor = {searchStartTime?: number; searchPaging?: VkSearchPaging; wallMaxPostId?: number; boardSince?: number};
 export type VkSourceData = {
   type: VkSourceType;
   title: string;
@@ -154,6 +162,43 @@ export async function vkLeadId(owner: string, msgKey: string): Promise<string> {
 
 /** Same derivation for singleton records (the search source, one row per VK group). */
 export const vkRecordId = vkLeadId;
+
+const tombstoneHolderId = (owner: string): Promise<string> => vkRecordId(owner, 'vk-tombstones');
+
+export async function loadVkTombstones(db: D1LikeDatabase, owner: string): Promise<string[]> {
+  const row = await db
+    .prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?')
+    .bind(owner, await tombstoneHolderId(owner), VK_TOMBSTONE_KIND)
+    .first<{data: string}>();
+  return row ? tombstonesOf(row.data) : [];
+}
+
+function tombstonesOf(raw: unknown): string[] {
+  const list = parseJson<{leadTombstones?: unknown}>(raw)?.leadTombstones;
+  return Array.isArray(list) ? list.map(String) : [];
+}
+
+/** Adds keys to the owner-level holder (created on first use); compare-and-swap, parallel adds all land. */
+export async function addVkTombstones(db: D1LikeDatabase, owner: string, keys: readonly string[]): Promise<void> {
+  const fresh = keys.filter(Boolean);
+  if (!fresh.length) return;
+  const id = await tombstoneHolderId(owner);
+  await db
+    .prepare('INSERT OR IGNORE INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)')
+    .bind(id, owner, VK_TOMBSTONE_KIND, JSON.stringify({leadTombstones: []}), null, new Date().toISOString())
+    .run();
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const row = await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner, id, VK_TOMBSTONE_KIND).first<{data: string}>();
+    if (!row) return;
+    const merged = [...new Set([...tombstonesOf(row.data), ...fresh])].slice(-MAX_LEAD_TOMBSTONES);
+    const res = await db
+      .prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=? AND data=?')
+      .bind(JSON.stringify({leadTombstones: merged}), owner, id, VK_TOMBSTONE_KIND, String(row.data))
+      .run();
+    if (res.meta.changes === 1) return;
+  }
+  throw new Error('vk tombstones: concurrent update conflict');
+}
 
 /** Short non-reversible token fingerprint: finds a re-pasted token before it is validated. */
 export async function vkTokenFingerprint(owner: string, token: string): Promise<string> {
