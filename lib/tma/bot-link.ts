@@ -1,3 +1,4 @@
+import { readEnv } from "@/lib/auth";
 import type { D1LikeDatabase } from "@/lib/db";
 import {
   isDmUndeliverable,
@@ -11,7 +12,7 @@ import {
 import { botIdFromToken } from "@/lib/tma/init-data";
 import { miniAppUrl } from "@/lib/tma/link-api";
 import { findActiveLink, listDmRecipients, redeemLinkCode, setDmError } from "@/lib/tma/links";
-import { ensureTmaTables, getOrCreateWorkspaceKey } from "@/lib/tma/workspace";
+import { ensureTmaTables, getOrCreateWorkspaceKey, readWorkspaceBot } from "@/lib/tma/workspace";
 
 /**
  * Bot side of the mini app: private-chat linking (REQ-L2/L5), member chatter, and private notices
@@ -52,10 +53,19 @@ export async function hasPrivateBotWork(db: D1LikeDatabase, owner: string, nowMs
   return Number(row?.busy) === 1;
 }
 
-/** `/tma/<wsKey>` of `owner` when `appBase` is public https (Telegram opens nothing else), else "". */
-async function publicMiniAppUrl(db: D1LikeDatabase, owner: string, appBase: string): Promise<string> {
-  if (!isPublicHttpsUrl(appBase)) return "";
-  return miniAppUrl(appBase, await getOrCreateWorkspaceKey(db, owner));
+/**
+ * `${APP_URL}/tma/<wsKey>` of `owner` when APP_URL is public https (Telegram opens nothing else), else "".
+ * Only the configured APP_URL: a request Host would let any caller point members' menu buttons and
+ * «Открыть» buttons at a host of their choice.
+ */
+function publicAppUrl(): string {
+  const appUrl = readEnv("APP_URL") ?? "";
+  return isPublicHttpsUrl(appUrl) ? appUrl : "";
+}
+
+async function publicMiniAppUrl(db: D1LikeDatabase, owner: string): Promise<string> {
+  const appUrl = publicAppUrl();
+  return appUrl ? miniAppUrl(appUrl, await getOrCreateWorkspaceKey(db, owner)) : "";
 }
 
 async function say(token: string, chatId: string, text: string, replyMarkup?: ReplyMarkup): Promise<void> {
@@ -63,20 +73,20 @@ async function say(token: string, chatId: string, text: string, replyMarkup?: Re
   if (!r.ok) console.error("[tma] bot_private_reply:", r.error.slice(0, 200));
 }
 
-async function redeemFromStart(db: D1LikeDatabase, owner: string, token: string, appBase: string, cmd: Extract<BotCommand, { kind: "link" }>) {
+async function redeemFromStart(db: D1LikeDatabase, owner: string, token: string, cmd: Extract<BotCommand, { kind: "link" }>) {
   const result = await redeemLinkCode(db, owner, cmd.code, cmd.tg, botIdFromToken(token));
   if (!result.ok) return say(token, cmd.chatId, result.reason === "rate_limited" ? TEXT.rateLimited : TEXT.invalid);
-  const url = await publicMiniAppUrl(db, owner, appBase);
+  const url = await publicMiniAppUrl(db, owner);
   if (!url) return say(token, cmd.chatId, TEXT.linkedNoHttps);
   const menu = await setChatMenuButton(token, cmd.tg.id, url);
   if (!menu.ok) console.error("[tma] menu_button:", menu.error.slice(0, 200));
   return say(token, cmd.chatId, TEXT.linked);
 }
 
-async function answerMember(db: D1LikeDatabase, owner: string, token: string, appBase: string, cmd: Extract<BotCommand, { kind: "private_message" }>) {
+async function answerMember(db: D1LikeDatabase, owner: string, token: string, cmd: Extract<BotCommand, { kind: "private_message" }>) {
   if (!(await findActiveLink(db, owner, cmd.tgUserId))) return say(token, cmd.chatId, TEXT.onboarding);
   if (!cmd.start) return say(token, cmd.chatId, TEXT.replyHint);
-  const url = await publicMiniAppUrl(db, owner, appBase);
+  const url = await publicMiniAppUrl(db, owner);
   return say(token, cmd.chatId, TEXT.help, url ? { inline_keyboard: [[{ text: "Открыть UniLab", web_app: { url } }]] } : undefined);
 }
 
@@ -88,12 +98,11 @@ export async function handlePrivateCommand(
   db: D1LikeDatabase,
   owner: string,
   token: string,
-  appBase: string,
   cmd: PrivateBotCommand,
 ): Promise<void> {
   try {
-    if (cmd.kind === "link") return await redeemFromStart(db, owner, token, appBase, cmd);
-    if (cmd.kind === "private_message") return await answerMember(db, owner, token, appBase, cmd);
+    if (cmd.kind === "link") return await redeemFromStart(db, owner, token, cmd);
+    if (cmd.kind === "private_message") return await answerMember(db, owner, token, cmd);
     await callBotApi(token, "answerCallbackQuery", { callback_query_id: cmd.callbackId, text: TEXT.replyHint });
   } catch (e) {
     console.error("[tma] bot_private:", String((e as Error)?.message || e).slice(0, 200));
@@ -137,27 +146,29 @@ async function eachLimited<T>(items: readonly T[], limit: number, fn: (item: T) 
 
 /**
  * REQ-N1/N2: private copies of notices to opted-in linked members who can see leads, each with one
- * web_app «Открыть» button to `/tma/<wsKey>?lead=<id>` (the hash belongs to Telegram). Skipped unless
- * the app base is public https. Bounded concurrency and time; a blocked chat turns that member's opt-in
- * off. Never throws: callers send the group notice first and must not be failed by this.
+ * web_app «Открыть» button to `/tma/<wsKey>?lead=<id>` (the hash belongs to Telegram); a member whose
+ * private chat is the notices chat is skipped (no duplicate). Skipped unless APP_URL is public https.
+ * Bounded concurrency and time; a blocked chat turns that member's opt-in off. Never throws: callers
+ * send the group notice first and must not be failed by this.
  */
 export async function sendDmNotices(
   db: D1LikeDatabase,
   owner: string,
   token: string,
-  appBase: string,
   notices: DmNotice[],
 ): Promise<void> {
   try {
     if (!token || !notices.length) return;
-    if (!isPublicHttpsUrl(appBase)) {
-      if (!warnedNoHttps) console.warn("[tma] dm notices skipped: app base is not public https");
+    if (!publicAppUrl()) {
+      if (!warnedNoHttps) console.warn("[tma] dm notices skipped: APP_URL is not public https");
       warnedNoHttps = true;
       return;
     }
-    const recipients = (await listDmRecipients(db, owner)).filter((r) => r.canSeeLeads);
+    // The notices chat may itself be a member's private chat: that member already got the group notice.
+    const { notifyChatId } = await readWorkspaceBot(db, owner);
+    const recipients = (await listDmRecipients(db, owner)).filter((r) => r.canSeeLeads && String(r.tgUserId) !== notifyChatId);
     if (!recipients.length) return;
-    const base = await publicMiniAppUrl(db, owner, appBase);
+    const base = await publicMiniAppUrl(db, owner);
     const built: DmBuilt[] = notices.map((n) => ({
       ...n,
       replyMarkup: { inline_keyboard: [[{ text: "Открыть", web_app: { url: `${base}?lead=${encodeURIComponent(n.leadId)}` } }]] },

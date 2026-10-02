@@ -97,6 +97,33 @@ describe('личные уведомления о переписке (REQ-N1)',()
   expect(toChat(w.sent(),42)).toHaveLength(1);
  });
 
+ it('APP_URL не задан, запрос на публичный https Host → ЛС без кнопки не шлются (адрес не из Host)',async()=>{
+  vi.stubEnv('APP_URL','');
+  vi.stubEnv('NEXT_PUBLIC_SITE_URL','');
+  await optIn(OWNER,TG);
+  const w=stubWorkerAndBot(worker);
+
+  await POST(new Request('https://evil.example/api/workspace',{
+   method:'POST',
+   headers:{'Content-Type':'application/json',origin:'https://evil.example'},
+   body:JSON.stringify({action:'poll_dm_replies'}),
+  }));
+
+  expect(toChat(w.sent(),TG)).toHaveLength(0);
+  expect(toChat(w.sent(),42)).toHaveLength(1);
+ });
+
+ it('чат уведомлений = личка участника → там одно уведомление (группа), без дубля в ЛС',async()=>{
+  await optIn(OWNER,42);
+  const w=stubWorkerAndBot(worker);
+
+  await pollDms();
+
+  const chat=toChat(w.sent(),42);
+  expect(chat).toHaveLength(1);
+  expect(buttonsOf(chat[0]).some(b=>b.callback_data===`r:${CHAT_LEAD}`)).toBe(true);
+ });
+
  it('REQ-N2: 403 «bot was blocked» → ЛС выключены, ошибка сохранена; уведомление в группу ушло',async()=>{
   await optIn(OWNER,TG);
   const w=stubWorkerAndBot(worker,(call)=>{
@@ -149,7 +176,7 @@ describe('sendDmNotices · ограничения',()=>{
    return undefined;
   });
 
-  await sendDmNotices(db(),OWNER,BOT_TOKEN,'https://app.test',[{leadId:CHAT_LEAD,html:'<b>x</b>',plain:'x'}]);
+  await sendDmNotices(db(),OWNER,BOT_TOKEN,[{leadId:CHAT_LEAD,html:'<b>x</b>',plain:'x'}]);
 
   expect(DM_CONCURRENCY).toBe(5);
   expect(w.sent()).toHaveLength(12);
@@ -160,7 +187,7 @@ describe('sendDmNotices · ограничения',()=>{
  it('без подписчиков — ни одного вызова Bot API',async()=>{
   const w=stubWorkerAndBot(worker);
 
-  await sendDmNotices(db(),OWNER,BOT_TOKEN,'https://app.test',[{leadId:CHAT_LEAD,html:'x',plain:'x'}]);
+  await sendDmNotices(db(),OWNER,BOT_TOKEN,[{leadId:CHAT_LEAD,html:'x',plain:'x'}]);
 
   expect(w.botCalls).toHaveLength(0);
  });

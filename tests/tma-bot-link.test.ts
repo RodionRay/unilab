@@ -24,6 +24,12 @@ const privateMsg=(updateId:number,text:string,extra:Record<string,unknown>={},tg
  message:{message_id:50+updateId,chat:{id:tg,type:'private'},from:{id:tg,is_bot:false,first_name:'Анна',username:'anna_tg'},date:1,text,...extra},
 });
 const db=()=>testDb().db;
+/** A request that arrived on an attacker-chosen public https Host. */
+const hostRequest=(body:Record<string,unknown>)=>new Request('https://evil.example/api/workspace',{
+ method:'POST',
+ headers:{'Content-Type':'application/json',origin:'https://evil.example'},
+ body:JSON.stringify(body),
+});
 
 beforeAll(async()=>{
  testDb();
@@ -111,6 +117,21 @@ describe('бот · привязка Telegram в личке (REQ-L2)',()=>{
   expect(w.botCalls.filter(c=>c.method==='setChatMenuButton')).toHaveLength(0);
   expect(String(w.sent()[0]?.body.text)).toContain('https');
   expect(buttonsOf(w.sent()[0])).toEqual([]);
+ });
+
+ it('APP_URL не задан, запрос пришёл на публичный https Host → меню не ставится (адрес не из Host)',async()=>{
+  vi.stubEnv('APP_URL','');
+  vi.stubEnv('NEXT_PUBLIC_SITE_URL','');
+  const {code}=await createLinkCode(db(),OWNER,OWNER);
+  const w=stubWorkerAndBot(noWorker);
+  w.queueUpdates([privateMsg(7,`/start link_${code}`),privateMsg(8,'/start')]);
+
+  await POST(hostRequest({action:'poll_bot_updates'}));
+
+  expect(await findActiveLink(db(),OWNER,TG)).not.toBeNull();
+  expect(w.botCalls.filter(c=>c.method==='setChatMenuButton')).toHaveLength(0);
+  expect(w.sent()).toHaveLength(2);
+  expect(w.sent().flatMap(c=>buttonsOf(c))).toEqual([]);
  });
 
  it('нет чата уведомлений, но есть ожидающий код → бот опрашивается и привязывает',async()=>{

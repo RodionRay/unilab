@@ -90,7 +90,9 @@ Source: read-only scout of origin/dev @671338d + Telegram docs (core.telegram.or
 - REQ-A7 The system shall never return `notifyBotToken`, sealed secrets, session strings or proxy credentials to a
   tma actor, and shall never log initData or bearer tokens.
 - REQ-A8 `POST /api/tma/session` and link-code redemption shall be rate-limited per IP and per wsKey
-  (`lib/security/rate-limit.ts`).
+  (`lib/security/rate-limit.ts`). Per wsKey/workspace only failed attempts count (session: failed exchanges,
+  `lib/tma/exchange.ts::exchangeWithinWsKeyLimit`; redemption: well-formed failed claims after the per-tg-user limit,
+  `lib/tma/links.ts::redeemLinkCode`), so members' own launches and one stranger's junk lock nobody out.
 - REQ-A9 Data of workspace A shall never be returned to a session minted for workspace B, including when two
   workspaces share one bot token (link lookup keyed by (ownerId, tgUserId)).
 
@@ -99,7 +101,8 @@ Source: read-only scout of origin/dev @671338d + Telegram docs (core.telegram.or
   bit, base64url ≤ 60 chars, TTL 10 min) and show `t.me/<bot>?start=link_<code>`.
 - REQ-L2 When the bot poller receives `/start link_<code>` in a private chat, the system shall bind `from.id` to that
   member (one tg user ↔ one member per workspace), consume the code, reply with confirmation and set the chat's menu
-  button to the mini app URL.
+  button to the mini app URL. Mini app URLs (menu button, «Открыть» buttons) come only from a public https `APP_URL`,
+  never from the request Host (`lib/tma/bot-link.ts::publicMiniAppUrl`).
 - REQ-L3 Where a member already has a Login-Widget `oauth_accounts` telegram row, the system shall accept that tg id
   as linked without a code.
 - REQ-L4 When a member (or an admin for them) presses «Отключить», the system shall revoke the link, reset the chat's
@@ -117,7 +120,7 @@ Source: read-only scout of origin/dev @671338d + Telegram docs (core.telegram.or
 - REQ-S5 Every screen shall have loading, empty, error and offline states.
 
 ### Screens (MVP — order = build priority)
-- REQ-M1 Inbox: hot leads + conversations with unread/new first (leads/chats access), paginated, pull-to-refresh.
+- REQ-M1 Inbox: hot leads + conversations with unread/new first (leads/chats access), paginated, refresh button.
 - REQ-M2 Lead/conversation detail: history, AI draft (`draft`), send reply (`send_lead_message`) via MainButton,
   mark viewed (`mark_lead_viewed`); sending is idempotent per client nonce (double-tap → one message).
 - REQ-M3 Accounts: per-account health (status, warm-up cap used/limit, pause/error reason, last check), action
@@ -131,7 +134,8 @@ Source: read-only scout of origin/dev @671338d + Telegram docs (core.telegram.or
 
 ### Notices
 - REQ-N1 Where a member is linked and opted in, new-hot-lead / reply notices shall also go to their private chat with
-  an inline `web_app` «Открыть» button; group notices are unchanged.
+  an inline `web_app` «Открыть» button; group notices are unchanged. They follow the workspace notices switch
+  (`noticesOff` in link status) and skip a member whose private chat is the notices chat itself.
 - REQ-N2 Notice sending failures (blocked bot, 403) shall disable that member's DM opt-in and be shown in settings.
 
 ## Assumptions ledger

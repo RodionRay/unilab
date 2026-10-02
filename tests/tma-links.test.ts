@@ -129,6 +129,35 @@ describe('REQ-L1/L2/L5 · код привязки',()=>{
   expect(results.at(-1)).toEqual({ok:false,reason:'rate_limited'});
  });
 
+ it('REQ-A8: 60 мусорных /start link_x от одного чужака не блокируют чужой годный код',async()=>{
+  const {db}=testDb();
+  const stranger={id:666,username:'spam'};
+  for(let i=0;i<60;i++)await redeemLinkCode(db,OWNER,'link_x',stranger,BOT);
+  const {code}=await createLinkCode(db,OWNER,'manager-1');
+
+  expect(await redeemLinkCode(db,OWNER,'link_x',stranger,BOT)).toEqual({ok:false,reason:'rate_limited'});
+  expect(await redeemLinkCode(db,OWNER,`link_${code}`,TG,BOT)).toMatchObject({ok:true,userId:'manager-1'});
+ });
+
+ it('REQ-A8: 60 неудачных правильных по формату кодов от разных tg блокируют кабинет',async()=>{
+  const {db}=testDb();
+  for(let i=0;i<60;i++)await redeemLinkCode(db,OWNER,'C'.repeat(32),{id:5000+i,username:''},BOT);
+  const {code}=await createLinkCode(db,OWNER,'manager-1');
+
+  expect(await redeemLinkCode(db,OWNER,code,TG,BOT)).toEqual({ok:false,reason:'rate_limited'});
+ });
+
+ it('REQ-A8: удачные погашения не тратят лимит кабинета',async()=>{
+  const {db}=testDb();
+  for(let i=0;i<60;i++){
+   const {code}=await createLinkCode(db,OWNER,'manager-1');
+   expect((await redeemLinkCode(db,OWNER,code,{id:7000+i,username:''},BOT)).ok).toBe(true);
+  }
+  const {code}=await createLinkCode(db,OWNER,'manager-1');
+
+  expect((await redeemLinkCode(db,OWNER,code,TG,BOT)).ok).toBe(true);
+ });
+
  it('один tg ↔ один сотрудник: новый код другого сотрудника перепривязывает tg, старая ссылка отозвана',async()=>{
   const {db}=testDb();
   addMember('operator-1','operator');
