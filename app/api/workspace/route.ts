@@ -1446,13 +1446,13 @@ const NOTIFY_MAX_ATTEMPTS=5;
 const NOTIFY_CLAIM_MS=60_000;
 const NOTIFY_BATCH=20;
 
+/** Hot leads of one flush that also go privately (REQ-N1); the rest stay in the group summary. */
+const DM_HOT_LEADS_PER_FLUSH=3;
+
 /**
  * REQ-L9: leads with notifyPending are claimed (so parallel scans never send one lead twice), sent in one
  * Telegram message, then marked notifiedAt; a failed send is logged and retried on the next scan.
  */
-/** Hot leads of one flush that also go privately (REQ-N1); the rest stay in the group summary. */
-const DM_HOT_LEADS_PER_FLUSH=3;
-
 async function flushLeadNotifications(owner:string,settings:{notifyEnabled?:unknown;notifyBotToken?:unknown},appBase:string){
  if(!settings?.notifyEnabled)return;
  const db=database();
