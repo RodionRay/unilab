@@ -1,5 +1,5 @@
 import type { D1LikeDatabase } from "@/lib/db";
-import type { RateLimitRule } from "@/lib/security/rate-limit";
+import { consumeRateLimit, peekRateLimit, type RateLimitRule } from "@/lib/security/rate-limit";
 import { resolveWorkspaceContext } from "@/lib/staff";
 import { CRM_ACCESS_KEYS } from "@/lib/staff-types";
 import { ensureUserTables } from "@/lib/users";
@@ -21,15 +21,18 @@ export const TMA_ERROR_TEXT: Readonly<Record<TmaErrorCode, string>> = {
   rate_limited: "Слишком много попыток. Попробуйте позже.",
 };
 
-/** REQ-A8: POST /api/tma/session per client IP and per workspace key; counted before any HMAC work. */
+/**
+ * REQ-A8: POST /api/tma/session per client IP (every attempt, counted before any HMAC work) and per
+ * workspace key (failed exchanges only, so members' own launches never lock the others out).
+ */
 export const TMA_SESSION_RATE_LIMITS = {
   perIp: { name: "tma-session-ip", limit: 30, windowSec: 900 },
-  perWsKey: { name: "tma-session-ws", limit: 300, windowSec: 900 },
+  failedPerWsKey: { name: "tma-session-ws-fail", limit: 300, windowSec: 900 },
 } as const satisfies Record<string, RateLimitRule>;
 
 export type ExchangeResult =
   | { ok: true; body: SessionResponse }
-  | { ok: false; status: 401 | 403; code: TmaErrorCode; botLink?: string };
+  | { ok: false; status: 401 | 403 | 429; code: TmaErrorCode; botLink?: string; retryAfterSec?: number };
 
 async function memberName(db: D1LikeDatabase, userId: string, fallback: string): Promise<string> {
   await ensureUserTables();
@@ -75,4 +78,14 @@ export async function exchangeInitData(db: D1LikeDatabase, req: SessionRequest):
       workspace: { name: bot.workspaceName || "Кабинет" },
     },
   };
+}
+
+/** exchangeInitData behind the per-wsKey limit: blocked once the window holds too many failed exchanges. */
+export async function exchangeWithinWsKeyLimit(db: D1LikeDatabase, req: SessionRequest, nowMs = Date.now()): Promise<ExchangeResult> {
+  const rule = TMA_SESSION_RATE_LIMITS.failedPerWsKey;
+  const room = await peekRateLimit(rule, req.wsKey, nowMs);
+  if (!room.allowed) return { ok: false, status: 429, code: "rate_limited", retryAfterSec: room.retryAfterSec };
+  const result = await exchangeInitData(db, req);
+  if (!result.ok) await consumeRateLimit(rule, req.wsKey, nowMs);
+  return result;
 }

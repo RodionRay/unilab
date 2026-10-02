@@ -152,6 +152,27 @@ describe('POST /api/tma/session',()=>{
 
   expect(last?.status).toBe(429);
  });
+
+ it('REQ-A8: удачные обмены привязанных сотрудников не тратят лимит wsKey',async()=>{
+  await linkTelegram(OWNER,TG);
+  const key=await wsKeyOf();
+  for(let i=0;i<300;i++)expect((await exchange({wsKey:key,initData:initDataFor(TG)},`203.0.113.${i%250}`)).res.status).toBe(200);
+
+  const after=await exchange({wsKey:key,initData:initDataFor(TG)},'192.0.2.1');
+
+  expect(after.res.status).toBe(200);
+ });
+
+ it('REQ-A8: после лимита неудачных обменов wsKey закрыт и для привязанного',async()=>{
+  await linkTelegram(OWNER,TG);
+  const key=await wsKeyOf();
+  for(let i=0;i<300;i++)await exchange({wsKey:key,initData:'x=1'},`198.51.100.${i%250}`);
+
+  const after=await exchange({wsKey:key,initData:initDataFor(TG)},'192.0.2.1');
+
+  expect([after.res.status,after.json.code]).toEqual([429,'rate_limited']);
+  expect(Number(after.res.headers.get('retry-after'))).toBeGreaterThan(0);
+ });
 });
 
 describe('REQ-A9 · два кабинета на одном боте',()=>{
