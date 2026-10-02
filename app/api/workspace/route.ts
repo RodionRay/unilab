@@ -1168,8 +1168,9 @@ async function assignGroupsByLimit(owner:string,groupIds:readonly string[],accou
 
 /**
  * One by_limit write, atomic on the current row: only accountId and the error fields change (json_set),
- * and only while the group still has the account the plan saw and is not a member/request/error — a
- * join tick that landed between the plan and this write is never overwritten. true = row written.
+ * and only while the group still has the account the plan saw, is not a member/request/error and is not
+ * mid-join (joinState joining/scanning) — a join tick that landed between the plan and this write is
+ * never overwritten. true = row written.
  */
 async function writeByLimitAssignment(owner:string,groupId:string,planned:string,accountId:string){
  const res=await database().prepare(
@@ -1177,7 +1178,8 @@ async function writeByLimitAssignment(owner:string,groupId:string,planned:string
   "WHERE owner=? AND id=? AND kind='group' AND COALESCE(json_extract(data,'$.accountId'),'')=? "+
   "AND COALESCE(json_extract(data,'$.membership'),'') NOT IN ('joined','pending') "+
   "AND COALESCE(json_extract(data,'$.status'),'') NOT IN ('pending','error') "+
-  "AND COALESCE(json_extract(data,'$.joinedAt'),'')=''",
+  "AND COALESCE(json_extract(data,'$.joinedAt'),'')='' "+
+  "AND COALESCE(json_extract(data,'$.joinState'),'') NOT IN ('joining','scanning')",
  ).bind(accountId,owner,groupId,planned).run();
  return Number(res?.meta?.changes)>0;
 }

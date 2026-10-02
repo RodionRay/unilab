@@ -244,7 +244,7 @@ The confirm dialog previews the plan with the same helpers the server uses (`pag
 - Target order (`lib/group-filters.ts::byLimitTargetOrder`, `page.tsx::byLimitTargetIds`): the visible order;
   rows equal under it (with no explicit sort — all rows) go higher score first, unscored last.
 - Write (`route.ts::writeByLimitAssignment`): one `UPDATE … json_set` per row on `accountId`, `error`,
-  `joinAccountError`, `joinAccountErrorId` only, guarded by the planned `accountId` and by membership/status — a
+  `joinAccountError`, `joinAccountErrorId` only, guarded by the planned `accountId`, membership/status/`joinedAt` and `joinState` ≠ `joining`/`scanning` — a
   join tick that landed between the plan and the write is never overwritten (the row is skipped). Only
   owner-scoped existing ids (unknown/foreign → `rejected`).
 - Response: `{mode:'by_limit', updated, assignments, kept, replaced, unassigned, skipped, capacity, rejected,

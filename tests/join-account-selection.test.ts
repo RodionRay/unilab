@@ -465,6 +465,21 @@ describe('assign_group_accounts by_limit — распределение по д�
     expect(rec(gid(1))).toMatchObject({accountId:ACC_A,joinState:'queued',joinStateAt:'2026-10-02T00:00:00Z'});
   });
 
+  it('группа, которая сейчас вступает (joinState joining/scanning), не пересаживается',async()=>{
+    await addAccount(ACC_A,{});
+    addGroups(1,2);
+    planHook.after=()=>{
+      patch(gid(1),{joinState:'joining'});
+      patch(gid(2),{joinState:'scanning'});
+    };
+
+    const body=await readBody(await byLimit(ids(1,2)));
+
+    expect(body.updated).toBe(0);
+    expect(rec(gid(1)).accountId).toBe('');
+    expect(rec(gid(2)).accountId).toBe('');
+  });
+
   it('чужие и неизвестные группы не пишутся, чужие аккаунты не используются',async()=>{
     await addAccount(ACC_A,{});
     addGroups(1,1);
