@@ -2,6 +2,16 @@ import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {ACCOUNT_ID,OWNER,addRecord,login,postRequest,resetWorkspace,testDb} from './helpers/workspace-harness';
 
 vi.mock('cloudflare:workers',async()=>(await import('./helpers/workspace-harness')).cfModule);
+// Lets a test change the DB between the by_limit plan and its writes (a concurrent join tick).
+const planHook=vi.hoisted(()=>({after:undefined as undefined|(()=>void)}));
+vi.mock('@/lib/join-capacity',async(importOriginal)=>{
+  const mod=await importOriginal<typeof import('@/lib/join-capacity')>();
+  return {...mod,planAssignmentByLimit:(...args:Parameters<typeof mod.planAssignmentByLimit>)=>{
+    const plan=mod.planAssignmentByLimit(...args);
+    planHook.after?.();
+    return plan;
+  }};
+});
 vi.mock('@/lib/auth',async(importOriginal)=>({
   ...await importOriginal<typeof import('@/lib/auth')>(),
   getSessionUser:async()=>(await import('./helpers/workspace-harness')).authState.user,
@@ -264,12 +274,12 @@ describe('assign_group_accounts by_limit — распределение по д�
   const ids=(from:number,to:number)=>Array.from({length:to-from+1},(_,i)=>gid(from+i));
   const today=()=>moscowDayKey();
   function addGroups(from:number,to:number,data:Record<string,unknown>={}){
-    for(const id of ids(from,to))addRecord(id,'group',{name:id.slice(-4),url:`https://t.me/chat_${id.slice(-4)}`,membership:'none',status:'setup',joinedAt:'',accountId:'',...data});
+    for(const id of ids(from,to))addRecord(id,'group',{name:id.slice(-4),url:`https://t.me/chat_${id.slice(-4)}`,membership:'none',status:'setup',joinedAt:'',accountId:'',joinRelevance:{score:80,band:'auto',reasons:[]},...data});
   }
   function age(id:string,days:number){
     testDb().sqlite.prepare('UPDATE records SET created=? WHERE id=?').run(new Date(Date.now()-days*86_400_000).toISOString(),id);
   }
-  type ByLimitBody={ok:boolean;updated:number;capacity:number;skipped:number;rejected:number;unassigned:string[];assignments:{groupId:string;accountId:string}[];message:string};
+  type ByLimitBody={ok:boolean;updated:number;capacity:number;skipped:number;rejected:number;kept:number;replaced:number;unassigned:string[];assignments:{groupId:string;accountId:string}[];message:string};
   const readBody=(res:Response)=>res.json() as Promise<ByLimitBody>;
   const byLimit=(groupIds:string[],extra:Record<string,unknown>={})=>POST(postRequest({action:'assign_group_accounts',mode:'by_limit',groupIds,...extra}));
   const assignedTo=(id:string)=>ids(1,60).filter(g=>{try{return rec(g).accountId===id}catch{return false}}).length;
@@ -281,6 +291,7 @@ describe('assign_group_accounts by_limit — распределение по д�
     testDb().sqlite.prepare('DELETE FROM records WHERE id=?').run(ACCOUNT_ID);
   });
   afterEach(()=>{
+    planHook.after=undefined;
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
   });
@@ -295,7 +306,7 @@ describe('assign_group_accounts by_limit — распределение по д�
     expect(res.status).toBe(200);
     expect(body).toMatchObject({ok:true,updated:5,capacity:5,skipped:0,unassigned:ids(6,7)});
     expect(body.assignments).toHaveLength(5);
-    expect(body.message).toBe('Назначено 5, без аккаунта 2 — лимит на сегодня исчерпан (ёмкость 5)');
+    expect(body.message).toBe('Назначено 5, не назначено 2 — лимит на сегодня исчерпан (ёмкость 5)');
     expect(assignedTo(ACC_A)).toBe(5);
     expect(rec(gid(6)).accountId).toBe('');
   });
@@ -318,6 +329,8 @@ describe('assign_group_accounts by_limit — распределение по д�
     addGroups(10,27,{accountId:ACC_A});
     addGroups(28,29,{accountId:ACC_A,membership:'joined',joinedAt:'2026-09-01T00:00:00Z'});
     addGroups(30,30,{accountId:ACC_A,status:'error',error:'приватная'});
+    addGroups(31,33,{accountId:ACC_A,joinRelevance:{score:10,band:'skip',reasons:[]}});
+    addGroups(34,34,{accountId:ACC_A,url:''});
     addGroups(1,4);
 
     const body=await readBody(await byLimit(ids(1,4)));
@@ -376,7 +389,10 @@ describe('assign_group_accounts by_limit — распределение по д�
     const first=await readBody(await byLimit(ids(1,12)));
     const second=await readBody(await byLimit(ids(1,12)));
 
-    expect(second.assignments).toEqual(first.assignments);
+    expect(first.updated).toBe(10);
+    expect(second.assignments).toEqual([]);
+    expect(second.updated).toBe(0);
+    expect(second.kept).toBe(10);
     expect(second.capacity).toBe(first.capacity);
     expect(assignedTo(ACC_A)).toBe(5);
     expect(assignedTo(ACC_B)).toBe(5);
@@ -394,6 +410,59 @@ describe('assign_group_accounts by_limit — распределение по д�
     expect(body.updated).toBe(5);
     expect(rec(gid(1)).accountId).toBe(ACC_C);
     expect(rec(gid(2)).accountId).toBe(ACC_C);
+  });
+
+  it('группы не для вступления пропускаются: «Не вступать», ошибка, без ссылки',async()=>{
+    await addAccount(ACC_A,{});
+    addGroups(1,1,{joinRelevance:{score:10,band:'skip',reasons:[]}});
+    addGroups(2,2,{status:'error',error:'приватная'});
+    addGroups(3,3,{url:''});
+    addGroups(4,4);
+
+    const body=await readBody(await byLimit(ids(1,4)));
+
+    expect(body.skipped).toBe(3);
+    expect(body.assignments).toEqual([{groupId:gid(4),accountId:ACC_A}]);
+    expect(body.message).toBe('Назначено 1 (ёмкость 5) · пропущено 3 — не для вступления');
+    expect(rec(gid(1)).accountId).toBe('');
+  });
+
+  it('группа с аккаунтом фермы сохраняет его и расходует его ёмкость; не-фермовый аккаунт заменяется',async()=>{
+    await addAccount(ACC_A,{});
+    await addAccount(ACC_B,{});
+    await addAccount(ACC_C,{status:'frozen'});
+    addGroups(1,1,{accountId:ACC_B});
+    addGroups(2,2,{accountId:ACC_C});
+
+    const body=await readBody(await byLimit(ids(1,2)));
+
+    expect(body.kept).toBe(1);
+    expect(body.replaced).toBe(1);
+    expect(body.updated).toBe(1);
+    expect(rec(gid(1)).accountId).toBe(ACC_B);
+    expect(rec(gid(2)).accountId).not.toBe(ACC_C);
+  });
+
+  it('вступление, случившееся между планом и записью, не затирается (L7)',async()=>{
+    await addAccount(ACC_A,{});
+    addGroups(1,2);
+    planHook.after=()=>patch(gid(1),{membership:'joined',joinedAt:'2026-10-02T00:00:00Z',joinState:''});
+
+    const body=await readBody(await byLimit(ids(1,2)));
+
+    expect(body.updated).toBe(1);
+    expect(rec(gid(1))).toMatchObject({membership:'joined',joinedAt:'2026-10-02T00:00:00Z',accountId:''});
+    expect(rec(gid(2)).accountId).toBe(ACC_A);
+  });
+
+  it('поля, записанные параллельно (joinState), сохраняются при назначении (L7)',async()=>{
+    await addAccount(ACC_A,{});
+    addGroups(1,1);
+    planHook.after=()=>patch(gid(1),{joinState:'queued',joinStateAt:'2026-10-02T00:00:00Z'});
+
+    await byLimit(ids(1,1));
+
+    expect(rec(gid(1))).toMatchObject({accountId:ACC_A,joinState:'queued',joinStateAt:'2026-10-02T00:00:00Z'});
   });
 
   it('чужие и неизвестные группы не пишутся, чужие аккаунты не используются',async()=>{

@@ -5,6 +5,7 @@ import {
   groupMatchesFilters,
   parseGroupFilters,
   serializeGroupFilters,
+  byLimitTargetOrder,
   sortGroups,
   type GroupFilters,
 } from "@/lib/group-filters";
@@ -93,6 +94,19 @@ describe("group sort (REQ-1)", () => {
 
   it("relevance ↑ puts lower scores first and still keeps unscored last", () => {
     expect(sortGroups(rows, "score_asc").map((r) => r.id)).toEqual(["c", "a", "d", "b", "none"]);
+  });
+
+  it("bulk targets: without an explicit order take higher scores first, unscored last (L5)", () => {
+    expect(byLimitTargetOrder(rows, null).map((r) => r.id)).toEqual(["b", "a", "d", "c", "none"]);
+  });
+
+  it("bulk targets: keep the visible order and break only its ties by score (L5)", () => {
+    const visible = [
+      { id: "x", tie: 1, data: group({ joinRelevance: rel("review", 40) }) },
+      { id: "y", tie: 1, data: group({ joinRelevance: rel("auto", 90) }) },
+      { id: "z", tie: 2, data: group({ joinRelevance: rel("auto", 99) }) },
+    ];
+    expect(byLimitTargetOrder(visible, (r) => r.tie).map((r) => r.id)).toEqual(["y", "x", "z"]);
   });
 
   it("does not mutate the input", () => {
