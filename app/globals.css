@@ -5081,6 +5081,30 @@ button[data-slot="button"].vk-danger-text {
 .vk-open-btn * {
   font-weight: inherit;
 }
+@media (max-width: 480px) {
+  .vk-composer {
+    padding-left: 16px !important;
+    padding-right: 16px !important;
+  }
+  .vk-lead-actions {
+    gap: 6px;
+  }
+  .vk-lead-actions > a[data-slot="button"],
+  .vk-lead-actions > button[data-slot="button"]:not([data-size="icon"]) {
+    padding-left: 12px;
+    padding-right: 12px;
+    font-size: 0.8125rem;
+  }
+  /* «(откроется в новой вкладке)» stays for screen readers; the glyph goes to make room. */
+  .vk-open-icon {
+    display: none;
+  }
+}
+@media (max-width: 600px) {
+  .vk-bulkbar .groups-actionbar-right > button {
+    flex: 1 1 auto;
+  }
+}
 
 /* Import: form left, per-line result (or the accepted formats) right */
 .vk-import {
@@ -5374,7 +5398,7 @@ button[data-slot="alert-dialog-action"].vk-danger-action,
 [data-slot="button"].vk-danger-action {
   background: var(--spike-error) !important;
   border-color: var(--spike-error) !important;
-  color: #fff !important;
+  color: #1a0a06 !important;
 }
 .vk-cell-actions {
   display: flex;
@@ -5426,15 +5450,19 @@ button[data-slot="alert-dialog-action"].vk-danger-action,
   font-weight: 700;
 }
 .vk-source-add {
+  display: grid;
+  gap: 6px;
+  width: min(100%, 440px);
+}
+.vk-source-add-row {
   display: flex;
   gap: 8px;
-  width: min(100%, 440px);
+}
+.vk-source-add .vk-field-error {
+  margin-top: 0;
 }
 .vk-source-add input {
   min-width: 0;
-}
-.vk-source-error {
-  margin-top: -6px;
 }
 .vk-empty {
   display: flex;

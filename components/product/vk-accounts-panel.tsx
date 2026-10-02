@@ -287,7 +287,7 @@ export function VkAccountsPanel({ accounts, proxies, searchCap, perProxyCap, loa
             </Button>
           </div>
           {!lineCount && !progress && !formError && <p id="vk-import-hint" className="small-note vk-import-hint">Кнопка включится, когда вставите хотя бы одну строку</p>}
-          {!activeProxies.length && (
+          {!loading && !activeProxies.length && (
             <p className="small-note vk-hint-warn"><AlertTriangle size={13} />Нет активного прокси — аккаунты сохранятся без проверки со статусом «Нет прокси».</p>
           )}
         </div>

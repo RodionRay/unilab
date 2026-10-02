@@ -146,24 +146,26 @@ export function VkSourcesPanel({ sources, canScan, hasAccounts, loading, run, on
           noValidate
         >
           <label htmlFor="vk-source-url" className="sr-only">Ссылка на сообщество VK</label>
-          <Input
-            id="vk-source-url"
-            value={url}
-            inputMode="url"
-            autoComplete="off"
-            placeholder="vk.com/имя_сообщества"
-            aria-invalid={urlError ? true : undefined}
-            aria-describedby={urlError ? 'vk-source-error' : undefined}
-            disabled={adding}
-            onChange={(e) => { setUrl(e.target.value); if (urlError) setUrlError(''); }}
-          />
-          <Button type="submit" variant="outline" disabled={adding || !url.trim() || !canScan} title={scanBlockedReason || undefined}>
-            {adding ? <Loader2 className="animate-spin" size={15} /> : <Plus size={15} />}Сообщество
-          </Button>
+          <div className="vk-source-add-row">
+            <Input
+              id="vk-source-url"
+              value={url}
+              inputMode="url"
+              autoComplete="off"
+              placeholder="vk.com/имя_сообщества"
+              aria-invalid={urlError ? true : undefined}
+              aria-describedby={urlError ? 'vk-source-error' : undefined}
+              disabled={adding}
+              onChange={(e) => { setUrl(e.target.value); if (urlError) setUrlError(''); }}
+            />
+            <Button type="submit" variant="outline" disabled={adding || !url.trim() || !canScan} title={scanBlockedReason || undefined}>
+              {adding ? <Loader2 className="animate-spin" size={15} /> : <Plus size={15} />}Сообщество
+            </Button>
+          </div>
+          {urlError && <p id="vk-source-error" className="vk-field-error" role="alert">{urlError}</p>}
         </form>
         )}
       </div>
-      {urlError && <p id="vk-source-error" className="vk-field-error vk-source-error" role="alert">{urlError}</p>}
       {!loading && !canScan && (hasAccounts || ordered.length > 0) && (
         <p className="vk-blocked-note" role="status">
           <AlertTriangle size={14} aria-hidden />
