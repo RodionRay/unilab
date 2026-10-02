@@ -2846,13 +2846,23 @@ textarea:focus-visible,
   white-space: nowrap;
 }
 
-.groups-filterbar-field select {
+/* One control height and shape across the bar: search, selects, score and reset share a line. */
+.groups-filterbar input,
+.groups-filterbar select[data-slot="native-select"] {
+  height: 36px;
+  min-height: 36px;
+}
+
+.groups-filterbar select[data-slot="native-select"] {
+  padding-left: 14px;
+  border-color: var(--spike-border);
+  border-radius: var(--spike-radius-pill);
+  background-color: var(--spike-paper);
   color: var(--spike-text);
 }
 
 .groups-filterbar-min {
   width: 72px;
-  height: 2rem;
   font-variant-numeric: tabular-nums;
 }
 
@@ -2889,15 +2899,11 @@ textarea:focus-visible,
   .groups-filterbar-min {
     width: 100%;
   }
-  .groups-filterbar-field select {
-    height: 2.25rem;
-  }
-  .groups-filterbar-min {
-    height: 2.25rem;
-  }
+  /* Reset fills its half-width cell instead of pushing past the viewport edge. */
   .groups-filterbar > button {
-    justify-self: start;
-    height: 2.25rem;
+    justify-self: stretch;
+    min-width: 0;
+    padding-inline: 10px;
   }
 }
 

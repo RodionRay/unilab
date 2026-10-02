@@ -3849,7 +3849,7 @@ function WorkspaceHome(){
                       <span className="sr-only">Поиск групп</span>
                       <Input
                         type="search"
-                        placeholder="Название, @username, ссылка или причина"
+                        placeholder="Название, ссылка или причина"
                         value={groupFilters.q}
                         maxLength={GROUP_SEARCH_MAX}
                         onChange={e=>updateGroupFilters({q:e.target.value})}
@@ -3911,7 +3911,7 @@ function WorkspaceHome(){
                           </span>
                           {sortedList.length>0&&(
                             <Button size="sm" variant="outline" onClick={()=>setGroupSelected(sortedList.map(r=>r.id))}>
-                              Выбрать все ({sortedList.length})
+                              Выбрать все
                             </Button>
                           )}
                         </>
@@ -5639,7 +5639,7 @@ function WorkspaceHome(){
           <AlertDialogHeader>
             <AlertDialogTitle>Распределить по лимитам — групп: {byLimitPlan?.total??0}</AlertDialogTitle>
             <AlertDialogDescription>
-              {groupSelected.length?'Выбранным группам':'Всем группам текущего списка'} — активные аккаунты, каждому не больше, чем он может вступить сегодня. Только назначение: вступление идёт как обычно.
+              {groupSelected.length?'Выбранным группам':'Всем группам списка'} — активные аккаунты в пределах их лимита на сегодня. Только назначение: вступление идёт как обычно.
             </AlertDialogDescription>
           </AlertDialogHeader>
           {byLimitPlan&&(
