@@ -108,6 +108,26 @@ export async function consumeRateLimit(
   return { allowed: count <= rule.limit, retryAfterSec: Math.max(1, expires - nowSec) };
 }
 
+/**
+ * Whether `subject` still has room under `rule` in the current window, without counting an attempt.
+ * For limits that count only failures: peek before the work, consumeRateLimit after it failed.
+ */
+export async function peekRateLimit(
+  rule: RateLimitRule,
+  subject: string,
+  nowMs = Date.now(),
+): Promise<RateLimitResult> {
+  await ensureTable();
+  const nowSec = Math.floor(nowMs / 1000);
+  const windowStart = nowSec - (nowSec % rule.windowSec);
+  const row = await database()
+    .prepare("SELECT window_start, count FROM rate_limits WHERE key = ?")
+    .bind(await bucketKey(rule, subject))
+    .first<{ window_start: number; count: number }>();
+  const count = row && Number(row.window_start) === windowStart ? Number(row.count) : 0;
+  return { allowed: count < rule.limit, retryAfterSec: Math.max(1, windowStart + rule.windowSec - nowSec) };
+}
+
 /** Forgets all counted attempts of `subject` under `rule`. */
 export async function resetRateLimit(rule: RateLimitRule, subject: string): Promise<void> {
   await ensureTable();
