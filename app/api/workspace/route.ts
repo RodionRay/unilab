@@ -1453,7 +1453,7 @@ const DM_HOT_LEADS_PER_FLUSH=3;
  * REQ-L9: leads with notifyPending are claimed (so parallel scans never send one lead twice), sent in one
  * Telegram message, then marked notifiedAt; a failed send is logged and retried on the next scan.
  */
-async function flushLeadNotifications(owner:string,settings:{notifyEnabled?:unknown;notifyBotToken?:unknown},appBase:string){
+async function flushLeadNotifications(owner:string,settings:{notifyEnabled?:unknown;notifyBotToken?:unknown}){
  if(!settings?.notifyEnabled)return;
  const db=database();
  const rows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='lead' AND json_extract(data,'$.notifyPending')=1 ORDER BY created LIMIT ?").bind(owner,NOTIFY_BATCH).all();
@@ -1475,7 +1475,7 @@ async function flushLeadNotifications(owner:string,settings:{notifyEnabled?:unkn
  })));
  // Private copies on the first attempt only: a failed group send is retried, the DMs are not repeated.
  const hot=claimed.filter(c=>c.data.temperature==='hot'&&!Number(c.data.notifyAttempts)).slice(0,DM_HOT_LEADS_PER_FLUSH);
- if(hot.length)await sendDmNotices(db,owner,String(settings.notifyBotToken||'').trim(),appBase,hot.map(c=>({
+ if(hot.length)await sendDmNotices(db,owner,String(settings.notifyBotToken||'').trim(),hot.map(c=>({
   leadId:c.id,
   ...buildPrivateLeadNotice({name:String(c.data.name||''),source:String(c.data.source||''),message:String(c.data.message||'')}),
  })));
@@ -1601,7 +1601,7 @@ async function notifyConversation(db:D1LikeDatabase,owner:string,ctx:NotifyCtx,e
    else await rememberBotMessage(db,owner,chatId,sent.messageId,ev.leadId);
   }
   // REQ-N1: replies also go privately to opted-in members, after the group notice.
-  if(ev.event==='client_reply')await sendDmNotices(db,owner,token,ctx.appBase,[{leadId:ev.leadId,...buildPrivateConversationNotice(facts)}]);
+  if(ev.event==='client_reply')await sendDmNotices(db,owner,token,[{leadId:ev.leadId,...buildPrivateConversationNotice(facts)}]);
  }catch(e){
   console.error('[workspace] notify_conversation:',String((e as Error)?.message||e).slice(0,300));
  }
@@ -2207,7 +2207,7 @@ async function handleBotCommand(db:D1LikeDatabase,owner:string,ctx:NotifyCtx,tok
  };
  if(cmd.kind==='ignore')return '';
  if(isPrivateCommand(cmd)){
-  await handlePrivateCommand(db,owner,token,ctx.appBase,cmd);
+  await handlePrivateCommand(db,owner,token,cmd);
   return '';
  }
  if(cmd.kind==='callback_other'){
@@ -3008,7 +3008,7 @@ export async function POST(req:Request){const actor=await readActor(req);if(!act
     await db.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)').bind(crypto.randomUUID(),owner,'lead',JSON.stringify(lead),null,new Date().toISOString()).run();
     added++;
    }
-   try{await flushLeadNotifications(owner,settings,notifyCtx.appBase)}catch(e){console.error('[workspace] notify_leads:',String((e as Error)?.message||e).slice(0,300))}
+   try{await flushLeadNotifications(owner,settings)}catch(e){console.error('[workspace] notify_leads:',String((e as Error)?.message||e).slice(0,300))}
    // Пересчёт метрик группы по всем лидам этой groupId
    const allLeads=await db.prepare("SELECT data FROM records WHERE owner=? AND kind='lead'").bind(owner).all();
    const counts={hot:0,warm:0,cold:0};
