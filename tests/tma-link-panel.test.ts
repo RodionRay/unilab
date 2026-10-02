@@ -2,12 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LinkStatus } from "@/lib/tma/contract";
 import {
   LINK_POLL_INTERVAL_MS,
+  badgeFor,
   classifyFailure,
+  cooldownLeftSec,
+  formatCooldown,
   createLinkPoller,
   describeDmError,
   initialLinkState,
   linkReducer,
   minutesLeft,
+  noticesOffHint,
   pluralMinutes,
   type LinkState,
 } from "@/components/product/tma-link-state";
@@ -80,13 +84,43 @@ describe("linkReducer", () => {
   });
 });
 
+describe("rate-limit cooldown", () => {
+  const limited = classifyFailure("create_code", 429, { code: "rate_limited" }, "90", NOW);
+  it("blocks retries until Retry-After elapses", () => {
+    expect(cooldownLeftSec(limited, NOW)).toBe(90);
+    expect(cooldownLeftSec(limited, NOW + 89_001)).toBe(1);
+    expect(cooldownLeftSec(limited, NOW + 90_000)).toBe(0);
+  });
+  it("no cooldown for other failures or a 429 without Retry-After", () => {
+    expect(cooldownLeftSec(classifyFailure("status", null, null, null, NOW), NOW)).toBe(0);
+    expect(cooldownLeftSec(classifyFailure("create_code", 429, {}, null, NOW), NOW)).toBe(0);
+    expect(cooldownLeftSec(null, NOW)).toBe(0);
+  });
+});
+
+describe("badgeFor", () => {
+  it("claims nothing while the status is unknown (loading or the first load failed)", () => {
+    const loading = initialLinkState(true);
+    expect(badgeFor(loading)).toBeNull();
+    const failed = linkReducer(loading, { type: "failed", failure: classifyFailure("status", null, null, null, NOW) });
+    expect(failed.phase).toBe("loading");
+    expect(badgeFor(failed)).toBeNull();
+  });
+  it("names the known states", () => {
+    expect(badgeFor(linkReducer(initialLinkState(true), { type: "status_loaded", status: UNLINKED }))).toEqual({ tone: "neutral", text: "Не подключено" });
+    expect(badgeFor(linkReducer(initialLinkState(true), { type: "status_loaded", status: LINKED }))).toEqual({ tone: "success", text: "Подключено" });
+    expect(badgeFor(pending())).toEqual({ tone: "warning", text: "Ждём подтверждения" });
+    expect(badgeFor(initialLinkState(false))).toEqual({ tone: "neutral", text: "Нужен бот" });
+  });
+});
+
 describe("classifyFailure", () => {
   it("network when fetch threw", () => {
     expect(classifyFailure("status", null, null, null)).toMatchObject({ kind: "network", action: "status" });
   });
-  it("429 with Retry-After → minutes in words", () => {
-    const f = classifyFailure("create_code", 429, { code: "rate_limited", error: "x" }, "540");
-    expect(f).toMatchObject({ kind: "rate_limited", retryAfterSec: 540 });
+  it("429 with Retry-After → minutes in words, retry moment pinned to the response time", () => {
+    const f = classifyFailure("create_code", 429, { code: "rate_limited", error: "x" }, "540", NOW);
+    expect(f).toMatchObject({ kind: "rate_limited", retryAfterSec: 540, retryAtMs: NOW + 540_000 });
     expect(f.message).toContain("через 9 минут");
     expect(classifyFailure("create_code", 429, {}, "30").message).toContain("через 30 с.");
     expect(classifyFailure("create_code", 429, {}, null).message).toContain("чуть позже");
@@ -122,10 +156,21 @@ describe("copy helpers", () => {
   it("pluralMinutes", () => {
     expect([1, 2, 5, 11, 21, 22, 10].map(pluralMinutes)).toEqual(["1 минуту", "2 минуты", "5 минут", "11 минут", "21 минуту", "22 минуты", "10 минут"]);
   });
-  it("describeDmError: blocked bot → /start hint; other → quoted; empty → empty", () => {
-    expect(describeDmError("Forbidden: bot was blocked by the user")).toContain("откройте его и нажмите /start");
-    expect(describeDmError("timeout")).toContain("(timeout)");
-    expect(describeDmError("  ")).toBe("");
+  it("describeDmError: blocked bot → «Старт» hint with the bot link; other → quoted; empty → null", () => {
+    const blocked = describeDmError("Forbidden: bot was blocked by the user");
+    expect(blocked).toMatchObject({ openBot: true });
+    expect(blocked?.text).toContain("нажмите «Старт»");
+    expect(blocked?.text).not.toContain("/start");
+    expect(describeDmError("timeout")).toMatchObject({ openBot: false, text: expect.stringContaining("(timeout)") });
+    expect(describeDmError("  ")).toBeNull();
+  });
+  it("formatCooldown: seconds under a minute, m:ss above", () => {
+    expect([45, 60, 539, 1].map(formatCooldown)).toEqual(["45 с", "1:00", "8:59", "1 с"]);
+  });
+  it("noticesOffHint only for a linked member whose workspace notices are off", () => {
+    expect(noticesOffHint({ ...LINKED, noticesOff: true })).toContain("выключил уведомления кабинета");
+    expect(noticesOffHint({ ...LINKED, noticesOff: false })).toBe("");
+    expect(noticesOffHint({ ...UNLINKED, noticesOff: true })).toBe("");
   });
 });
 

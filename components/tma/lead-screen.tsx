@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useRef, useState } from "react";
-import { AlertCircle, Check, Clock3, Flame } from "lucide-react";
+import { AlertCircle, Check, CircleHelp, Clock3, Flame } from "lucide-react";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Textarea } from "@/components/ui/textarea";
 import { Spinner } from "@/components/ui/spinner";
@@ -13,6 +13,7 @@ import { toApiError, useFeedQuery, useOnline, useTmaSession } from "@/components
 import { dayKey, formatClock, formatDayLabel } from "@/components/tma/format";
 import { Avatar, ErrorState } from "@/components/tma/parts";
 import { atLeast, haptic, MAIN_BUTTON_COLOR, MAIN_BUTTON_TEXT_COLOR } from "@/components/tma/telegram";
+import { describeSendFailure, displayStatus, type DisplayStatus } from "@/components/tma/send-status";
 
 type Lead = LeadFeed["lead"];
 
@@ -69,6 +70,9 @@ function LeadView({ lead, reload, hasMainButton }: { lead: Lead; reload(): Promi
   const [sendError, setSendError] = useState("");
   const [drafting, setDrafting] = useState(false);
   const [draftError, setDraftError] = useState("");
+  /** Texts whose send came back 504 (outcome unknown) in this session: their pending entry is shown as unknown. */
+  const [unknownTexts, setUnknownTexts] = useState<ReadonlySet<string>>(() => new Set());
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const nonce = useRef(new SendNonce());
   const inFlight = useRef(false);
   const scroller = useRef<HTMLDivElement>(null);
@@ -90,13 +94,21 @@ function LeadView({ lead, reload, hasMainButton }: { lead: Lead; reload(): Promi
       haptic(app, "success");
       setText("");
       await reload();
+      setNowMs(Date.now());
       setPending(null);
     } catch (e) {
       const err = toApiError(e);
       if (err.code === "session_expired") onFatal(err);
       haptic(app, "error");
       setPending(null);
-      setSendError(err.code === "network" ? "Нет соединения — сообщение не отправлено. Нажмите «Отправить» ещё раз." : err.message);
+      const failure = describeSendFailure(err);
+      setSendError(failure.text);
+      if (failure.kind === "unknown") setUnknownTexts((prev) => new Set(prev).add(body));
+      // 504/409: the server holds an entry for this text; show it in the history with its real status.
+      if (failure.kind === "unknown" || failure.kind === "blocked") {
+        await reload().catch(() => undefined);
+        setNowMs(Date.now());
+      }
     } finally {
       inFlight.current = false;
       setSending(false);
@@ -177,7 +189,7 @@ function LeadView({ lead, reload, hasMainButton }: { lead: Lead; reload(): Promi
                   </li>
                 ) : null}
                 <li className="flex flex-col">
-                  <MessageBubble message={m} />
+                  <MessageBubble message={m} status={m === pending ? "pending" : displayStatus(m, nowMs, unknownTexts)} />
                 </li>
               </Fragment>
             );
@@ -299,32 +311,34 @@ function OriginalBubble({ lead, collapsedByDefault }: { lead: Lead; collapsedByD
   );
 }
 
-function MessageBubble({ message }: { message: LeadMessage }) {
+function MessageBubble({ message, status }: { message: LeadMessage; status: DisplayStatus }) {
   const ours = message.from === "us";
   return (
-    <Bubble align={ours ? "end" : "start"} variant="muted" className={cn("max-w-[85%]", ours ? "self-end" : "self-start")} data-testid={`bubble-${message.status}`}>
+    <Bubble align={ours ? "end" : "start"} variant="muted" className={cn("max-w-[85%]", ours ? "self-end" : "self-start")} data-testid={`bubble-${status}`}>
       <BubbleContent
         className={cn(
           "rounded-[18px] px-3 py-1.5 text-[16px] leading-snug text-(--tma-text) [overflow-wrap:anywhere] whitespace-pre-wrap",
           ours ? "tma-tail-out self-end bg-(--tma-bubble-out)!" : "tma-tail-in bg-(--tma-bubble-in)!",
-          message.status === "failed" && "ring-1 ring-(--tma-destructive)",
+          status === "failed" && "ring-1 ring-(--tma-destructive)",
         )}
       >
         {message.text}
         <span className="float-right mt-1.5 ml-2 flex translate-y-0.5 items-center gap-0.5 text-[12px] text-(--tma-hint)">
           <span className="tma-num">{formatClock(message.at)}</span>
-          {ours ? <StatusIcon status={message.status} /> : null}
+          {ours ? <StatusIcon status={status} /> : null}
         </span>
       </BubbleContent>
-      {message.status === "failed" ? (
+      {status === "failed" ? (
         <p className="pr-1 text-right text-[12px] text-(--tma-destructive)">Не доставлено{message.error ? `: ${message.error}` : ""}</p>
       ) : null}
+      {status === "unknown" ? <p className="pr-1 text-right text-[12px] text-(--tma-hint)">Статус неизвестен, проверьте в Telegram</p> : null}
     </Bubble>
   );
 }
 
-function StatusIcon({ status }: { status: LeadMessage["status"] }) {
+function StatusIcon({ status }: { status: DisplayStatus }) {
   if (status === "sent") return <Check className="size-3.5 text-(--tma-link)" aria-label="отправлено" />;
   if (status === "pending") return <Clock3 className="size-3.5" aria-label="отправляется" />;
+  if (status === "unknown") return <CircleHelp className="size-3.5" aria-label="статус неизвестен" />;
   return <AlertCircle className="size-3.5 text-(--tma-destructive)" aria-label="не доставлено" />;
 }

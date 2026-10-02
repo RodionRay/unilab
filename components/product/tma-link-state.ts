@@ -16,6 +16,8 @@ export type LinkFailure = {
   /** The request that failed: «Повторить» repeats it. */
   action: LinkAction;
   retryAfterSec?: number;
+  /** rate_limited with Retry-After: epoch ms before which a retry is pointless (buttons stay disabled). */
+  retryAtMs?: number;
 };
 
 export type LinkCode = { startLink: string; expiresAtMs: number };
@@ -123,6 +125,36 @@ export function linkReducer(state: LinkState, event: LinkEvent): LinkState {
   }
 }
 
+export type LinkBadge = { tone: "success" | "warning" | "neutral"; text: string };
+
+/** Header badge; null while the status is unknown (first load running or failed): never claim «Не подключено» blind. */
+export function badgeFor(state: LinkState): LinkBadge | null {
+  if (state.phase === "loading") return null;
+  if (state.phase === "linked") return { tone: "success", text: "Подключено" };
+  if (state.phase === "pending") return { tone: "warning", text: "Ждём подтверждения" };
+  if (state.phase === "no_bot") return { tone: "neutral", text: "Нужен бот" };
+  return { tone: "neutral", text: "Не подключено" };
+}
+
+/** Seconds until a rate-limited request may be repeated; 0 = may retry now. */
+export function cooldownLeftSec(failure: LinkFailure | null, nowMs: number): number {
+  if (!failure?.retryAtMs) return 0;
+  const left = failure.retryAtMs - nowMs;
+  return left <= 0 ? 0 : Math.ceil(left / 1000);
+}
+
+/** «45 с» under a minute, «8:59» above. */
+export function formatCooldown(sec: number): string {
+  if (sec < 60) return `${sec} с`;
+  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+}
+
+/** Private notices are on but the owner switched workspace notices off: say why nothing arrives. */
+export function noticesOffHint(status: LinkStatus): string {
+  if (!status.linked || !status.noticesOff) return "";
+  return "Владелец выключил уведомления кабинета, поэтому личные уведомления сейчас не приходят.";
+}
+
 /** Whole minutes left, rounded up («действует 10 минут»); 0 when expired. */
 export function minutesLeft(expiresAtMs: number, nowMs: number): number {
   const left = expiresAtMs - nowMs;
@@ -151,6 +183,7 @@ export function classifyFailure(
   httpStatus: number | null,
   body: unknown,
   retryAfterHeader: string | null,
+  nowMs: number = Date.now(),
 ): LinkFailure {
   if (httpStatus === null) return { kind: "network", message: NETWORK_TEXT, action };
   const obj = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
@@ -158,7 +191,8 @@ export function classifyFailure(
   const serverText = typeof obj.error === "string" && obj.error.trim() ? obj.error.trim() : "";
   if (httpStatus === 429 || code === "rate_limited") {
     const retryAfterSec = Number(retryAfterHeader) > 0 ? Math.ceil(Number(retryAfterHeader)) : undefined;
-    return { kind: "rate_limited", message: `Слишком много попыток. ${retryText(retryAfterSec)}`, action, ...(retryAfterSec ? { retryAfterSec } : {}) };
+    const wait = retryAfterSec ? { retryAfterSec, retryAtMs: nowMs + retryAfterSec * 1000 } : {};
+    return { kind: "rate_limited", message: `Слишком много попыток. ${retryText(retryAfterSec)}`, action, ...wait };
   }
   if (httpStatus === 401 || code === "session_expired") {
     return { kind: "session", message: "Сессия кабинета истекла. Обновите страницу и войдите снова.", action };
@@ -174,14 +208,16 @@ export function classifyFailure(
   return { kind: "other", message: serverText || "Не получилось. Повторите.", action };
 }
 
-/** dmError (free text from the bot sender) → one sentence the member can act on. */
-export function describeDmError(dmError: string): string {
+export type DmProblem = { text: string; /** The fix is «open the bot and press Старт»: show the bot link inline. */ openBot: boolean };
+
+/** dmError (free text from the bot sender) → one sentence the member can act on; null = no problem. */
+export function describeDmError(dmError: string): DmProblem | null {
   const raw = dmError.trim();
-  if (!raw) return "";
+  if (!raw) return null;
   if (/block|forbidden|403|chat not found|deactivated|blocked/i.test(raw)) {
-    return "Бот не может написать вам: откройте его и нажмите /start, затем включите уведомления снова.";
+    return { text: "Бот не может написать вам: откройте бота и нажмите «Старт», затем включите уведомления снова.", openBot: true };
   }
-  return `Последнее личное уведомление не доставлено (${raw.slice(0, 160)}). Включите уведомления снова.`;
+  return { text: `Последнее личное уведомление не доставлено (${raw.slice(0, 160)}). Включите уведомления снова.`, openBot: false };
 }
 
 export type PollerDeps = {

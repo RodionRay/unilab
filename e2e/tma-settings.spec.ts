@@ -15,6 +15,7 @@ const SHOTS = process.env.TMA_SETTINGS_SHOTS ?? "";
 const USER = { id: "u-e2e-owner", email: "anna@example.test", name: "Анна Орлова" };
 const APP_URL = "https://crm.unilab.example/tma/Wk3yQ9mZ2bX7pL4sT8vN";
 const START_LINK = "https://t.me/unilab_leads_bot?start=link_Q2x9vT4mZp8RkY3wN6sLb0Hc";
+const BOT_LINK = "https://t.me/unilab_leads_bot";
 
 test.skip(!SECRET, "TMA_E2E_SESSION_SECRET not set: /app needs a signed session cookie");
 
@@ -26,13 +27,23 @@ function sessionCookie(): string {
   return `${payload}.${createHmac("sha256", SECRET).update(payload).digest("base64url")}`;
 }
 
-type Link = { linked: boolean; tgUsername: string; dmNotices: boolean; dmError: string; appUrl: string; startLink?: string; expiresAt?: number };
+type Link = {
+  linked: boolean;
+  tgUsername: string;
+  dmNotices: boolean;
+  dmError: string;
+  appUrl: string;
+  botLink: string;
+  noticesOff: boolean;
+  startLink?: string;
+  expiresAt?: number;
+};
 type Reply = { status: number; body: unknown; headers?: Record<string, string> } | "abort";
 type LinkHandler = (action: string, body: Record<string, unknown>) => Reply | undefined;
 type Opts = { owner?: boolean; botToken?: string; link?: Partial<Link>; handler?: LinkHandler };
 
-const UNLINKED: Link = { linked: false, tgUsername: "", dmNotices: false, dmError: "", appUrl: APP_URL };
-const LINKED: Link = { linked: true, tgUsername: "anna_orlova", dmNotices: true, dmError: "", appUrl: APP_URL };
+const UNLINKED: Link = { linked: false, tgUsername: "", dmNotices: false, dmError: "", appUrl: APP_URL, botLink: BOT_LINK, noticesOff: false };
+const LINKED: Link = { ...UNLINKED, linked: true, tgUsername: "anna_orlova", dmNotices: true };
 
 function workspacePayload(owner: boolean, botToken: string) {
   return {
@@ -98,6 +109,14 @@ async function shot(page: Page, name: string): Promise<void> {
   await page.screenshot({ path: path.join(SHOTS, `${width}-${name}-viewport.png`), animations: "disabled" });
 }
 
+/** Viewport shot of an open dialog once its 0.24 s open animation has finished. */
+async function dialogShot(page: Page, name: string): Promise<void> {
+  if (!SHOTS) return;
+  mkdirSync(SHOTS, { recursive: true });
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: path.join(SHOTS, `${page.viewportSize()?.width}-${name}.png`), animations: "disabled" });
+}
+
 const actionsOf = (calls: Record<string, unknown>[], action: string) => calls.filter((c) => c.action === action);
 
 test.describe("Telegram-приложение in settings", () => {
@@ -107,6 +126,7 @@ test.describe("Telegram-приложение in settings", () => {
     expect(titles.indexOf("Telegram-приложение")).toBe(titles.indexOf("Уведомления в Telegram") + 1);
     await expect(panel(page).getByRole("button", { name: "Подключить Telegram" })).toBeVisible();
     await expect(panel(page).getByText("Не подключено")).toBeVisible();
+    await expect(panel(page).locator(".badge")).toHaveCount(1);
     expect(actionsOf(calls, "status")).toHaveLength(1);
     await shot(page, "1-not-linked");
   });
@@ -134,6 +154,7 @@ test.describe("Telegram-приложение in settings", () => {
     await expect(open).toHaveAttribute("target", "_blank");
     await expect(panel(page).getByTestId("tma-countdown")).toContainText("действует ещё 10 минут");
     await expect(panel(page).getByText("Ждём подтверждения", { exact: true })).toBeVisible();
+    await expect(panel(page).getByRole("button", { name: "Скрыть ссылку" })).toBeVisible();
     await shot(page, "2-pending");
 
     await page.clock.runFor(4000);
@@ -178,21 +199,35 @@ test.describe("Telegram-приложение in settings", () => {
     await expect.poll(() => actionsOf(calls, "status").length).toBe(2);
   });
 
-  test("linked: switch toggles DM notices, appUrl link, unlink with confirm and re-link", async ({ page }) => {
+  test("«Скрыть ссылку» hides the pending link and stops polling", async ({ page }) => {
+    await page.clock.install({ time: Date.now() });
+    const { calls } = await openSettings(page);
+    await panel(page).getByRole("button", { name: "Подключить Telegram" }).click();
+    await panel(page).getByRole("button", { name: "Скрыть ссылку" }).click();
+    await expect(panel(page).getByRole("button", { name: "Подключить Telegram" })).toBeEnabled();
+    await page.clock.runFor(20_000);
+    expect(actionsOf(calls, "status")).toHaveLength(1);
+  });
+
+  test("linked: switch toggles DM notices, «Открыть бота», unlink with confirm and re-link", async ({ page }) => {
     const { calls } = await openSettings(page, { link: { ...LINKED, dmNotices: false } });
     await expect(panel(page).getByText("Подключено", { exact: true })).toBeVisible();
+    await expect(panel(page).getByTestId("tma-linked")).toContainText("Аккаунт Telegram: @anna_orlova");
     const sw = panel(page).getByRole("switch", { name: /Личные уведомления о горячих лидах и ответах/ });
     await expect(sw).not.toBeChecked();
     await sw.click();
     await expect(sw).toBeChecked();
     expect(actionsOf(calls, "set_dm_notices")).toEqual([{ action: "set_dm_notices", enabled: true }]);
-    await expect(panel(page).getByRole("link", { name: /Открыть приложение/ })).toHaveAttribute("href", APP_URL);
+    await expect(panel(page).getByText("Сохраняется сразу")).toBeVisible();
+    // A browser cannot open the mini app (/tma/<wsKey> = «Откройте из бота»): the primary action is the bot chat.
+    await expect(panel(page).getByRole("link", { name: /Открыть бота/ })).toHaveAttribute("href", BOT_LINK);
+    await expect(panel(page).locator(`a[href="${APP_URL}"]`)).toHaveCount(0);
     await shot(page, "4-linked");
 
     await panel(page).getByRole("button", { name: "Отключить" }).click();
     const dialog = page.getByRole("alertdialog");
     await expect(dialog).toContainText("Подключить снова можно в любой момент");
-    if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${page.viewportSize()?.width}-6-unlink-confirm.png`) });
+    await dialogShot(page, "6-unlink-confirm");
     await dialog.getByRole("button", { name: "Оставить" }).click();
     expect(actionsOf(calls, "unlink")).toHaveLength(0);
     await panel(page).getByRole("button", { name: "Отключить" }).click();
@@ -201,15 +236,57 @@ test.describe("Telegram-приложение in settings", () => {
     expect(actionsOf(calls, "unlink")).toEqual([{ action: "unlink" }]);
   });
 
-  test("linked without public https and with a blocked bot: notes in words", async ({ page }) => {
+  test("unlink dialog: opaque spike surface, destructive «Отключить», safe «Оставить» focused", async ({ page }) => {
+    await openSettings(page, { link: LINKED });
+    await panel(page).getByRole("button", { name: "Отключить" }).click();
+    const dialog = page.getByRole("alertdialog");
+    await expect(dialog).toBeVisible();
+    await page.waitForTimeout(400); // open animation (0.24 s)
+    const surface = await dialog.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { bg: cs.backgroundColor, opacity: cs.opacity };
+    });
+    expect(surface).toEqual({ bg: "rgb(31, 31, 31)", opacity: "1" });
+    const keep = dialog.getByRole("button", { name: "Оставить" });
+    const drop = dialog.getByRole("button", { name: "Отключить" });
+    await expect(keep).toBeFocused();
+    await expect(drop).toHaveCSS("color", "rgb(251, 151, 125)");
+    for (const b of [keep, drop]) {
+      // Pill like every app button: radius at least half the height.
+      expect(await b.evaluate((el) => parseFloat(getComputedStyle(el).borderTopLeftRadius) >= el.getBoundingClientRect().height / 2)).toBe(true);
+    }
+    expect(await keep.evaluate((el) => getComputedStyle(el).backgroundImage)).toContain("linear-gradient");
+    expect(await drop.evaluate((el) => getComputedStyle(el).backgroundImage)).toBe("none");
+  });
+
+  test("linked without a public domain and with a blocked bot: notes in words, «Старт» + bot link", async ({ page }) => {
     await openSettings(page, { link: { ...LINKED, appUrl: "", dmNotices: false, dmError: "Forbidden: bot was blocked by the user" } });
-    await expect(panel(page).getByRole("link", { name: /Открыть приложение/ })).toHaveCount(0);
-    await expect(panel(page).getByTestId("tma-no-app-url")).toContainText("https");
-    await expect(panel(page).getByRole("alert")).toContainText("Бот не может написать вам");
+    const note = panel(page).getByTestId("tma-no-app-url");
+    await expect(note).toContainText("администратор подключит домен UniLab");
+    await expect(note).not.toContainText(/APP_URL|https/);
+    const alert = panel(page).getByRole("alert");
+    await expect(alert).toContainText("нажмите «Старт»");
+    await expect(alert).not.toContainText("/start");
+    await expect(alert.getByRole("link", { name: /Открыть бота/ })).toHaveAttribute("href", BOT_LINK);
     await shot(page, "5-linked-no-app-dm-error");
   });
 
-  test("rate limited → message with wait time + retry works", async ({ page }) => {
+  test("workspace notices off: linked member is told why private notices do not arrive", async ({ page }) => {
+    await openSettings(page, { link: { ...LINKED, noticesOff: true } });
+    const hint = panel(page).getByTestId("tma-notices-off");
+    await expect(hint).toContainText("Владелец выключил уведомления кабинета");
+    await expect(panel(page).getByRole("switch")).toHaveAttribute("aria-describedby", /tma-notices-off/);
+    await shot(page, "9-notices-off");
+  });
+
+  test("no bot link known: no «Открыть бота» button", async ({ page }) => {
+    await openSettings(page, { link: { ...LINKED, botLink: "" } });
+    await expect(panel(page).getByTestId("tma-linked")).toBeVisible();
+    await expect(panel(page).getByRole("link", { name: /Открыть бота/ })).toHaveCount(0);
+  });
+
+  test("rate limited → both buttons wait out Retry-After with a countdown, then retry works", async ({ page }) => {
+    await page.clock.install({ time: Date.now() });
     let limited = true;
     const { calls } = await openSettings(page, {
       handler: (action) =>
@@ -218,10 +295,20 @@ test.describe("Telegram-приложение in settings", () => {
           : undefined,
     });
     await panel(page).getByRole("button", { name: "Подключить Telegram" }).click();
-    await expect(panel(page).getByTestId("tma-error")).toContainText("Повторите через 9 минут");
+    await expect(panel(page).getByTestId("tma-error")).toContainText("Слишком много попыток");
+    const retry = panel(page).getByRole("button", { name: /Повторить/ });
+    await expect(retry).toHaveText(/Повторить через 9:00/);
+    await expect(retry).toBeDisabled();
+    await expect(panel(page).getByRole("button", { name: "Подключить Telegram" })).toBeDisabled();
     await shot(page, "7-rate-limited");
+    await page.clock.runFor(60_000);
+    await expect(retry).toHaveText(/Повторить через 8:00/);
+    await page.clock.runFor(480_000);
+    await expect(retry).toHaveText("Повторить");
+    await expect(retry).toBeEnabled();
+    await expect(panel(page).getByRole("button", { name: "Подключить Telegram" })).toBeEnabled();
     limited = false;
-    await panel(page).getByRole("button", { name: "Повторить" }).click();
+    await retry.click();
     await expect(panel(page).getByRole("link", { name: /Открыть бота и подключить/ })).toBeVisible();
     expect(actionsOf(calls, "create_code")).toHaveLength(2);
   });
@@ -230,6 +317,9 @@ test.describe("Telegram-приложение in settings", () => {
     let down = true;
     await openSettings(page, { handler: () => (down ? "abort" : undefined) });
     await expect(panel(page).getByTestId("tma-error")).toContainText("Нет связи с сервером");
+    // Status unknown: no «Не подключено» claim, and «Повторить» stays available for a network error.
+    await expect(panel(page).locator(".badge")).toHaveCount(0);
+    await expect(panel(page).getByRole("button", { name: "Повторить" })).toBeEnabled();
     await shot(page, "8-network");
     down = false;
     await panel(page).getByRole("button", { name: "Повторить" }).click();
@@ -288,6 +378,41 @@ test.describe("desktop 1440 screenshots", () => {
   test("linked note states at 1440", async ({ page }) => {
     await openSettings(page, { link: { ...LINKED, appUrl: "", dmNotices: false, dmError: "Forbidden: bot was blocked by the user" } });
     await shot(page, "5-linked-no-app-dm-error");
+  });
+
+  test("notices off + unlink dialog at 1440", async ({ page }) => {
+    await openSettings(page, { link: { ...LINKED, noticesOff: true } });
+    await shot(page, "9-notices-off");
+    await panel(page).getByRole("button", { name: "Отключить" }).click();
+    await expect(page.getByRole("alertdialog")).toBeVisible();
+    await dialogShot(page, "6-unlink-confirm");
+  });
+
+  test("rate limited + load failure at 1440", async ({ page }) => {
+    await page.clock.install({ time: Date.now() });
+    await openSettings(page, {
+      handler: (action) =>
+        action === "create_code" ? { status: 429, body: { error: "Слишком много попыток", code: "rate_limited" }, headers: { "Retry-After": "540" } } : undefined,
+    });
+    await panel(page).getByRole("button", { name: "Подключить Telegram" }).click();
+    await expect(panel(page).getByTestId("tma-error")).toBeVisible();
+    await shot(page, "7-rate-limited");
+  });
+
+  test("load failure at 1440", async ({ page }) => {
+    await openSettings(page, { handler: () => "abort" });
+    await expect(panel(page).getByTestId("tma-error")).toBeVisible();
+    await shot(page, "8-network");
+  });
+
+  test("expired at 1440", async ({ page }) => {
+    await page.clock.install({ time: Date.now() });
+    await openSettings(page);
+    await panel(page).getByRole("button", { name: "Подключить Telegram" }).click();
+    await expect(panel(page).getByTestId("tma-countdown")).toBeVisible();
+    await page.clock.runFor(10 * 60_000 + 4000);
+    await expect(panel(page).getByTestId("tma-expired")).toBeVisible();
+    await shot(page, "3-expired");
   });
 
   test("no bot at 1440", async ({ page }) => {

@@ -191,6 +191,56 @@ test.describe("lead", () => {
     expect(sends[0]?.body?.clientMsgId).toBe(sends[1]?.body?.clientMsgId);
   });
 
+  test("send that times out (504): «Статус неизвестен», the entry shows a question mark instead of a clock", async ({ page }) => {
+    let leadFetches = 0;
+    const pendingAnna = {
+      ...fx.leads[fx.LEAD_ANNA]!,
+      lead: { ...fx.leads[fx.LEAD_ANNA]!.lead, messages: [{ from: "us", text: fx.ANNA_DRAFT, at: fx.NOW.toISOString(), status: "pending" }] },
+    };
+    const calls = await open(page, {}, {
+      feed: (view, q) => (view === "lead" && q.id === fx.LEAD_ANNA && ++leadFetches > 1 ? { status: 200, body: pendingAnna } : undefined),
+      action: (a) =>
+        a === "send_lead_message"
+          ? { status: 504, body: { ok: false, unknown: true, error: "Нет ответа Telegram-воркера — сообщение могло уйти. Проверьте переписку в Telegram перед повтором." } }
+          : undefined,
+    });
+    await page.getByTestId("inbox-row").filter({ hasText: "Анна Петрова" }).click();
+    await expect(page.getByLabel("Ответ лиду")).toHaveValue(fx.ANNA_DRAFT);
+    await tapMainButton(page);
+    await expect(page.getByRole("alert")).toContainText("сообщение могло уйти");
+    await expect(page.getByTestId("bubble-unknown")).toHaveCount(1);
+    await expect(page.getByTestId("bubble-pending")).toHaveCount(0);
+    await expect(page.getByText("Статус неизвестен, проверьте в Telegram")).toBeVisible();
+    expect(actions(calls, "send_lead_message")).toHaveLength(1);
+    expect(actions(calls, "send_lead_message")[0]?.body?.force).toBeUndefined();
+  });
+
+  test("409 for the same text: explains the 15-minute hold instead of «send again»", async ({ page }) => {
+    await open(page, {}, {
+      action: (a) =>
+        a === "send_lead_message"
+          ? { status: 409, body: { error: "Результат прошлой отправки этого сообщения неизвестен. Проверьте переписку в Telegram — если сообщения нет, отправьте ещё раз.", unknown: true } }
+          : undefined,
+    });
+    await page.getByTestId("inbox-row").filter({ hasText: "Анна Петрова" }).click();
+    await expect(page.getByLabel("Ответ лиду")).toHaveValue(fx.ANNA_DRAFT);
+    await tapMainButton(page);
+    const alert = page.getByRole("alert");
+    await expect(alert).toContainText("через 15 минут");
+    await expect(alert).not.toContainText("отправьте ещё раз");
+  });
+
+  test("a pending entry older than two minutes in history is shown as unknown", async ({ page }) => {
+    const stale = {
+      ...fx.leads[fx.LEAD_ANNA]!,
+      lead: { ...fx.leads[fx.LEAD_ANNA]!.lead, messages: [{ from: "us", text: "Добрый день!", at: new Date(fx.NOW.getTime() - 10 * 60_000).toISOString(), status: "pending" }] },
+    };
+    await open(page, {}, { feed: (view, q) => (view === "lead" && q.id === fx.LEAD_ANNA ? { status: 200, body: stale } : undefined) });
+    await page.getByTestId("inbox-row").filter({ hasText: "Анна Петрова" }).click();
+    await expect(page.getByTestId("bubble-unknown")).toHaveCount(1);
+    await expect(page.getByLabel("статус неизвестен")).toBeVisible();
+  });
+
   test("MainButton is inactive for an empty reply and when the lead can't be answered", async ({ page }) => {
     await open(page);
     await page.getByTestId("inbox-row").filter({ hasText: "Анна Петрова" }).click();
