@@ -55,7 +55,7 @@ import {mergeTaskSave} from '@/lib/processes/task-save-merge';
 import {JOIN_GATE_ROTATE_WAIT_SEC,JOIN_PENDING_ERROR,audienceJoinGate,classifyCollectFailure,insertAudienceUsers,interpretAudienceJoin,isDeadSessionError,isSlotBlindError,listAudienceUsers,loadAudienceSeenIds,type AudienceUserData} from '@/lib/processes/audience-tick';
 import {authorizeWorkspaceAction,keepOwnerSecretsOnSave,visibleRecordsFor,type WorkspaceActor} from '@/lib/security/workspace-authz';
 import {ALL_CRM_ACCESS} from '@/lib/staff-types';
-import {INBOX_CURSOR_MARGIN_SEC,applySendOutcome,findSendBlock,leadReplies,markLeadOpened,mergeIncomingDm,nextInboxCursor,withPendingSend,type LeadData,type ReplyEntry,type SendOutcome} from '@/lib/lead-conversation';
+import {INBOX_CURSOR_MARGIN_SEC,applySendOutcome,failedAttemptIndex,findSendBlock,leadReplies,markLeadOpened,mergeIncomingDm,nextInboxCursor,withPendingSend,type LeadData,type ReplyEntry,type SendOutcome} from '@/lib/lead-conversation';
 import type {D1LikeDatabase} from '@/lib/db';
 import {env} from 'cloudflare:workers';
 import {z} from 'zod';
@@ -2868,7 +2868,8 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   const claim=await mutateLead(db,owner,id,cur=>{
    const block=findSendBlock(cur,{clientMsgId,text,mode},Date.now());
    if(block&&!(force&&block.kind==='unknown'))return {result:block};
-   return {next:{...withPendingSend(cur,pendingEntry,block?.entry.sendKey||''),draft:text},result:null};
+   const retryOf=failedAttemptIndex(cur,{clientMsgId,text,mode});
+   return {next:{...withPendingSend(cur,pendingEntry,block?.entry.sendKey||'',retryOf),draft:text},result:null};
   });
   if(!claim)return reply({error:'Лид не найден'},404);
   const block=claim.result;

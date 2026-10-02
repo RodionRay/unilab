@@ -204,4 +204,38 @@ describe('переписки · ответ лиду (send_lead_message)',()=>{
     stubWorker(()=>({ok:true,chatId:'777',messageId:'63'}));
     expect((await send({mode:'dm',text:'Привет',clientMsgId:'k-5'})).status).toBe(200);
   });
+
+  it('REQ-C4: повтор неудачной отправки тем же ключом заменяет запись failed одной записью sent',async()=>{
+    addChatLead();
+    let fail=true;
+    stubWorker(()=>{
+      if(fail){fail=false;return {ok:false,error:'PEER_FLOOD'}}
+      return {ok:true,chatId:'777',messageId:'64'};
+    });
+
+    const first=await send({mode:'dm',text:'Повтор',clientMsgId:'k-6'});
+    const retry=await send({mode:'dm',text:'Повтор',clientMsgId:'k-6'});
+
+    expect(first.status).toBe(502);
+    expect(retry.status).toBe(200);
+    const entries=readRecord(CHAT_LEAD).replies.filter(x=>x.text==='Повтор');
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({status:'sent',ok:true,sendKey:'k-6'});
+  });
+
+  it('REQ-C4: повтор неудачной отправки новым ключом (после перезагрузки) тоже заменяет failed',async()=>{
+    addChatLead();
+    let fail=true;
+    stubWorker(()=>{
+      if(fail){fail=false;return {ok:false,error:'PEER_FLOOD'}}
+      return {ok:true,chatId:'777',messageId:'65'};
+    });
+
+    await send({mode:'dm',text:'Повтор 2',clientMsgId:'k-7'});
+    await send({mode:'dm',text:'Повтор 2',clientMsgId:'k-8'});
+
+    const entries=readRecord(CHAT_LEAD).replies.filter(x=>x.text==='Повтор 2');
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({status:'sent',ok:true,sendKey:'k-8'});
+  });
 });

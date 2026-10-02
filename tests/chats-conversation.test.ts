@@ -1,7 +1,7 @@
 import {describe,expect,it} from 'vitest';
 import {
   INBOX_CURSOR_MARGIN_SEC,SEND_BLOCK_WINDOW_MS,type ReplyEntry,
-  findSendBlock,hasIncomingDm,nextInboxCursor,
+  findSendBlock,hasIncomingDm,nextInboxCursor,applySendOutcome,failedAttemptIndex,withPendingSend,
 } from '@/lib/lead-conversation';
 
 const T0=Date.parse('2026-09-30T10:00:00.000Z');
@@ -47,5 +47,38 @@ describe('lead-conversation · дедупликация ЛС',()=>{
 
     expect(hasIncomingDm(lead,'acc-1','5')).toBe(true);
     expect(hasIncomingDm(lead,'acc-2','5')).toBe(false);
+  });
+});
+
+describe('lead-conversation · повтор неудачной отправки',()=>{
+  it('находит неудачную попытку: сначала по ключу, затем по тексту и режиму; pending/unknown/доставленные — нет',()=>{
+    const lead={replies:[
+      ours({text:'A',status:'failed',sendKey:'k1'}),
+      ours({text:'B',status:'failed',sendKey:'k2'}),
+      ours({text:'C',status:'unknown',sendKey:'k3'}),
+      ours({text:'D',ok:true,status:'sent',sendKey:'k4'}),
+    ]};
+
+    expect(failedAttemptIndex(lead,{clientMsgId:'k1',text:'другой',mode:'dm'})).toBe(0);
+    expect(failedAttemptIndex(lead,{clientMsgId:'new',text:'B',mode:'dm'})).toBe(1);
+    expect(failedAttemptIndex(lead,{clientMsgId:'new',text:'B',mode:'chat'})).toBe(-1);
+    expect(failedAttemptIndex(lead,{clientMsgId:'k3',text:'C',mode:'dm'})).toBe(-1);
+    expect(failedAttemptIndex(lead,{clientMsgId:'k4',text:'D',mode:'dm'})).toBe(-1);
+  });
+
+  it('повтор заменяет запись failed, а исход применяется к самой новой записи с ключом',()=>{
+    const lead={replies:[ours({text:'A',status:'failed',sendKey:'k1',error:'PEER_FLOOD'})]};
+    const pending=withPendingSend(lead,ours({text:'A',status:'pending',sendKey:'k1'}),'',0);
+    const done=applySendOutcome(pending,{sendKey:'k1',mode:'dm',accountId:'acc',peerId:'777',accessHash:'',nowIso:new Date(T0).toISOString()},{status:'sent',error:'',messageId:'5'});
+
+    expect(done.replies).toHaveLength(1);
+    expect((done.replies as ReplyEntry[])[0]).toMatchObject({status:'sent',ok:true,sendKey:'k1'});
+  });
+
+  it('две записи с одним ключом: исход достаётся последней, старая не трогается',()=>{
+    const lead={replies:[ours({text:'A',status:'failed',sendKey:'k1'}),ours({text:'A',status:'pending',sendKey:'k1'})]};
+    const done=applySendOutcome(lead,{sendKey:'k1',mode:'dm',accountId:'acc',peerId:'',accessHash:'',nowIso:new Date(T0).toISOString()},{status:'sent',error:''});
+
+    expect((done.replies as ReplyEntry[]).map(x=>x.status)).toEqual(['failed','sent']);
   });
 });

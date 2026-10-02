@@ -77,9 +77,30 @@ export function findSendBlock(
   return null;
 }
 
-/** Lead with a pending entry appended; a forced retry replaces the earlier unknown entry for the same message. */
-export function withPendingSend(lead: LeadData, entry: ReplyEntry, replaceSendKey = ""): LeadData {
-  const rest = leadReplies(lead).filter((x) => !(replaceSendKey && x.sendKey === replaceSendKey));
+/**
+ * Index of our failed attempt that this send retries: the same client key, else the latest failed entry with the
+ * same text and mode (a retry after a page reload gets a new key). -1 = a fresh message.
+ */
+export function failedAttemptIndex(lead: LeadData, req: { clientMsgId: string; text: string; mode: "dm" | "chat" }): number {
+  const replies = leadReplies(lead);
+  const failed = (x: ReplyEntry) => x.from === "us" && !x.ok && x.status !== "pending" && x.status !== "unknown";
+  for (let i = replies.length - 1; i >= 0; i--) {
+    const x = replies[i];
+    if (failed(x) && req.clientMsgId && x.sendKey === req.clientMsgId) return i;
+  }
+  for (let i = replies.length - 1; i >= 0; i--) {
+    const x = replies[i];
+    if (failed(x) && x.text === req.text && x.mode === req.mode) return i;
+  }
+  return -1;
+}
+
+/**
+ * Lead with a pending entry appended. A forced retry replaces the earlier unknown entry (`replaceSendKey`), a retry of
+ * a failed send replaces that failed entry (`replaceIndex`): one message = one entry in the conversation.
+ */
+export function withPendingSend(lead: LeadData, entry: ReplyEntry, replaceSendKey = "", replaceIndex = -1): LeadData {
+  const rest = leadReplies(lead).filter((x, i) => i !== replaceIndex && !(replaceSendKey && x.sendKey === replaceSendKey));
   return { ...lead, replies: [...rest, entry].slice(-MAX_REPLIES) };
 }
 
@@ -105,7 +126,9 @@ export function applySendOutcome(
 ): LeadData {
   const sent = outcome.status === "sent";
   const replies = leadReplies(lead);
-  const idx = replies.findIndex((x) => x.sendKey === ctx.sendKey);
+  // the newest entry with the key: an older one with the same key must never absorb this outcome
+  let idx = -1;
+  for (let i = replies.length - 1; i >= 0 && idx < 0; i--) if (replies[i].sendKey === ctx.sendKey) idx = i;
   const base: ReplyEntry = idx >= 0
     ? replies[idx]
     : { text: "", mode: ctx.mode, at: ctx.nowIso, ok: false, error: "", messageId: "", link: "", chatId: "", from: "us" };
