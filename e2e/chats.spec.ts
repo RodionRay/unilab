@@ -46,7 +46,7 @@ async function mockTelegramEdge(page: Page) {
       sent.push({ id, text: reply.text, mode: String(payload.mode), reply });
       const current = records.find((x) => x.id === id)?.data;
       const lead = { ...(current || {}), replies: [...(current?.replies || []), reply], conversationOpen: true, draft: reply.text };
-      return route.fulfill({ json: { ok: true, lead, mode: payload.mode, link: "", messageId: "9001", rotatedAccount: false, accountId: String(lead.accountId || "") } });
+      return route.fulfill({ json: { ok: true, lead, mode: payload.mode, link: "", messageId: "9001", rotatedAccount: false, accountId: String(current?.accountId || "") } });
     }
     // other worker-bound actions (inbox polling, auto-rescan) answer like an offline worker
     if (payload.action && payload.action !== "save" && payload.action !== "draft") {
