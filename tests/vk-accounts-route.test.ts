@@ -247,7 +247,7 @@ describe('workspace API: VK accounts and sources',()=>{
       expect(r.status).toBe(422);
     });
 
-    it('deleting a source keeps its tombstones on another source',async()=>{
+    it('deleting a source keeps its tombstones on the owner-level holder',async()=>{
       await call({action:'vk_source_add',url:'vk.com/niche_test'});
       const group=rows('vk_source').find(s=>s.data.type==='group')!;
       testDb().sqlite.prepare("UPDATE records SET data=json_set(data,'$.leadTombstones',json(?)) WHERE id=?").run(JSON.stringify(['vk:-22000_1']),group.id);
@@ -255,9 +255,8 @@ describe('workspace API: VK accounts and sources',()=>{
       const r=await call({action:'vk_source_delete',id:group.id});
 
       expect(r.status).toBe(200);
-      const left=rows('vk_source');
-      expect(left).toHaveLength(1);
-      expect(left[0]!.data.leadTombstones).toEqual(['vk:-22000_1']);
+      expect(rows('vk_source')).toHaveLength(1);
+      expect(rows('vk_tombstones').map(r=>r.data.leadTombstones)).toEqual([['vk:-22000_1']]);
     });
   });
 });

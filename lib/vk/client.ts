@@ -17,7 +17,6 @@ export const VK_PAGE_MAX_COUNT = 100;
 /** Transport codes produced by vk_api.py / this client; VK's own codes are positive. */
 export const VK_CODE_DEADLINE = -1;
 export const VK_CODE_NETWORK = -2;
-export const VK_CODE_HTTP = -3;
 export const VK_CODE_BAD_RESPONSE = -4;
 export const VK_CODE_PROXY = -5;
 

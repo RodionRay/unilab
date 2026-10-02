@@ -29,6 +29,7 @@ import {VK_DEFAULT_DAILY_CAPS, type VkAccountData} from '@/lib/vk/pool';
 import {
   VK_ACCOUNT_KIND,
   VK_SOURCE_KIND,
+  addVkTombstones,
   loadVkAccounts,
   loadVkProxy,
   loadVkSources,
@@ -38,7 +39,6 @@ import {
   type VkSourceData,
 } from '@/lib/vk/records';
 import {canonicalVkGroupUrl, parseVkGroupUrl} from '@/lib/vk/url';
-import {MAX_LEAD_TOMBSTONES} from '@/lib/processes/scan-flow';
 import type {VkActionResult} from '@/lib/processes/vk-scan';
 
 export type VkAccountDeps = {db: D1LikeDatabase; owner: string; post: WorkerPost; settings: Record<string, unknown>};
@@ -300,8 +300,8 @@ async function insertGroupSource(deps: VkAccountDeps, groupId: number, meta: {ti
 }
 
 /**
- * Action `vk_source_delete`. Leads stay; the source's tombstones move to another source so a
- * lead the user deleted is not re-created by a search that also finds it (AM-2).
+ * Action `vk_source_delete`. Leads stay; the source's tombstones move to the owner-level holder
+ * so a lead the user deleted is not re-created by any later source, even after the last one goes (AM-2).
  */
 export async function deleteVkSource(deps: VkAccountDeps, input: {id?: unknown}): Promise<VkActionResult> {
   const [id] = readIds({id: input.id}) ?? [];
@@ -309,15 +309,8 @@ export async function deleteVkSource(deps: VkAccountDeps, input: {id?: unknown})
   const sources = await loadVkSources(deps.db, deps.owner);
   const victim = sources.find((s) => s.id === id);
   if (!victim) return fail(404, 'Источник VK не найден');
-  const heir = sources.find((s) => s.id !== id);
-  const tombstones = Array.isArray(victim.data.leadTombstones) ? victim.data.leadTombstones : [];
-  if (heir && tombstones.length) {
-    const merged = [...new Set([...(heir.data.leadTombstones ?? []), ...tombstones])].slice(-MAX_LEAD_TOMBSTONES);
-    await deps.db
-      .prepare("UPDATE records SET data=json_set(data,'$.leadTombstones',json(?)) WHERE owner=? AND id=? AND kind=?")
-      .bind(JSON.stringify(merged), deps.owner, heir.id, VK_SOURCE_KIND)
-      .run();
-  }
+  const tombstones = Array.isArray(victim.data.leadTombstones) ? victim.data.leadTombstones.map(String) : [];
+  await addVkTombstones(deps.db, deps.owner, tombstones);
   await deps.db.prepare('DELETE FROM records WHERE owner=? AND id=? AND kind=?').bind(deps.owner, id, VK_SOURCE_KIND).run();
   return ok({});
 }

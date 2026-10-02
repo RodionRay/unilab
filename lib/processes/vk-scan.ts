@@ -20,6 +20,7 @@ import {
   loadVkAccounts,
   loadVkSource,
   loadVkSources,
+  loadVkTombstones,
   releaseVkSourceLock,
   vkLeadId,
   type StoredVkSource,
@@ -64,7 +65,7 @@ function throttleWait(data: VkSourceData, settings: Record<string, unknown>, now
   return Math.max(0, Math.ceil((last + minutes * 60_000 - now) / 1000));
 }
 
-/** REQ-6 + AM-2: keys of every VK lead of the owner and every tombstone on any VK source. */
+/** REQ-6 + AM-2: keys of every VK lead of the owner, every tombstone on any VK source and the owner-level holder. */
 async function seenVkKeys(db: D1LikeDatabase, owner: string, sources: readonly StoredVkSource[]): Promise<Set<string>> {
   const rows = await db
     .prepare("SELECT json_extract(data,'$.msgKey') AS k FROM records WHERE owner=? AND kind='lead' AND json_extract(data,'$.platform')='vk'")
@@ -72,6 +73,7 @@ async function seenVkKeys(db: D1LikeDatabase, owner: string, sources: readonly S
     .all();
   const seen = new Set<string>(rows.results.map((r) => String(r.k ?? '')).filter(Boolean));
   for (const s of sources) for (const t of Array.isArray(s.data.leadTombstones) ? s.data.leadTombstones : []) seen.add(String(t));
+  for (const t of await loadVkTombstones(db, owner)) seen.add(t);
   return seen;
 }
 
@@ -137,7 +139,7 @@ async function insertLeads(
     const id = await vkLeadId(deps.owner, k.item.key);
     const res = await deps.db
       .prepare('INSERT OR IGNORE INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)')
-      .bind(id, deps.owner, 'lead', JSON.stringify(lead), null, new Date().toISOString())
+      .bind(id, deps.owner, 'lead', JSON.stringify(lead), null, new Date((deps.now ?? Date.now)()).toISOString())
       .run();
     if (res.meta.changes !== 1) continue;
     added += 1;

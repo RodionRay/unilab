@@ -22,7 +22,7 @@ import {qualifyLeadsWithAi} from '@/lib/processes/lead-ai';
 import {pickLeads} from '@/lib/processes/lead-ingest';
 import {scanVkSource,vkSourceBlocker,type VkActionResult,type VkScanDeps} from '@/lib/processes/vk-scan';
 import {addVkGroupSource,deleteVkAccounts,deleteVkSource,importVkAccounts,setVkAccountProxy,type VkAccountDeps} from '@/lib/processes/vk-accounts';
-import {VK_SOURCE_KIND,loadVkAccounts,loadVkSources} from '@/lib/vk/records';
+import {VK_SOURCE_KIND,VK_TOMBSTONE_KIND,addVkTombstones,loadVkAccounts,loadVkSources} from '@/lib/vk/records';
 import {noUsableVkAccount} from '@/lib/vk/session';
 import {VK_LEAD_URL} from '@/lib/vk/url';
 import {appendLearnExamples,extractTermsFromHotMessages,mergeKeywords,mergeKeywordsPreferNew,parseKeywordCsv} from '@/lib/ai-keywords';
@@ -1374,22 +1374,25 @@ async function rememberDeletedLead(owner:string,leadId:string){
 }
 
 /**
- * REQ-14 / AM-2: a deleted VK lead's msgKey is tombstoned on its vk_source (or any other source when
- * that one is gone); every VK scan treats the union of tombstones as seen. CAS: parallel deletes keep both.
+ * REQ-14 / AM-2: a deleted VK lead's msgKey is tombstoned on its vk_source, or on the owner-level
+ * holder when that source is gone; every VK scan treats the union as seen. CAS: parallel deletes keep both.
  */
 async function rememberDeletedVkLead(db:D1LikeDatabase,owner:string,msgKey:string,sourceId:string){
  if(!msgKey)return;
- for(let attempt=0;attempt<5;attempt++){
-  const own=sourceId?await db.prepare('SELECT id,data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,sourceId,VK_SOURCE_KIND).first<{id:string;data:string}>():null;
-  const target=own??await db.prepare('SELECT id,data FROM records WHERE owner=? AND kind=? ORDER BY created LIMIT 1').bind(owner,VK_SOURCE_KIND).first<{id:string;data:string}>();
-  if(!target)return;
-  let data:Record<string,unknown>;
-  try{data=JSON.parse(String(target.data))}catch{return}
-  const next={...data,leadTombstones:addLeadTombstone(data.leadTombstones,msgKey)};
-  const res=await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=? AND data=?').bind(JSON.stringify(next),owner,target.id,VK_SOURCE_KIND,String(target.data)).run();
-  if(res.meta.changes===1)return;
+ try{
+  for(let attempt=0;attempt<5;attempt++){
+   const own=sourceId?await db.prepare('SELECT id,data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,sourceId,VK_SOURCE_KIND).first<{id:string;data:string}>():null;
+   if(!own){await addVkTombstones(db,owner,[msgKey]);return}
+   let data:Record<string,unknown>;
+   try{data=JSON.parse(String(own.data))}catch{await addVkTombstones(db,owner,[msgKey]);return}
+   const next={...data,leadTombstones:addLeadTombstone(data.leadTombstones,msgKey)};
+   const res=await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=? AND data=?').bind(JSON.stringify(next),owner,own.id,VK_SOURCE_KIND,String(own.data)).run();
+   if(res.meta.changes===1)return;
+  }
+  console.error('[workspace] vk tombstone: concurrent update conflict');
+ }catch(e){
+  console.error('[workspace] vk tombstone:',String((e as Error)?.message||e).slice(0,200));
  }
- console.error('[workspace] vk tombstone: concurrent update conflict');
 }
 
 /** Message of the worker /scan-group answer (fields scan_group reads). */
@@ -1859,7 +1862,7 @@ export async function GET(){const session=await getSessionUser();if(!session?.us
  try{await healStuckProxyChecks(owner,45_000)}catch{/* */}
  try{await healCorruptGroupJoinFields(owner)}catch{/* */}
  // audience_user не отдаём в список кабинета (тысячи строк) — только задачи и остальное
- const result=await database().prepare("SELECT id,kind,data,created,secret IS NOT NULL AS hasSecret FROM records WHERE owner=? AND kind!='ai_guard' AND kind!='audience_user' AND kind!='mailing_recipient' ORDER BY created DESC").bind(owner).all();
+ const result=await database().prepare("SELECT id,kind,data,created,secret IS NOT NULL AS hasSecret FROM records WHERE owner=? AND kind!='ai_guard' AND kind!='audience_user' AND kind!='mailing_recipient' AND kind!=? ORDER BY created DESC").bind(owner,VK_TOMBSTONE_KIND).all();
  let telegramConnected=false;
  try{const h=await fetch(workerUrl()+'/health',{signal:AbortSignal.timeout(1500)});telegramConnected=h.ok}catch{telegramConnected=false}
  const envKey=!!envAiApiKey();

@@ -8,10 +8,11 @@ vi.mock('@/lib/auth',async(importOriginal)=>({
   getSessionUser:async()=>(await import('./helpers/workspace-harness')).authState.user,
 }));
 
-import {POST} from '@/app/api/workspace/route';
+import {GET,POST} from '@/app/api/workspace/route';
 import {seal} from '@/lib/server-store';
 import {moscowDayKey,moscowNextMidnightIso} from '@/lib/telegram-accounts';
-import {VK_AI_ITEMS_PER_RUN} from '@/lib/processes/vk-scan';
+import {VK_AI_ITEMS_PER_RUN,scanVkSource} from '@/lib/processes/vk-scan';
+import {VK_TOMBSTONE_KIND} from '@/lib/vk/records';
 
 const NOW=Date.parse('2026-10-01T10:00:00Z');
 const SEARCH_ID='a0000000-0000-4000-8000-000000000001';
@@ -340,6 +341,60 @@ describe('workspace API: scan_vk_source',()=>{
       expect(record(SEARCH_ID).leadTombstones).toEqual(['vk:-22000_9001']);
       expect(keys()).not.toContain('vk:-22000_9001');
     });
+
+    const NEW_SEARCH_ID='a0000000-0000-4000-8000-000000000009';
+    const readdSearch=()=>addRecord(NEW_SEARCH_ID,'vk_source',{type:'search',title:'Поиск VK',cursor:{},lastScanAt:'',leadTombstones:[]});
+
+    it('survives deleting the last VK source',async()=>{
+      await scan(SEARCH_ID);
+      const victim=leads().find(l=>l.data.msgKey==='vk:-11000_501')!;
+      await POST(postRequest({action:'delete',kind:'lead',id:victim.id}));
+
+      for(const id of [GROUP_ID,SEARCH_ID])expect((await POST(postRequest({action:'vk_source_delete',id}))).status).toBe(200);
+      readdSearch();
+      await scan(NEW_SEARCH_ID);
+
+      expect(keys()).toEqual(['vk:700300_77']);
+    });
+
+    it('is stored even when the lead\'s source and every other source are gone',async()=>{
+      await scan(SEARCH_ID);
+      const victim=leads().find(l=>l.data.msgKey==='vk:-11000_501')!;
+      testDb().sqlite.prepare("DELETE FROM records WHERE kind='vk_source'").run();
+
+      await POST(postRequest({action:'delete',kind:'lead',id:victim.id}));
+      readdSearch();
+      await scan(NEW_SEARCH_ID);
+
+      expect(keys()).toEqual(['vk:700300_77']);
+    });
+
+    it('the tombstone holder never reaches the client record list',async()=>{
+      await scan(SEARCH_ID);
+      const victim=leads()[0]!;
+      testDb().sqlite.prepare("DELETE FROM records WHERE kind='vk_source'").run();
+      await POST(postRequest({action:'delete',kind:'lead',id:victim.id}));
+
+      const list=await (await GET()).json() as {records:{kind:string}[]};
+
+      expect(list.records.map(r=>r.kind)).not.toContain(VK_TOMBSTONE_KIND);
+    });
+  });
+
+  it('stamps created leads with the scan clock',async()=>{
+    const later=NOW+3_600_000;
+
+    await scanVkSource({
+      db:testDb().db as never,owner:OWNER,now:()=>later,
+      post:async(_path,body)=>(await vkCallResponse(body as Parameters<typeof vkCallResponse>[0])).json(),
+      leadContext:async()=>({settings:SETTINGS,coreSettings:{keywords:SETTINGS.keywords,minusKeywords:SETTINGS.minusKeywords,avoidTopics:'',leadCriteria:SETTINGS.leadCriteria,hotSignals:SETTINGS.hotSignals,product:SETTINGS.product},qualify:null}),
+      flushNotifications:async()=>{},
+      log:async()=>{},
+    },{id:SEARCH_ID,force:true});
+
+    const created=testDb().sqlite.prepare("SELECT created FROM records WHERE kind='lead'").all() as {created:string}[];
+    expect(created.length).toBeGreaterThan(0);
+    expect(created.every(r=>r.created===new Date(later).toISOString())).toBe(true);
   });
 
   describe('REQ-2 / REQ-9 / AM-8 VK errors',()=>{
