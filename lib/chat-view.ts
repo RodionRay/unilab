@@ -127,8 +127,8 @@ export function tickOf(entry: ReplyEntry, replies: readonly ReplyEntry[]): TickS
 
 /**
  * The source post has no stored timestamp; the lead's creation (scan) time is the closest. It always precedes the
- * replies, so a creation time after the first reply (re-saved / imported lead) is not shown: the post is placed at
- * the first reply's time without a clock label.
+ * replies, so with a creation time after the first reply (re-saved / imported lead) the post is placed at the first
+ * reply's time; its clock still shows the stored time.
  */
 function sourceMessage(lead: ChatLead, firstReplyAt: string): ThreadMessage {
   // msgAt = the post's own Telegram time where the scanner stores it
@@ -141,7 +141,8 @@ function sourceMessage(lead: ChatLead, firstReplyAt: string): ThreadMessage {
     side: "in",
     text: str(lead.data.message),
     at,
-    time: late ? "" : formatClock(at),
+    // the clock always shows when the post was stored, even if the thread places it before an earlier reply
+    time: formatClock(created) || formatClock(at),
     source: true,
     tick: null,
     retryable: false,
@@ -240,7 +241,8 @@ export function buildThread(lead: ChatLead, opts: BuildThreadOptions = {}): Chat
     ? messages.findLastIndex((m) => m.side === "out" && m.tick === "failed" && m.mode === p.mode && sameText(m.text, p.text))
     : -1;
   if (p && retried >= 0) {
-    messages[retried] = { ...messages[retried]!, tick: "pending", error: "" };
+    // the resend happens now: its clock shows the retry time, not the failed attempt's
+    messages[retried] = { ...messages[retried]!, tick: "pending", error: "", time: formatClock(p.at) };
   } else if (p?.text) {
     messages.push({
       ...replyMessage(

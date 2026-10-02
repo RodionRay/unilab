@@ -242,7 +242,7 @@ export function ChatsPanel(props: ChatsPanelProps) {
           onQueryChange={props.onQueryChange}
           onOpen={open}
           onAddLead={props.onAddLead}
-          sendingId={outbox?.leadId ?? null}
+          sending={outbox ? { id: outbox.leadId, at: outbox.at } : null}
         />
         <section
           ref={paneRef}

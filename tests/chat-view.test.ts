@@ -82,12 +82,12 @@ describe('chat-view · thread',()=>{
     expect(buildThread(lead({viewed:true,replies}),{now:NOW,unread:true}).unreadIndex).toBeGreaterThan(-1);
   });
 
-  it('source post created after the first reply is placed first without a clock label',()=>{
+  it('source post created after the first reply is placed first and still shows its stored time',()=>{
     const t=buildThread(lead({replies:[us('hi',at(2,9))]},at(2,17)),{now:NOW});
     const [source,first]=messages(t.items);
 
     expect(source?.source).toBe(true);
-    expect(source?.time).toBe('');
+    expect(source?.time).toBe('17:00');
     expect(first?.text).toBe('hi');
   });
 
@@ -265,7 +265,7 @@ describe('chat-view · retry',()=>{
     const box=makeOutbox(l,'Привет','dm',{now:NOW,retry:true});
     const out=messages(buildThread(l,{now:NOW,pending:pendingFor(box,l)}).items).filter(m=>m.side==='out');
 
-    expect(out.map(m=>[m.text,m.tick,m.error,m.retryable])).toEqual([['Привет','pending','',false]]);
+    expect(out.map(m=>[m.text,m.tick,m.error,m.retryable,m.time])).toEqual([['Привет','pending','',false,'18:00']]);
     // a retry stays «sending» until the request settles even though the server keeps one entry
     expect(pendingFor(box,lead({replies:[us('Привет',at(2,9,1))]}))).toMatchObject({retry:true});
   });

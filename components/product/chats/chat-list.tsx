@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { chatListItem, type ChatLead } from "@/lib/chat-view";
+import { chatListItem, listTimeLabel, type ChatLead } from "@/lib/chat-view";
 import { ChatAvatar } from "./chat-avatar";
 import { ChatTick } from "./chat-ticks";
 
@@ -32,8 +32,8 @@ export type ChatListProps = {
   onQueryChange: (query: string) => void;
   onOpen: (lead: ChatLead) => void;
   onAddLead: () => void;
-  /** Chat whose message is being sent right now: its row shows the clock, not the failed mark. */
-  sendingId?: string | null;
+  /** Chat whose message is being sent right now: its row shows the clock and the send time, not the failed mark. */
+  sending?: { id: string; at: string } | null;
 };
 
 const FOLDERS: readonly { value: ChatFolder; label: string }[] = [
@@ -126,10 +126,11 @@ function LoadError({ message, onReload }: { message: string; onReload: () => Pro
   );
 }
 
-type RowProps = { lead: ChatLead; active: boolean; sending: boolean; badge: ReactNode; onOpen: (lead: ChatLead) => void };
+type RowProps = { lead: ChatLead; active: boolean; sendingAt: string; badge: ReactNode; onOpen: (lead: ChatLead) => void };
 
 /** Memoised: typing in the composer or polling other leads does not re-render unchanged rows. */
-const ChatListRow = memo(function ChatListRow({ lead, active, sending, badge, onOpen }: RowProps) {
+const ChatListRow = memo(function ChatListRow({ lead, active, sendingAt, badge, onOpen }: RowProps) {
+  const sending = sendingAt !== "";
   const name = String(lead.data.name || "Без имени");
   const row = useMemo(() => chatListItem(lead), [lead]);
   return (
@@ -154,7 +155,7 @@ const ChatListRow = memo(function ChatListRow({ lead, active, sending, badge, on
               ) : row.lastTick && row.lastTick !== "failed" ? (
                 <ChatTick state={row.lastTick} size={14} />
               ) : null}
-              {row.timeLabel}
+              {sending ? listTimeLabel(sendingAt) : row.timeLabel}
             </span>
           </span>
           <span className="chat-item-line">
@@ -264,7 +265,7 @@ function ChatListView(props: ChatListProps) {
                   key={lead.id}
                   lead={lead}
                   active={lead.id === activeId}
-                  sending={!!props.sendingId && lead.id === props.sendingId}
+                  sendingAt={props.sending && lead.id === props.sending.id ? props.sending.at : ""}
                   badge={renderRowBadge ? renderRowBadge(lead) : null}
                   onOpen={onOpen}
                 />

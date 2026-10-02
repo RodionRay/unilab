@@ -168,7 +168,7 @@ export function ChatThreadView({ chatKey, thread, groupName, emptyHint, messageH
   const onlySource = thread.items.filter((i) => i.kind === "message").length === 1;
 
   return (
-    <div className="chat-log" data-chat-thread>
+    <div className="chat-log" data-chat-thread data-down={showDown || undefined}>
       <div className="chat-log-scroll" ref={scrollRef} onScroll={onScroll} tabIndex={0} role="log" aria-label="Сообщения">
         <div className="chat-log-col">
           {thread.items.map((item) => {

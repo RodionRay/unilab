@@ -5013,7 +5013,7 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   --chat-danger-bg: rgba(255, 110, 85, 0.12);
   --chat-pill-bg: rgba(0, 0, 0, 0.55);
   --chat-pill-text: rgba(255, 255, 255, 0.9);
-  --chat-unread-band: rgba(255, 169, 44, 0.08);
+  --chat-unread-band: rgba(255, 169, 44, 0.04);
   --chat-quote-bg: rgba(255, 169, 44, 0.1);
   --chat-composer-bg: #1d1d1d;
   --chat-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
@@ -5052,7 +5052,7 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   --chat-danger-bg: #fde8e3;
   --chat-pill-bg: rgba(255, 255, 255, 0.94);
   --chat-pill-text: #3b3226;
-  --chat-unread-band: rgba(240, 165, 58, 0.16);
+  --chat-unread-band: rgba(240, 165, 58, 0.08);
   --chat-quote-bg: rgba(240, 165, 58, 0.14);
   --chat-composer-bg: #ffffff;
   --chat-shadow: 0 1px 1.5px rgba(70, 50, 20, 0.16);
@@ -6165,7 +6165,7 @@ body:has([data-chats-panel]) [data-slot="alert-dialog-content"] button[data-vari
 
 /* alert dialogs over the light chat theme (portaled: themed via body:has) */
 body:has(.chats-panel[data-chat-theme="light"]) [data-slot="alert-dialog-overlay"] {
-  background: rgba(20, 17, 13, 0.32) !important;
+  background: rgba(0, 0, 0, 0.5) !important;
 }
 body:has(.chats-panel[data-chat-theme="light"]) [data-slot="alert-dialog-content"] {
   background: #ffffff !important;
@@ -6209,6 +6209,29 @@ body:has(.chats-panel[data-chat-theme="light"]) [data-slot="alert-dialog-content
   display: flex;
   flex-direction: column;
   margin-top: 8px;
+}
+
+/* unread divider: a light band plus a hairline so it reads as a line, not a slab */
+.chats-panel .chat-unread-divider {
+  border-top: 1px solid var(--chat-pane-border);
+  border-bottom: 1px solid var(--chat-pane-border);
+}
+
+/* dark chat theme: success toasts on the chat paper instead of the app's mint (mint stays in light) */
+body:has(.chats-panel[data-chat-theme="dark"]) [data-sonner-toast][data-type="success"] {
+  background: #1f1f1f !important;
+  color: rgba(255, 255, 255, 0.92) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+}
+body:has(.chats-panel[data-chat-theme="dark"]) [data-sonner-toast][data-type="success"] [data-icon] {
+  color: #4bd08b !important;
+}
+
+/* phones: while «вниз» is shown, the column keeps a gutter so it never covers the bubble time */
+@container chats (max-width: 699px) {
+  .chat-log[data-down] .chat-log-col {
+    padding-right: 64px;
+  }
 }
 
 /* ---------- small additions: add lead, row badge, notice action ---------- */
