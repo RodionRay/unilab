@@ -73,7 +73,8 @@ export function InboxScreen({
   }, [cursor, loadMore]);
 
   const counts = feed.data?.counts;
-  const unreadLeft = counts ? Math.max(0, counts.unread - items.filter((i) => i.unread && viewed.has(i.id)).length) : 0;
+  // counts.unread = the «Непрочитанные» filter (unread or waiting for a reply); opening a lead clears both flags.
+  const unreadLeft = counts ? Math.max(0, counts.unread - items.filter((i) => (i.unread || i.needsManager) && viewed.has(i.id)).length) : 0;
   const hot = counts?.hot ?? 0;
   useEffect(() => {
     if (counts) onCounts({ hot, unread: unreadLeft });

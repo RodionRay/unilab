@@ -21,7 +21,7 @@ type Cursor = { p: number; a: string; i: string };
 
 export class FeedInputError extends Error {}
 
-/** Unread or waiting for a manager sorts first, then the latest activity. */
+/** Unread or waiting for a manager sorts first, then the latest activity; the same set is the «Непрочитанные» filter and badge. */
 const PRIO_SQL = `CASE WHEN COALESCE(json_extract(data,'$.viewed'),0)=0 OR COALESCE(json_extract(data,'$.needsManager'),0)=1 THEN 1 ELSE 0 END`;
 const ACTIVITY_SQL = `MAX(created, COALESCE(json_extract(data,'$.conversationAt'),''), COALESCE(json_extract(data,'$.replies[#-1].at'),''))`;
 const NOT_ARCHIVED_SQL = `COALESCE(json_extract(data,'$.status'),'new')!='archived'`;
@@ -102,7 +102,7 @@ export async function inboxFeed(db: D1LikeDatabase, actor: WorkspaceActor, q: Fe
   const counts = await db
     .prepare(
       `SELECT COALESCE(SUM(CASE WHEN json_extract(data,'$.temperature')='hot' THEN 1 ELSE 0 END),0) AS hot,
-        COALESCE(SUM(CASE WHEN COALESCE(json_extract(data,'$.viewed'),0)=0 THEN 1 ELSE 0 END),0) AS unread
+        COALESCE(SUM(CASE WHEN ${FILTER_SQL.unread} THEN 1 ELSE 0 END),0) AS unread
        FROM records WHERE owner=? AND kind='lead' AND ${NOT_ARCHIVED_SQL}`,
     )
     .bind(actor.ownerId)

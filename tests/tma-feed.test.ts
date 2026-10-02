@@ -112,6 +112,20 @@ describe('REQ-M1 · inbox',()=>{
   });
  });
 
+ it('счётчик «Непрочитанные» = число строк фильтра unread (прочитан, но ждёт ответа — тоже)',async()=>{
+  testDb().sqlite.exec("DELETE FROM records WHERE kind='lead'");
+  addLead({viewed:false});
+  addLead({viewed:true,needsManager:true});
+  addLead({viewed:true});
+  const token=await tokenFor(OWNER);
+
+  const all=await feed<InboxFeed>(token,'view=inbox');
+  const unread=await feed<InboxFeed>(token,'view=inbox&filter=unread');
+
+  expect(unread.json.items).toHaveLength(2);
+  expect(all.json.counts.unread).toBe(unread.json.items.length);
+ });
+
  it('фильтры hot и conversations; превью = последнее сообщение переписки',async()=>{
   addLead({temperature:'hot'});
   const conv=addLead({conversationOpen:true,replies:[{text:'Привет',mode:'dm',at:'2026-09-30T10:00:00.000Z',ok:true,from:'client'}]});
