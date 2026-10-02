@@ -14,6 +14,8 @@ export const maxDuration = 300;
 
 /** Стена тика меньше AbortSignal воркера (300с), чтобы не ловить abort. */
 const TICK_BUDGET_MS = 210_000;
+const LEAD_BLOCK_TIMEOUT_MS = 75_000;
+const LEAD_BLOCK_MIN_LEFT_MS = 40_000;
 const JOIN_TIMEOUT_MS = 90_000;
 const SCAN_TIMEOUT_MS = 150_000;
 const BOOT_TIMEOUT_MS = 20_000;
@@ -350,8 +352,11 @@ async function tickOwner(
       /* ответы в ЛС — следующим тиком */
     }
     try {
-      // «Вероятно, заблокировал»: один пакетный запрос по одному аккаунту за тик (lib/lead-block.ts)
-      await workspace(origin, cookie, { action: "check_lead_blocks" }, 75_000);
+      // «Вероятно, заблокировал»: один пакетный запрос по одному аккаунту за тик (lib/lead-block.ts);
+      // только если в бюджете тика осталось время — mark_auto_rescan ниже важнее
+      if (left() > LEAD_BLOCK_MIN_LEFT_MS) {
+        await workspace(origin, cookie, { action: "check_lead_blocks" }, opTimeout(LEAD_BLOCK_TIMEOUT_MS));
+      }
     } catch {
       /* следующим тиком */
     }

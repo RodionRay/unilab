@@ -20,7 +20,7 @@ a signal from another account starts a fresh baseline.
 
 - Not a block signal on its own: a peer seen online after our message cannot have blocked us (a blocked
   account does not see status), so `unread_seen_online` is labelled «не читает», not «заблокировал».
-- Cleared by: a delivered DM (send-error reasons), visible profile again (`profile_hidden`), message read
+- Cleared by: a delivered DM (send-error reasons and `deleted`), visible profile again (`profile_hidden`), message read
   (`unread_seen_online`), an incoming DM from that peer on the same account (all but `deleted`).
 - Inputs, no extra polling: the send result (`telegram-worker/src/check_account.py::send_message` → `errorCode`,
   `peer` = `peer_snapshot`), mailing outreach (`route.ts::recordMailingOutreach`) and the batched check
@@ -34,11 +34,16 @@ a signal from another account starts a fresh baseline.
 ## B. Account penalty journal (`lib/account-events.ts`)
 - Table `account_events` (`drizzle/0002_account_events.sql`, `db/schema.ts::accountEvents`; additive; also created
   lazily by `ensureAccountEventsTable`). Types: spamblock (PEER_FLOOD), flood_wait (+`wait_sec`), spambot,
-  frozen, write_ban, privacy, peer_blocked. Contexts: join, mailing, invite, dm, check, collect, scan, peer_check.
+  frozen, write_ban, privacy, peer_blocked. Contexts: join, mailing, invite, dm, chat, check, collect, scan,
+  peer_check, inbox, profile.
+- `privacy` and `peer_blocked` are recipient-side (`RECIPIENT_EVENT_TYPES`): listed in the journal, excluded from the
+  24h/7d/all penalty counters. Per-user privacy results inside an invite batch are not journaled (one per invited
+  user, recipient-side; they stay in the invite task log).
 - Idempotent: unique `(owner, dedupe_key)`, key = account · type · context · subject · minute.
-- Written by `route.ts::journalPenalty` (never throws) at: account check (`runAccountCheck`, @SpamBot/frozen),
-  `join_group`, `scan_group`, audience join + collect, `tick_invite`, `tick_mailing` (subject = recipient),
-  `send_lead_message`, `checkLeadBlocks`.
+- Written by `route.ts::journalPenalty` (never throws) at: account check (`runAccountCheck`, @SpamBot/frozen, only
+  when the status changes — re-checks of a restricted account are not new penalties), `join_group`, `scan_group`,
+  audience join + collect, invite target/source join, `tick_invite`, `tick_mailing` (subject = recipient),
+  `send_lead_message` (dm/chat), `pollDmReplies` (inbox), profile/photo updates (frozen on change), `checkLeadBlocks`.
 - Read: GET `/api/workspace` → `accountPenalties` (one GROUP BY: 24 h / 7 d / all / lastAt; only for actors with
   the accounts section); POST `account_events {accountId, limit≤200}` → newest first (authz `accounts`, read-only).
 - UI: column «Штрафы» in the accounts table (`AccountPenaltyCell`), click → `AccountPenaltyDialog` with dates.
@@ -55,8 +60,12 @@ a signal from another account starts a fresh baseline.
 | B2 idempotent minute dedupe, counters, owner isolation, list cap | `tests/account-events.test.ts` |
 | B3 FloodWait on DM journaled once with seconds; GET counters | `tests/lead-block-route.test.ts` |
 | B4 UI cell/labels | `tests/lead-block-badge.test.ts` |
+| B5 journal at check (once per status change), inbox; recipient events not counted; authz | `tests/lead-block-route.test.ts` |
+| A6 FloodWait in batched check → `floodUntil`, account skipped; stale hash cleared; dead account stamped; incoming clears | `tests/lead-block-route.test.ts`, `test_peer_block.py::test_stale_hash_is_isolated_by_halving` |
 
 ## Known limits
-- A batch with a stale access hash fails as a whole (PEER_ID_INVALID) → those leads wait for the next window.
+- Journal hooks at join/scan/collect/invite/mailing/profile are covered by the classifier tests, not by a route test
+  each.
+- Lead creation through the generic `save` does not strip server-owned fields (pre-existing; same tenant only).
 - DM-send spamblock is journaled but (as before) not applied to the account status; out of scope.
 - No retention: `account_events` grows ~one row per penalty; counters use the `(owner, account_id, at)` index.

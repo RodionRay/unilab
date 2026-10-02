@@ -206,6 +206,36 @@ class PeerStatusTest(unittest.TestCase):
         self.assertEqual((out["ok"], out["status"], out["waitSec"]), (False, "flood", 33))
         self.assertEqual(len(client.requests[0].peers), ca.PEER_STATUS_MAX_PEERS)
 
+    def test_stale_hash_is_isolated_by_halving(self) -> None:
+        from telethon.errors import RPCError
+        from telethon.tl.types.messages import PeerDialogs
+        from telethon.tl.types.updates import State
+
+        class SplitClient:
+            def __init__(self) -> None:
+                self.sizes: list[int] = []
+
+            async def __call__(self, request: Any) -> Any:
+                ids = [x.peer.user_id for x in request.peers]
+                self.sizes.append(len(ids))
+                if 3003 in ids:
+                    raise RPCError(request=None, message="PEER_ID_INVALID", code=400)
+                return PeerDialogs(dialogs=[], messages=[], chats=[], users=[], state=State(pts=1, qts=0, date=ts(T0), seq=0, unread_count=0))
+
+        client = SplitClient()
+        peers = [{"userId": str(3000 + i), "accessHash": "1"} for i in range(8)]
+        orig = ca.PEER_STATUS_SPLIT_PAUSE_SEC
+        ca.PEER_STATUS_SPLIT_PAUSE_SEC = 0
+        try:
+            out = asyncio.run(ca.peer_status(client, peers, now=T0))
+        finally:
+            ca.PEER_STATUS_SPLIT_PAUSE_SEC = orig
+
+        self.assertTrue(out["ok"])
+        self.assertEqual([f["userId"] for f in out["failed"]], ["3003"])
+        self.assertLessEqual(len(client.sizes), ca.PEER_STATUS_MAX_CALLS)
+        self.assertEqual(client.sizes[0], 8)
+
     def test_no_known_peers_makes_no_request(self) -> None:
         client = FakePeerDialogsClient()
 

@@ -836,7 +836,8 @@ async function runAccountCheck(owner:string,id:string,opts?:{
    }
 
    if(status==='frozen'||status==='spamblock'){
-    await journalPenalty(owner,id,'check',{...workerResult,ok:false,status});
+    // Повторная проверка уже ограниченного аккаунта — не новый штраф (счётчики не раздуваем)
+    if(String(data.status||'')!==status)await journalPenalty(owner,id,'check',{...workerResult,ok:false,status});
     // Подтверждённый проверкой спамблок без таймера: старый истёкший cooldownUntil не должен «снять» его (REQ-M8)
     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...next,cooldownUntil:'',cooldownReason:status}),owner,id,'account').run();
     return {id,ok:false,status:next.status,error:next.error,profile,proxyRotated:proxyRotated||undefined};
@@ -1781,7 +1782,7 @@ async function pollDmReplies(db:D1LikeDatabase,owner:string,live:LiveAccount[]){
   }catch{
    continue;
   }
-  if(!result?.ok)continue;
+  if(!result?.ok){await journalPenalty(owner,acc.id,'inbox',result);continue}
   const msgs:InboxMessage[]=Array.isArray(result.messages)?result.messages:[];
   let persisted=true;
   let maxTs=0;
@@ -1827,10 +1828,12 @@ async function checkLeadBlocks(db:D1LikeDatabase,owner:string){
   ORDER BY COALESCE(json_extract(data,'$.blockSignal.checkedAt'),'') LIMIT 200`)
   .bind(owner,new Date(nowMs-LEAD_BLOCK_RECHECK_MS).toISOString(),new Date(nowMs-LEAD_BLOCK_ACTIVE_MS).toISOString()).all();
  const due=rows.results.map(r=>({id:String(r.id),data:JSON.parse(String(r.data)) as LeadData}));
- if(!due.length)return {ok:true,checked:0,flagged:0,accountId:''};
+ if(!due.length)return {ok:true,checked:0,changed:0,accountId:''};
  const accRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='account'").bind(owner).all();
  const accounts=new Map(accRows.results.map(r=>[String(r.id),JSON.parse(String(r.data))]));
- const usable=(id:string)=>canPollDmInbox(accounts.get(id));
+ // Под FloodWait диалоги аккаунта ждут; дневная отлёжка (лимит отправки) чтению не мешает
+ const usable=(id:string)=>{const a=accounts.get(id);return canPollDmInbox(a)&&!isAccountFlooded(a,nowMs)};
+ const dead=(id:string)=>!canPollDmInbox(accounts.get(id));
  const stamp=async(leadId:string,accountId:string,snap?:ReturnType<typeof parsePeerSnapshot>)=>{
   const done=await mutateLead(db,owner,leadId,cur=>{
    if(String(cur.accountId||'')!==accountId)return {result:false};
@@ -1840,30 +1843,46 @@ async function checkLeadBlocks(db:D1LikeDatabase,owner:string){
   return !!done?.result;
  };
  // Leads of a dead/missing account leave the queue until the next window instead of starving it
- for(const L of due)if(!usable(String(L.data.accountId)))await stamp(L.id,String(L.data.accountId));
+ for(const L of due)if(dead(String(L.data.accountId)))await stamp(L.id,String(L.data.accountId));
  const accountId=String(due.find(L=>usable(String(L.data.accountId)))?.data.accountId||'');
- if(!accountId)return {ok:true,checked:0,flagged:0,accountId:''};
+ if(!accountId)return {ok:true,checked:0,changed:0,accountId:''};
  const batch=due.filter(L=>String(L.data.accountId)===accountId).slice(0,LEAD_BLOCK_BATCH);
  const peers=batch.map(L=>({userId:String(L.data.senderId).replace(/^-/,''),accessHash:String(L.data.senderAccessHash)}));
+ // Штамп ДО вызова: параллельный cron/вкладка не отправит тот же батч повторно
+ for(const L of batch)await stamp(L.id,accountId);
  let result:Record<string,unknown>;
  try{
   const {payload}=await loadAccountSessionPayload(owner,accountId);
   result=await workerPost('/peer-status',{...payload,peers},PEER_STATUS_TIMEOUT_MS);
  }catch(e){
-  return {ok:false,busy:e instanceof WorkerBusyError,checked:0,flagged:0,accountId};
+  return {ok:false,busy:e instanceof WorkerBusyError,checked:0,changed:0,accountId};
  }
  await journalPenalty(owner,accountId,'peer_check',result);
+ if(result.status==='flood'){
+  // Как в рассылке: аккаунт на паузу floodUntil, статус не трогаем
+  const until=new Date(nowMs+Math.max(60,Number(result.waitSec)||900)*1000).toISOString();
+  await db.prepare("UPDATE records SET data=json_set(data,'$.floodUntil',?) WHERE owner=? AND id=? AND kind='account'").bind(until,owner,accountId).run();
+  return {ok:false,flood:true,checked:0,changed:0,accountId};
+ }
+ // Битый/чужой access_hash: убираем его у лида — следующая отправка сохранит свежий (send без hash — по username)
+ const stale=new Set((Array.isArray(result.failed)?result.failed:[])
+  .filter((f:{error?:unknown})=>/PEER_ID_INVALID|USER_ID_INVALID|invalid/i.test(String(f?.error||'')))
+  .map((f:{userId?:unknown})=>String(f?.userId||'')));
+ for(const L of batch){
+  if(!stale.has(String(L.data.senderId).replace(/^-/,'')))continue;
+  await mutateLead(db,owner,L.id,cur=>({next:String(cur.accountId||'')===accountId?{...cur,senderAccessHash:''}:undefined,result:null})).catch(()=>null);
+ }
  const byPeer=new Map<string,ReturnType<typeof parsePeerSnapshot>>();
  for(const raw of Array.isArray(result.peers)?result.peers:[]){
   const snap=parsePeerSnapshot(raw);
   if(snap)byPeer.set(String((raw as {userId?:unknown}).userId||''),snap);
  }
- let flagged=0;
+ let changed=0;
  for(const L of batch){
   const snap=result.ok?byPeer.get(String(L.data.senderId).replace(/^-/,'')):undefined;
-  if(await stamp(L.id,accountId,snap||undefined))flagged++;
+  if(await stamp(L.id,accountId,snap||undefined))changed++;
  }
- return {ok:!!result.ok,checked:batch.length,flagged,accountId,error:result.ok?'':String(result.error||'').slice(0,200)};
+ return {ok:!!result.ok,checked:batch.length,changed,accountId,error:result.ok?'':String(result.error||'').slice(0,200)};
 }
 
 /** A thrown send: busy worker = not sent (retry allowed); our timeout/abort = maybe sent (retry blocked). */
@@ -2104,7 +2123,10 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
        next.lastName=wr.profile.lastName??next.lastName;
        if(about!=null)next.about=about;
       }
-      if(wr.status==='frozen')next.status='frozen';
+      if(wr.status==='frozen'){
+       if(String(next.status||'')!=='frozen')await journalPenalty(owner,id,'profile',{...wr,ok:false});
+       next.status='frozen';
+      }
      }catch(e){
       tgOk=false;
       tgError=internalError('apply_account_profiles',e,'Не удалось обновить профиль в Telegram');
@@ -2129,6 +2151,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    try{
     const {payload}=await loadAccountSessionPayload(owner,id);
     const wr=await workerPost('/upload-photo',{...payload,photoBase64});
+    if(wr.status==='frozen'&&String(data.status||'')!=='frozen')await journalPenalty(owner,id,'profile',{...wr,ok:false});
     if(wr.ok){
      const next={...data,hasPhoto:true};
      if(wr.status==='frozen')next.status='frozen';
@@ -2997,7 +3020,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   }catch(e){
    ({outcome,httpStatus:failStatus}=sendFailureOutcome(e));
   }
-  await journalPenalty(owner,sendAccountId,'dm',finalResult,senderId);
+  await journalPenalty(owner,sendAccountId,mode==='dm'?'dm':'chat',finalResult,mode==='dm'?senderId:'');
   const sentAt=new Date().toISOString();
   const saved=await mutateLead(db,owner,id,cur=>{
    const applied=applySendOutcome(cur,{sendKey,mode,accountId:sendAccountId,peerId:senderId,accessHash:usedHash,nowIso:sentAt},outcome);
@@ -3931,6 +3954,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   try{
    const {payload,account}=await loadAccountSessionPayload(owner,accountId);
    const joinRes=await post('/join-group',{...payload,url:data.targetUrl},workerAppTimeoutMs('join'));
+   await journalPenalty(owner,accountId,'join',joinRes);
    if(!joinRes.ok&&joinRes.join!=='already'&&!/уже|already/i.test(String(joinRes.error||''))){
     const pause=randomPauseSec(data.pauseFromSec,data.pauseToSec);
     if(isAccountBlindResult(joinRes)){
@@ -3958,7 +3982,7 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
    data={...data,targetMissStreak:0};
    // Источник опционален: не тратим на него стену тика, если вступление уже не влезает
    if(sourceUrl&&tickRun.budget.fits(workerAppTimeoutMs('join'))){
-    try{await post('/join-group',{...payload,url:sourceUrl},workerAppTimeoutMs('join'))}catch{/* источник опционален */}
+    try{await journalPenalty(owner,accountId,'join',await post('/join-group',{...payload,url:sourceUrl},workerAppTimeoutMs('join')))}catch{/* источник опционален */}
    }
    const result=await post('/invite-users',{
     ...payload,

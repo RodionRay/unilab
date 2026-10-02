@@ -1,6 +1,6 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {OWNER,login,postRequest,resetWorkspace,testDb} from './helpers/workspace-harness';
-import {ACC_A,ACC_B,CHAT_LEAD,addChatLead,addSealedAccount,dropHarnessAccount,readRecord,stubWorker} from './helpers/chats-fixture';
+import {ACC_A,ACC_B,API_ID,CHAT_LEAD,addChatLead,addSealedAccount,dropHarnessAccount,readRecord,stubWorker} from './helpers/chats-fixture';
 
 vi.mock('cloudflare:workers',async()=>(await import('./helpers/workspace-harness')).cfModule);
 vi.mock('@/lib/auth',async(importOriginal)=>({
@@ -71,7 +71,7 @@ describe('«вероятно заблокировал» и журнал штра
     expect(readRecord(CHAT_LEAD).blockSignal).toMatchObject({accountId:ACC_A,visibleStatus:true,visiblePhoto:true,reasons:[]});
 
     const first=await json(post({action:'check_lead_blocks'}));
-    expect(first).toMatchObject({ok:true,checked:1,flagged:1,accountId:ACC_A});
+    expect(first).toMatchObject({ok:true,checked:1,changed:1,accountId:ACC_A});
     const peerCalls=calls.filter(c=>c.path==='/peer-status');
     expect(peerCalls).toHaveLength(1);
     expect(peerCalls[0]!.body.peers).toEqual([{userId:'777',accessHash:'hash-a'}]);
@@ -112,5 +112,83 @@ describe('«вероятно заблокировал» и журнал штра
     const data=await json(GET());
 
     expect(data.accountPenalties[ACC_A]).toMatchObject({day:1,week:1,all:1});
+  });
+  it('FloodWait в пакетной проверке ставит аккаунту floodUntil; следующий вызов его не трогает',async()=>{
+    addChatLead({replies:recentReply()});
+    const {calls}=stubWorker(()=>({ok:false,status:'flood',waitSec:600,error:'FloodWait 600с',peers:[]}));
+
+    const out=await json(post({action:'check_lead_blocks'}));
+
+    expect(out).toMatchObject({ok:false,flood:true,accountId:ACC_A});
+    expect(Date.parse(String(readRecord(ACC_A).floodUntil))).toBeGreaterThan(Date.now()+500_000);
+    expect(journal()).toEqual([{accountId:ACC_A,type:'flood_wait',context:'peer_check',waitSec:600}]);
+    // Лид проштампован до вызова; даже снятый штамп не заставит дёрнуть аккаунт под FloodWait
+    const lead=readRecord(CHAT_LEAD);
+    testDb().sqlite.prepare('UPDATE records SET data=? WHERE id=?').run(JSON.stringify({...lead,blockSignal:undefined}),CHAT_LEAD);
+    await post({action:'check_lead_blocks'});
+    expect(calls.filter(c=>c.path==='/peer-status')).toHaveLength(1);
+  });
+
+  it('пир с битым access_hash: hash у лида сбрасывается, остальные проверены',async()=>{
+    addChatLead({replies:recentReply()});
+    stubWorker(()=>({ok:true,peers:[],failed:[{userId:'777',error:'RPCError 400: PEER_ID_INVALID'}]}));
+
+    await post({action:'check_lead_blocks'});
+
+    expect(readRecord(CHAT_LEAD).senderAccessHash).toBe('');
+    expect(readRecord(CHAT_LEAD).blockSignal).toMatchObject({accountId:ACC_A});
+  });
+
+  it('лиды мёртвого аккаунта штампуются без вызова воркера',async()=>{
+    await addSealedAccount(ACC_A,{status:'unauthorized'});
+    addChatLead({replies:recentReply()});
+    const {calls}=stubWorker(()=>({ok:true,peers:[]}));
+
+    const out=await json(post({action:'check_lead_blocks'}));
+
+    expect(out.checked).toBe(0);
+    expect(calls).toHaveLength(0);
+    expect((readRecord(CHAT_LEAD).blockSignal as {checkedAt?:string}).checkedAt).toBeTruthy();
+  });
+
+  it('входящее ЛС от клиента снимает «вероятно заблокировал»; FloodWait входящих — в журнал',async()=>{
+    addChatLead({replies:recentReply(),blockSignal:{accountId:ACC_A,reasons:[{code:'blocked_error',at:'2026-10-01T00:00:00.000Z',detail:'x'}]}});
+    const ts=Math.floor(Date.now()/1000);
+    stubWorker(call=>call.body.apiId===API_ID[ACC_A]
+      ?{ok:true,complete:true,scanStartedTs:ts,messages:[{userId:'777',username:'client_nick',name:'Клиент',text:'Да',messageId:'905',at:new Date(ts*1000).toISOString(),ts,hasMedia:false}]}
+      :{ok:false,status:'flood',waitSec:90,error:'FloodWait 90с',messages:[]});
+
+    await post({action:'poll_dm_replies'});
+
+    expect((readRecord(CHAT_LEAD).blockSignal as {reasons:unknown[]}).reasons).toEqual([]);
+    expect(journal()).toEqual([{accountId:ACC_B,type:'flood_wait',context:'inbox',waitSec:90}]);
+  });
+
+  it('проверка уже ограниченного аккаунта не дублирует штраф @SpamBot',async()=>{
+    stubWorker(()=>({ok:false,status:'spamblock',error:'@SpamBot: limited'}));
+
+    await post({action:'check_account',id:ACC_A,deep:true,rotateProxy:false});
+    await post({action:'check_account',id:ACC_A,deep:true,rotateProxy:false});
+
+    expect(journal()).toEqual([{accountId:ACC_A,type:'spambot',context:'check',waitSec:null}]);
+  });
+
+  it('ошибки приватности получателя в журнале, но не в счётчиках штрафов',async()=>{
+    addChatLead({replies:recentReply()});
+    stubWorker(call=>call.path==='/health'?{ok:true}:{ok:false,errorCode:'USER_PRIVACY_RESTRICTED',error:'privacy'});
+    await send();
+
+    const data=await json(GET());
+
+    expect(journal().map(x=>x.type)).toEqual(['privacy']);
+    expect(data.accountPenalties[ACC_A]).toBeUndefined();
+  });
+
+  it('участник без раздела «Аккаунты» не видит журнал',async()=>{
+    const {authorizeWorkspaceAction}=await import('@/lib/security/workspace-authz');
+    const member={userId:'m',ownerId:OWNER,isOwner:false,role:'manager' as never,access:{chats:true} as never};
+    expect(authorizeWorkspaceAction(member,'account_events',undefined).ok).toBe(false);
+    expect(authorizeWorkspaceAction(member,'check_lead_blocks',undefined).ok).toBe(true);
+    expect(authorizeWorkspaceAction({...member,role:'viewer' as never,access:{accounts:true} as never},'account_events',undefined).ok).toBe(true);
   });
 });

@@ -57,7 +57,8 @@ export const UNREAD_SEEN_GRACE_SEC = 3600;
 
 const PEER_STATUSES: readonly PeerStatus[] = ["online", "offline", "recently", "last_week", "last_month", "hidden"];
 const REASON_ORDER: readonly BlockReasonCode[] = ["deleted", "blocked_error", "privacy", "profile_hidden", "unread_seen_online"];
-const SEND_CLEARS: readonly BlockReasonCode[] = ["blocked_error", "privacy"];
+/** A delivered message proves the peer exists and accepts our DMs. */
+const SEND_CLEARS: readonly BlockReasonCode[] = ["blocked_error", "privacy", "deleted"];
 
 const str = (v: unknown) => (typeof v === "string" ? v : v == null ? "" : String(v));
 

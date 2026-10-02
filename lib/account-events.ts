@@ -22,8 +22,17 @@ export const ACCOUNT_EVENT_TYPES = [
 ] as const;
 export type AccountEventType = (typeof ACCOUNT_EVENT_TYPES)[number];
 
-export const ACCOUNT_EVENT_CONTEXTS = ["join", "mailing", "invite", "dm", "check", "collect", "scan", "peer_check"] as const;
+export const ACCOUNT_EVENT_CONTEXTS = [
+  "join", "mailing", "invite", "dm", "chat", "check", "collect", "scan", "peer_check", "inbox", "profile",
+] as const;
 export type AccountEventContext = (typeof ACCOUNT_EVENT_CONTEXTS)[number];
+
+/**
+ * Recipient-side events (the peer's privacy or block) are journaled but are not penalties of OUR account: they stay
+ * out of the 24h/7d/all counters and show only in the list.
+ */
+export const RECIPIENT_EVENT_TYPES: readonly AccountEventType[] = ["privacy", "peer_blocked"];
+const PENALTY_FILTER = `type NOT IN (${RECIPIENT_EVENT_TYPES.map((t) => `'${t}'`).join(", ")})`;
 
 export type AccountEventInput = {
   accountId: string;
@@ -184,7 +193,7 @@ export function accountEventFor(
   return e && accountId ? { ...e, accountId, subject } : null;
 }
 
-/** Counters for every account of the owner in one query (no N+1). */
+/** Penalty counters (recipient-side events excluded) for every account of the owner in one query (no N+1). */
 export async function accountEventCounts(
   db: D1LikeDatabase,
   owner: string,
@@ -200,7 +209,7 @@ export async function accountEventCounts(
               SUM(CASE WHEN at >= ? THEN 1 ELSE 0 END) AS week,
               COUNT(*) AS allCount,
               MAX(at) AS lastAt
-         FROM account_events WHERE owner = ? GROUP BY account_id`,
+         FROM account_events WHERE owner = ? AND ${PENALTY_FILTER} GROUP BY account_id`,
     )
     .bind(dayAgo, weekAgo, owner)
     .all();
@@ -258,10 +267,13 @@ export const ACCOUNT_EVENT_CONTEXT_LABELS: Readonly<Record<AccountEventContext, 
   mailing: "рассылка",
   invite: "инвайтинг",
   dm: "ответ в ЛС",
+  chat: "ответ в чат",
   check: "проверка",
   collect: "сбор аудитории",
   scan: "сканирование",
   peer_check: "проверка собеседников",
+  inbox: "входящие ЛС",
+  profile: "профиль",
 };
 
 /** «FloodWait · вступление · 7 мин» — one line per journal row. */

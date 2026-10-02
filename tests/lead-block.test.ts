@@ -44,6 +44,9 @@ describe('send errors',()=>{
   expect(b.reasons[0]!.at).toBe(NOW);
   expect(sameSignal(a,b)).toBe(true);
  });
+ it('a delivered message disproves «deleted» too',()=>{
+  expect(blockBadge(observeSendOk(observeSendError(undefined,'INPUT_USER_DEACTIVATED','acc1',NOW),null,'acc1',later(1)))).toBeNull();
+ });
  it('a delivered message clears send-error reasons',()=>{
   const s=observeSendOk(observeSendError(undefined,'USER_IS_BLOCKED','acc1',NOW),null,'acc1',later(1));
   expect(blockBadge(s)).toBeNull();

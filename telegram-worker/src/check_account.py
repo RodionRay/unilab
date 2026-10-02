@@ -2353,6 +2353,9 @@ _PEER_STATUS_NAMES = {
     "UserStatusLastMonth": "last_month",
 }
 PEER_STATUS_MAX_PEERS = 50
+# A stale access hash fails GetPeerDialogs for the whole batch: halve up to this many requests to isolate it.
+PEER_STATUS_MAX_CALLS = 14
+PEER_STATUS_SPLIT_PAUSE_SEC = 0.5
 
 
 def peer_error_code(exc: BaseException) -> str:
@@ -2413,15 +2416,47 @@ async def peer_status(client: Any, peers: list[dict[str, Any]], *, now: int | No
             continue
         inputs.append(InputDialogPeer(peer=InputPeerUser(user_id=uid, access_hash=ah)))
     if not inputs:
-        return {"ok": True, "peers": [], "checkedTs": started, "error": ""}
+        return {"ok": True, "peers": [], "failed": [], "checkedTs": started, "error": ""}
+    calls = {"n": 0}
+
+    async def fetch(chunk: list[Any]) -> tuple[list[Any], list[tuple[Any, str]]]:
+        """One request; a peer-specific error (stale access hash) splits the chunk instead of failing it whole."""
+        if calls["n"]:
+            await asyncio.sleep(PEER_STATUS_SPLIT_PAUSE_SEC)
+        calls["n"] += 1
+        try:
+            return [await client(GetPeerDialogsRequest(peers=chunk))], []
+        except FloodWaitError:
+            raise
+        except RPCError as e:
+            if is_frozen_rpc(e) or len(chunk) == 1 or calls["n"] >= PEER_STATUS_MAX_CALLS:
+                if is_frozen_rpc(e):
+                    raise
+                return [], [(x, str(e)[:200]) for x in chunk]
+            mid = len(chunk) // 2
+            ok_a, bad_a = await fetch(chunk[:mid])
+            ok_b, bad_b = await fetch(chunk[mid:])
+            return ok_a + ok_b, bad_a + bad_b
+
     try:
-        res = await client(GetPeerDialogsRequest(peers=inputs))
+        results, bad = await fetch(inputs)
     except FloodWaitError as e:
-        return {"ok": False, "status": "flood", "waitSec": int(e.seconds), "error": f"FloodWait {e.seconds}с", "peers": []}
+        return {"ok": False, "status": "flood", "waitSec": int(e.seconds), "error": f"FloodWait {e.seconds}с", "peers": [], "failed": []}
     except RPCError as e:
-        if is_frozen_rpc(e):
-            return {**frozen_action_error("проверка собеседников"), "peers": []}
-        return {"ok": False, "error": str(e)[:400], "peers": []}
+        return {**frozen_action_error("проверка собеседников"), "peers": [], "failed": []} if is_frozen_rpc(e) else {
+            "ok": False, "error": str(e)[:400], "peers": [], "failed": [],
+        }
+    failed = [{"userId": str(x.peer.user_id), "error": err} for x, err in bad]
+    if not results:
+        return {"ok": False, "error": (bad[0][1] if bad else "GetPeerDialogs failed")[:400], "peers": [], "failed": failed}
+    out: list[dict[str, Any]] = []
+    for res in results:
+        out.extend(_peer_dialog_rows(res, started))
+    return {"ok": True, "peers": out, "failed": failed, "checkedTs": started, "error": ""}
+
+
+def _peer_dialog_rows(res: Any, started: int) -> list[dict[str, Any]]:
+    """messages.PeerDialogs → one row per private dialog: snapshot + read state of our top message."""
     users = {int(u.id): u for u in (getattr(res, "users", None) or []) if getattr(u, "id", None) is not None}
     top_by_peer: dict[tuple[int, int], Any] = {}
     for m in getattr(res, "messages", None) or []:
@@ -2449,7 +2484,7 @@ async def peer_status(client: Any, peers: list[dict[str, Any]], *, now: int | No
             "lastOutAt": _unix_ts(getattr(top, "date", None)) if top_out else 0,
             "outUnread": top_out and top_id > read_out,
         })
-    return {"ok": True, "peers": out, "checkedTs": started, "error": ""}
+    return out
 
 
 async def send_message(
