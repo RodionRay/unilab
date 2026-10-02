@@ -81,7 +81,7 @@ function phaseForError(err: TmaApiError): Phase {
   }
 }
 
-export function TmaApp({ wsKey }: { wsKey: string }) {
+export function TmaApp({ wsKey, botLink }: { wsKey: string; botLink: string }) {
   const [phase, setPhase] = useState<Phase>({ kind: "boot" });
   const [attempt, setAttempt] = useState(0);
   const scheme = useColorScheme();
@@ -137,7 +137,7 @@ export function TmaApp({ wsKey }: { wsKey: string }) {
   return (
     <div className={scheme === "dark" ? "tma-root dark" : "tma-root"} data-phase={phase.kind}>
       {phase.kind === "boot" ? <BootSkeleton /> : null}
-      {phase.kind === "outside" ? <OutsideTelegramGate /> : null}
+      {phase.kind === "outside" ? <OutsideTelegramGate botLink={botLink} /> : null}
       {phase.kind === "unavailable" ? <UnavailableGate /> : null}
       {phase.kind === "expired" ? <SessionExpiredGate app={app} /> : null}
       {phase.kind === "not_linked" ? <NotLinkedGate app={app} botLink={phase.botLink} /> : null}

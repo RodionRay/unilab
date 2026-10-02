@@ -125,3 +125,13 @@ export function botLinkFor(ws: TmaWorkspace | null, currentBotId: string): strin
   if (!ws?.botUsername || !currentBotId || ws.botId !== currentBotId) return undefined;
   return `https://t.me/${ws.botUsername}`;
 }
+
+/**
+ * Bot link for the «Откройте из бота» screen (REQ-S3), resolved server-side so the page outside Telegram
+ * calls no API. The bot @username is public; '' when the key is unknown or the cached username is stale.
+ */
+export async function botLinkForKey(db: D1LikeDatabase, wsKey: string): Promise<string> {
+  const ws = await findWorkspaceByKey(db, wsKey);
+  if (!ws) return "";
+  return botLinkFor(ws, (await readWorkspaceBot(db, ws.owner)).botId) ?? "";
+}

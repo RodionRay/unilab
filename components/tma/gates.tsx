@@ -31,11 +31,25 @@ function GateButton({ onClick, children }: { onClick(): void; children: ReactNod
   );
 }
 
-export function OutsideTelegramGate() {
+/** REQ-S3: outside Telegram there is no WebApp API, so the bot is a plain link (t.me opens the Telegram app). */
+export function OutsideTelegramGate({ botLink }: { botLink: string }) {
   return (
-    <Gate icon={<MessageCircle className="size-7" />} title="Откройте из бота">
+    <Gate
+      icon={<MessageCircle className="size-7" />}
+      title="Откройте из бота"
+      action={
+        botLink ? (
+          <a
+            href={botLink}
+            className="mt-2 flex min-h-12 w-full max-w-[320px] items-center justify-center rounded-xl bg-(--tma-button) px-5 text-[16px] font-semibold text-(--tma-button-text) active:opacity-80"
+          >
+            Открыть бота
+          </a>
+        ) : null
+      }
+    >
       <p>Это приложение UniLab работает внутри Telegram. Откройте бота вашего рабочего пространства и нажмите кнопку «Открыть» в меню чата.</p>
-      <p>Ссылку на бота можно найти в UniLab на компьютере: Настройки → Telegram-приложение.</p>
+      {botLink ? null : <p>Ссылку на бота можно найти в UniLab на компьютере: Настройки → Telegram-приложение.</p>}
     </Gate>
   );
 }

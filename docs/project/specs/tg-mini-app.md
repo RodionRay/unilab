@@ -122,7 +122,9 @@ Source: read-only scout of origin/dev @671338d + Telegram docs (core.telegram.or
   without horizontal scroll at 360–430 px.
 - REQ-S2 The shell shall use Telegram BackButton for in-app navigation and MainButton for the screen's primary
   action; destructive/irreversible actions shall go through `showConfirm`.
-- REQ-S3 If opened outside Telegram (no initData), the page shall show «Откройте из бота» with the bot link, no data.
+- REQ-S3 If opened outside Telegram (no initData), the page shall show «Откройте из бота» with the bot link
+  (`t.me/<bot>`, resolved server-side: `lib/tma/workspace.ts::botLinkForKey`, no API call from the page) when the
+  bot username is cached for the current bot, else the text pointing to «Настройки → Telegram-приложение»; no data.
 - REQ-S4 When the bearer expires or returns 401, the shell shall show «Сессия истекла — откройте заново из бота».
 - REQ-S5 Every screen shall have loading, empty, error and offline states.
 
