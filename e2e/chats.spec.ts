@@ -33,6 +33,7 @@ type EdgeOptions = {
 async function mockTelegramEdge(page: Page, opts: EdgeOptions = {}) {
   const sent: { id: string; text: string; mode: string; reply: Reply }[] = [];
   const markViewed: string[] = [];
+  const attempts: string[] = [];
   let records: Lead[] = [];
   let failNext = opts.failFirstWith ?? "";
   await page.route("**/api/workspace", async (route) => {
@@ -66,7 +67,11 @@ async function mockTelegramEdge(page: Page, opts: EdgeOptions = {}) {
         messageId: error ? "" : "9001", link: "", chatId: "", from: "us", status: error ? "failed" : "sent",
         sendKey: String(payload.clientMsgId || ""),
       };
+      // like route.ts: a retry replaces the failed attempt of the same text+mode
+      const prior = sent.findIndex((x) => x.id === id && x.text === reply.text && x.mode === reply.mode && !x.reply.ok);
+      if (prior >= 0) sent.splice(prior, 1);
       sent.push({ id, text: reply.text, mode: String(payload.mode), reply });
+      attempts.push(reply.text);
       const current = records.find((x) => x.id === id)?.data;
       const lead = { ...(current || {}), replies: [...(current?.replies || []), reply], conversationOpen: true, draft: reply.text };
       // same shapes as app/api/workspace/route.ts send_lead_message (success / Telegram failure)
@@ -79,7 +84,7 @@ async function mockTelegramEdge(page: Page, opts: EdgeOptions = {}) {
     }
     return route.continue();
   });
-  return Object.assign(sent, { markViewed });
+  return Object.assign(sent, { markViewed, attempts });
 }
 
 async function openChats(page: Page, baseURL: string, width = 1440, height = 900) {
@@ -159,6 +164,8 @@ test.describe("Переписки", () => {
 
     const bubble = page.locator('[data-chat-msg][data-side="out"]', { hasText: "Проверка часов" });
     await expect(bubble).toHaveAttribute("data-status", "pending");
+    // Telegram-like: the composer is empty while the message is on its way
+    expect(await composer.inputValue()).toBe("");
     await expect(page.locator("[data-chat-send]")).toBeDisabled();
     await expect(bubble).toHaveAttribute("data-status", "sent");
     await expect(bubble).toHaveCount(1);
@@ -179,12 +186,18 @@ test.describe("Переписки", () => {
     await expect(failed).toBeVisible();
     await expect(failed).toContainText("Telegram временно ограничил этот аккаунт");
     await expect(failed).not.toContainText("PEER_FLOOD");
+    // the composer emptied on send and got the text back on failure
+    await expect(composer).toHaveValue("Повтор после ошибки");
 
     await composer.fill("");
     await failed.locator("[data-chat-retry]").click();
-    await expect.poll(() => sent.length).toBe(2);
-    expect(sent[1]).toMatchObject({ text: "Повтор после ошибки", mode: sent[0]!.mode });
-    await expect(page.locator('[data-chat-msg][data-status="sent"]', { hasText: "Повтор после ошибки" })).toBeVisible();
+    await expect.poll(() => sent.attempts.length).toBe(2);
+    expect(sent.attempts[1]).toBe("Повтор после ошибки");
+    const delivered = page.locator('[data-chat-msg][data-side="out"]', { hasText: "Повтор после ошибки" });
+    await expect(delivered).toHaveCount(1);
+    await expect(delivered).toHaveAttribute("data-status", "sent");
+    await expect(page.locator("[data-chat-retry]")).toHaveCount(0);
+    await expect(composer).toHaveValue("");
   });
 
   test("Telegram not connected: send and AI disabled, notice links to accounts", async ({ page, baseURL }) => {
@@ -213,5 +226,29 @@ test.describe("Переписки", () => {
     await expect(page.locator("[data-chat-composer]")).toBeDisabled();
     await expect(page.locator("[data-chat-send]")).toBeDisabled();
     expect(sent.markViewed).toHaveLength(0);
+  });
+
+  test("switching chats while a send is in flight keeps the new chat and its text", async ({ page, baseURL }) => {
+    await openChats(page, baseURL!);
+    const sent = await mockTelegramEdge(page, { sendDelayMs: 2500 });
+    await page.goto("/app?view=chats");
+    const rows = page.locator("[data-chat-item]");
+    await expect(rows.nth(1)).toBeVisible();
+    await rows.nth(0).click();
+
+    const composer = page.locator("[data-chat-composer]");
+    await composer.fill("Ушло в первый чат");
+    await composer.press("Enter");
+
+    const second = rows.filter({ hasNotText: (await page.locator(".chat-header-name").textContent()) || "" }).first();
+    const secondName = (await second.locator(".chat-item-name").textContent()) || "";
+    await second.click();
+    await expect(page.locator(".chat-header-name")).toHaveText(secondName);
+    await composer.fill("Пишу во второй");
+
+    await expect.poll(() => sent.length, { timeout: 10_000 }).toBe(1);
+    await page.waitForTimeout(1200);
+    await expect(page.locator(".chat-header-name")).toHaveText(secondName);
+    await expect(composer).toHaveValue("Пишу во второй");
   });
 });

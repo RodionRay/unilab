@@ -548,6 +548,8 @@ function WorkspaceHome(){
   const pausedTasksRef=useRef(new Set<string>());
   const lastInboxPollAt=useRef(0);
   const replySendKeyRef=useRef<{leadId:string;mode:string;text:string;key:string}|null>(null);
+  /** Lead open right now: async send/draft results must not touch another chat the user switched to meanwhile. */
+  const openLeadIdRef=useRef<string|null>(null);
 
   const refreshStaff=useCallback(async()=>{
     try{
@@ -1515,14 +1517,16 @@ function WorkspaceHome(){
     try{
       const r=await api({action:'draft',id:item.id});
       await refresh();
-      setDetail({...item,data:{...item.data,draft:r.draft}});
-      setChatText(r.draft||'');
+      setDetail(d=>d&&d.id===item.id?{...d,data:{...d.data,draft:r.draft}}:d);
+      if(openLeadIdRef.current===item.id)setChatText(r.draft||'');
       toast.success('Черновик готов');
     }
     catch(e){toast.error((e as Error).message)}finally{setBusy(false)}
   }
 
+  useEffect(()=>{openLeadIdRef.current=detail?.id??null},[detail]);
   async function openLead(item:RecordItem){
+    openLeadIdRef.current=item.id;
     setDetail(item);
     setChatMode('dm');
     setChatText(item.data.draft||'');
@@ -1556,11 +1560,14 @@ function WorkspaceHome(){
     if(!detail||!text)return;
     if(!telegramConnected){toast.error('Запустите: npm run dev');return}
     const mode=msg?msg.mode:chatMode;
-    const clientMsgId=replySendKey(detail.id,mode,text);
+    const leadId=detail.id;
+    const clientMsgId=replySendKey(leadId,mode,text);
+    // Telegram-like: the composer empties at once; the text comes back only if the send fails
+    if(!msg?.keepComposer)setChatText(prev=>prev.trim()===text?'':prev);
     setBusy(true);
     try{
-      const r=await api({action:'send_lead_message',id:detail.id,mode,text,clientMsgId,force});
-      if(r.lead)setDetail({...detail,data:r.lead});
+      const r=await api({action:'send_lead_message',id:leadId,mode,text,clientMsgId,force});
+      if(r.lead)setDetail(d=>d&&d.id===leadId?{...d,data:r.lead}:d);
       await refresh();
       toast.success(
         mode==='dm'
@@ -1568,10 +1575,11 @@ function WorkspaceHome(){
           :(r.link?'Отправлено в чат — ссылка на ответ сохранена':'Отправлено в чат'),
       );
       replySendKeyRef.current=null;
-      if(!msg?.keepComposer)setChatText('');
     }catch(e){
       const err=e as Error&{status?:number;data?:{unknown?:boolean;lead?:RecordItem['data']}};
-      if(err.data?.lead)setDetail({...detail,data:err.data.lead});
+      const lead=err.data?.lead;
+      if(lead)setDetail(d=>d&&d.id===leadId?{...d,data:lead}:d);
+      if(!msg?.keepComposer&&openLeadIdRef.current===leadId)setChatText(prev=>prev.trim()?prev:text);
       if(err.data?.unknown){
         toast.error(err.message,{action:{label:'Отправить ещё раз',onClick:()=>{void sendLeadReply(true,msg)}}});
       }else{
@@ -3317,12 +3325,15 @@ function WorkspaceHome(){
               onBack={()=>{setDetail(null);setChatText('')}}
               onSend={(text,mode)=>sendLeadReply(false,{text,mode})}
               onRetry={(text,mode)=>sendLeadReply(false,{text,mode,keepComposer:true})}
-              onDraft={async()=>{if(!detail)return;await draft(detail);const updated=records.find(r=>r.id===detail.id)||detail;setChatText(prev=>prev||updated.data.draft||'')}}
+              onDraft={()=>detail?draft(detail):undefined}
               onEdit={()=>{if(detail)open('lead',detail)}}
               onDelete={()=>setDeleting(detail)}
               onCopy={async(text)=>{try{await navigator.clipboard.writeText(text);toast.success('Скопировано')}catch{toast.error('Не удалось скопировать')}}}
               onAddLead={()=>open('lead')}
               onConnect={()=>navigate('Аккаунты')}
+              onOpenLeads={()=>navigate('Лиды')}
+              loadError={error}
+              onReload={()=>{void refresh()}}
             />
           )}
           {view!=='Обзор'&&view!=='Уведомления'&&view!=='AI-ассистент'&&view!=='Настройки'&&view!=='Сбор аудитории'&&view!=='Инвайтинг'&&view!=='Рассылка'&&view!=='Сотрудники'&&view!=='Переписки'&&<>
@@ -5366,7 +5377,7 @@ function WorkspaceHome(){
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={busy}>Отмена</AlertDialogCancel>
-            <AlertDialogAction disabled={busy} onClick={e=>{e.preventDefault();remove()}}>Удалить</AlertDialogAction>
+            <AlertDialogAction variant="destructive" disabled={busy} onClick={e=>{e.preventDefault();remove()}}>Удалить</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
