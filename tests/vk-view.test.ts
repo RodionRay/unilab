@@ -1,9 +1,10 @@
 import {describe,expect,it} from 'vitest';
 import {moscowDayKey} from '@/lib/telegram-accounts';
+import {classifyVkError} from '@/lib/vk/client';
 import type {VkAccountData} from '@/lib/vk/pool';
 import {
-  failedChunkResults,leadPlatform,matchesLeadPlatform,matchesLeadSource,planVkImportChunks,remapChunkResults,
-  safeVkHref,tallyVkImport,vkAccountView,vkPoolCanScan,
+  countVkStatuses,failedChunkResults,leadPlatform,matchesLeadPlatform,matchesLeadSource,planVkImportChunks,pluralRu,planVkAutoProxy,
+  remapChunkResults,safeVkHref,tallyVkImport,vkAccountView,vkErrorView,vkImportHeadline,vkLinesToRetry,vkPoolCanScan,
 } from '@/lib/vk/view';
 
 const NOW=Date.parse('2026-10-01T12:00:00Z');
@@ -117,21 +118,24 @@ describe('vkAccountView (REQ-12 status, reason, usage)',()=>{
     expect(v).toMatchObject({calls:0,searchCalls:0,searchCap:500});
   });
 
-  it('cooldown shows time left and the reason; an expired cooldown is active',()=>{
+  it('cooldown says why and until when (Moscow clock); the raw code stays in detailRaw; an expired cooldown is active',()=>{
     const until=new Date(NOW+42*60_000).toISOString();
-    expect(vkAccountView(account({status:'cooldown',cooldownUntil:until,error:'VK 9'}),{now:NOW}))
-      .toMatchObject({tone:'warning',label:'Пауза',detail:'ещё 42 мин · VK 9'});
+    expect(vkAccountView(account({status:'cooldown',cooldownUntil:until,error:'VK 9: Flood control'}),{now:NOW}))
+      .toMatchObject({tone:'warning',label:'Пауза',detail:'VK ограничил частоту, пауза до 15:42 МСК',detailRaw:'VK 9: Flood control'});
+    expect(vkAccountView(account({status:'cooldown',cooldownUntil:until}),{now:NOW}).detail).toBe('Пауза, ещё 42 мин');
     expect(vkAccountView(account({status:'cooldown',cooldownUntil:new Date(NOW-1).toISOString()}),{now:NOW}).status).toBe('active');
   });
 
-  it('error and no_proxy carry the stored reason',()=>{
-    expect(vkAccountView(account({status:'error',error:'Токен не принят'}),{now:NOW})).toMatchObject({tone:'danger',detail:'Токен не принят'});
-    expect(vkAccountView(account({status:'no_proxy',proxyId:'',error:'Нет прокси'}),{now:NOW})).toMatchObject({tone:'warning',label:'Нет прокси'});
+  it('error and no_proxy read as an action, not a code',()=>{
+    expect(vkAccountView(account({status:'error',error:'VK 5: Токен недействителен или истёк'}),{now:NOW}))
+      .toMatchObject({tone:'danger',detail:'Токен недействителен — вставьте новый'});
+    expect(vkAccountView(account({status:'no_proxy',proxyId:'',error:'Нет свободного активного прокси'}),{now:NOW,perProxyCap:3}))
+      .toMatchObject({tone:'warning',label:'Нет прокси',detail:'Все прокси заняты (по 3 аккаунта). Добавьте прокси в разделе «Прокси»'});
   });
 
   it('active account with a blocked search method says so',()=>{
     const v=vkAccountView(account({searchBlockedUntil:{'newsfeed.search':new Date(NOW+3600_000).toISOString()}}),{now:NOW});
-    expect(v.detail).toBe('Поиск закрыт VK до полуночи МСК');
+    expect(v.detail).toBe('Дневной лимит поиска исчерпан до 00:00 МСК');
   });
 
   it('pool can scan only with an active or cooling account that has a proxy',()=>{
@@ -139,5 +143,84 @@ describe('vkAccountView (REQ-12 status, reason, usage)',()=>{
     expect(vkPoolCanScan([{data:account({status:'error'})},{data:account({status:'no_proxy',proxyId:''})}],NOW)).toBe(false);
     expect(vkPoolCanScan([{data:account({proxyId:''})}],NOW)).toBe(false);
     expect(vkPoolCanScan([{data:account({status:'cooldown',cooldownUntil:new Date(NOW+60_000).toISOString()})}],NOW)).toBe(true);
+  });
+});
+
+describe('vkErrorView (panel fix 3: Russian actionable text, raw code only in the title)',()=>{
+  const until=new Date(NOW+30*60_000).toISOString();
+  it.each([
+    ['VK 5: Токен недействителен или истёк',5,'Токен недействителен — вставьте новый'],
+    ['Токен не принят: VK 5 User authorization failed: invalid access_token (4).',5,'Токен недействителен — вставьте новый'],
+    ['VK 17: Требуется проверка аккаунта (validation required)',17,'Аккаунт заблокирован или требует проверки — войдите в VK и пройдите проверку'],
+    ['VK 18: Страница удалена или заблокирована',18,'Аккаунт заблокирован или требует проверки — войдите в VK и пройдите проверку'],
+    ['VK 29: Дневной лимит метода',29,'Дневной лимит поиска исчерпан до 00:00 МСК'],
+    ['VK -5: Прокси недоступен',-5,'Прокси не отвечает — выберите другой'],
+    ['Сообщество закрыто или стена недоступна (VK 15 Access denied)',15,'Сообщество закрыто — аккаунт не видит стену. Вступите в него с VK-аккаунта или удалите источник'],
+    ['Нет доступа к сообществу',203,'Сообщество закрыто — аккаунт не видит стену. Вступите в него с VK-аккаунта или удалите источник'],
+    ['Не удалось проверить: VK -2 Временная ошибка VK',-2,'VK не ответил вовремя — повторим при следующем обходе'],
+  ])('%s',(raw,code,text)=>{
+    expect(vkErrorView(raw)).toEqual({text,code,raw});
+  });
+
+  it('flood and captcha name the Moscow time the pause ends',()=>{
+    expect(vkErrorView('VK 9: Flood control',{until}).text).toBe('VK ограничил частоту, пауза до 15:30 МСК');
+    expect(vkErrorView('VK 14: Captcha',{until}).text).toBe('VK запросил капчу, пауза до 15:30 МСК');
+    expect(vkErrorView('VK 9: Flood control').text).toBe('VK ограничил частоту — аккаунт на паузе');
+  });
+
+  it('every reason the server classifier writes without a code maps back to its code',()=>{
+    for(const code of [5,9,14,15,17,18,29,30,203,212,-5]){
+      expect(vkErrorView(classifyVkError({code,msg:''}).reason).code).toBe(code);
+    }
+  });
+
+  it('no keywords, no proxy, no scanning account and unknown errors',()=>{
+    expect(vkErrorView('Добавьте ключевые слова в настройках').text).toBe('Нет ключевых слов — добавьте их в настройках AI');
+    expect(vkErrorView('Нет ключевых слов').text).toBe('Нет ключевых слов — добавьте их в настройках AI');
+    expect(vkErrorView('Нет свободного активного прокси',{perProxyCap:5}).text).toBe('Все прокси заняты (по 5 аккаунтов). Добавьте прокси в разделе «Прокси»');
+    expect(vkErrorView('Нет активного VK-аккаунта с прокси').text).toBe('Нет VK-аккаунта, который может сканировать — привяжите прокси в «Аккаунтах»');
+    expect(vkErrorView('Ожидается token или строка с access_token')).toMatchObject({code:null,text:'Ожидается token или строка с access_token'});
+    expect(vkErrorView('')).toEqual({text:'',code:null,raw:''});
+    expect(vkErrorView(undefined).text).toBe('');
+  });
+});
+
+describe('import result helpers (panel fixes 4, 6, 7)',()=>{
+  const results=[
+    {line:1,status:'invalid' as const,reason:'r'},
+    {line:3,status:'added' as const},
+    {line:4,status:'no_proxy' as const},
+    {line:5,status:'duplicate' as const},
+    {line:6,status:'invalid' as const,reason:'r'},
+  ];
+
+  it('headline counts lines with Russian plurals',()=>{
+    expect(vkImportHeadline(results)).toBe('Проверено 5 строк: добавлено 1 · без прокси 1 · дубликатов 1 · ошибок 2');
+    expect(vkImportHeadline([{line:1,status:'added'}])).toBe('Проверена 1 строка: добавлено 1 · дубликатов 0 · ошибок 0');
+    expect(vkImportHeadline([{line:1,status:'added'},{line:2,status:'duplicate'}])).toBe('Проверены 2 строки: добавлено 1 · дубликатов 1 · ошибок 0');
+  });
+
+  it('keeps only the failed lines, in paste order, trimmed',()=>{
+    expect(vkLinesToRetry('bad1\n\nok\n proxy \ndup\n bad2 ',results)).toBe('bad1\nbad2');
+    expect(vkLinesToRetry('ok',[{line:1,status:'added'}])).toBe('');
+  });
+
+  it('pluralRu covers 1 / 2–4 / 5–20 / 21',()=>{
+    const f=['аккаунт','аккаунта','аккаунтов'] as const;
+    expect([1,2,5,11,14,21,22,25,111].map(n=>pluralRu(n,f))).toEqual(['аккаунт','аккаунта','аккаунтов','аккаунтов','аккаунтов','аккаунт','аккаунта','аккаунтов','аккаунтов']);
+  });
+
+  it('counts accounts per status for the filter chips',()=>{
+    const v=(status:VkAccountData['status'])=>({view:{status}});
+    expect(countVkStatuses([v('active'),v('active'),v('error'),v('no_proxy')])).toEqual({all:4,active:2,cooldown:0,error:1,no_proxy:1});
+  });
+});
+
+describe('planVkAutoProxy (bulk proxy binding, cap per proxy)',()=>{
+  const acc=(id:string,proxyId='')=>({id,data:{proxyId}});
+  it('fills the least-loaded active proxy up to the cap, keeps a working binding, reports no room as null',()=>{
+    const accounts=[acc('a','p1'),acc('b','p1'),acc('c'),acc('d','dead'),acc('e'),acc('f')];
+    const plan=planVkAutoProxy(['a','c','d','e','f'],accounts,['p1','p2'],2);
+    expect(Object.fromEntries(plan)).toEqual({a:'p1',c:'p2',d:'p2',e:null,f:null});
   });
 });

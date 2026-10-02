@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Loader2, Plus, ScrollText, Search, Trash2, Users } from 'lucide-react';
+import { AlertTriangle, Loader2, Plus, ScrollText, Search, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -17,6 +17,8 @@ import {
 } from '@/components/ui/alert-dialog';
 import { toast } from '@/lib/workspace-notifications';
 import type { VkSourceData } from '@/lib/vk/records';
+import { VkClampText } from '@/components/product/vk-clamp-text';
+import { vkErrorView } from '@/lib/vk/view';
 
 export type VkSourceRecord = { id: string; data: VkSourceData };
 type LogEntry = { at: string; level: 'info' | 'ok' | 'warn' | 'error'; text: string };
@@ -55,11 +57,11 @@ function sourceLog(d: VkSourceData): LogEntry[] {
 
 function scanToast(res: Record<string, unknown>, title: string) {
   if (res.skipped) {
-    toast.message(String(res.message || 'Скан пропущен'));
+    toast.message(res.message ? vkErrorView(res.message).text : 'Скан пропущен');
     return;
   }
   const added = Number(res.added) || 0;
-  const tail = res.error ? ` · ${String(res.error)}` : res.more ? ' · продолжим при следующем обходе' : '';
+  const tail = res.error ? ` · ${vkErrorView(res.error).text}` : res.more ? ' · продолжим при следующем обходе' : '';
   if (added) toast.success(`${title}: +${added} лидов${tail}`);
   else toast.message(`${title}: новых лидов нет${tail}`);
 }
@@ -70,8 +72,23 @@ export function VkSourcesPanel({ sources, canScan, hasAccounts, loading, run, on
   const [adding, setAdding] = useState(false);
   const [scanning, setScanning] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<VkSourceRecord | null>(null);
+  const [enabling, setEnabling] = useState(false);
   const ordered = [...sources].sort((a, b) => (a.data.type === 'search' ? -1 : 0) - (b.data.type === 'search' ? -1 : 0));
   const scanBlockedReason = !hasAccounts ? 'Сначала добавьте VK-аккаунт' : !canScan ? 'Нет активного VK-аккаунта с прокси' : '';
+  const searchMissing = canScan && !sources.some((s) => s.data.type === 'search');
+
+  async function enableSearch() {
+    setEnabling(true);
+    try {
+      await run({ action: 'vk_source_ensure_search' });
+      toast.success('Поиск по ключевым словам VK включён');
+      await onChanged();
+    } catch (e) {
+      toast.error(`Поиск VK не включён: ${vkErrorView(errorText(e)).text}`);
+    } finally {
+      setEnabling(false);
+    }
+  }
 
   async function addSource() {
     const value = url.trim();
@@ -86,7 +103,7 @@ export function VkSourcesPanel({ sources, canScan, hasAccounts, loading, run, on
       setUrl('');
       await onChanged();
     } catch (e) {
-      setUrlError(errorText(e));
+      setUrlError(vkErrorView(errorText(e)).text);
     } finally {
       setAdding(false);
     }
@@ -97,7 +114,7 @@ export function VkSourcesPanel({ sources, canScan, hasAccounts, loading, run, on
     try {
       scanToast(await run({ action: 'scan_vk_source', id: src.id, force: true }), src.data.title || 'VK');
     } catch (e) {
-      toast.error(`${src.data.title || 'VK'}: ${errorText(e)}`);
+      toast.error(`${src.data.title || 'VK'}: ${vkErrorView(errorText(e)).text}`);
     } finally {
       setScanning(null);
       await onChanged();
@@ -119,9 +136,7 @@ export function VkSourcesPanel({ sources, canScan, hasAccounts, loading, run, on
     <section className="vk-section" aria-labelledby="vk-sources-title">
       <div className="vk-section-head">
         <div className="min-w-0">
-          <h2 id="vk-sources-title" className="vk-section-title">
-            <span className="badge platform-vk">VK</span>Источники VK
-          </h2>
+          <h2 id="vk-sources-title" className="vk-section-title">Источники VK</h2>
           <p className="small-note mt-1">Поиск по ключевым словам из настроек и стены сообществ: посты, комментарии, обсуждения.</p>
         </div>
         {hasAccounts && (
@@ -131,29 +146,38 @@ export function VkSourcesPanel({ sources, canScan, hasAccounts, loading, run, on
           noValidate
         >
           <label htmlFor="vk-source-url" className="sr-only">Ссылка на сообщество VK</label>
-          <Input
-            id="vk-source-url"
-            value={url}
-            inputMode="url"
-            autoComplete="off"
-            placeholder="vk.com/имя_сообщества"
-            aria-invalid={urlError ? true : undefined}
-            aria-describedby={urlError ? 'vk-source-error' : undefined}
-            disabled={adding}
-            onChange={(e) => { setUrl(e.target.value); if (urlError) setUrlError(''); }}
-          />
-          <Button type="submit" variant="outline" disabled={adding || !url.trim() || !canScan} title={scanBlockedReason || undefined}>
-            {adding ? <Loader2 className="animate-spin" size={15} /> : <Plus size={15} />}Сообщество
-          </Button>
+          <div className="vk-source-add-row">
+            <Input
+              id="vk-source-url"
+              value={url}
+              inputMode="url"
+              autoComplete="off"
+              placeholder="vk.com/имя_сообщества"
+              aria-invalid={urlError ? true : undefined}
+              aria-describedby={urlError ? 'vk-source-error' : undefined}
+              disabled={adding}
+              onChange={(e) => { setUrl(e.target.value); if (urlError) setUrlError(''); }}
+            />
+            <Button type="submit" variant="outline" disabled={adding || !url.trim() || !canScan} title={scanBlockedReason || undefined}>
+              {adding ? <Loader2 className="animate-spin" size={15} /> : <Plus size={15} />}Сообщество
+            </Button>
+          </div>
+          {urlError && <p id="vk-source-error" className="vk-field-error" role="alert">{urlError}</p>}
         </form>
         )}
       </div>
-      {urlError && <p id="vk-source-error" className="vk-field-error vk-source-error" role="alert">{urlError}</p>}
+      {!loading && !canScan && (hasAccounts || ordered.length > 0) && (
+        <p className="vk-blocked-note" role="status">
+          <AlertTriangle size={14} aria-hidden />
+          <span>Скан недоступен: {hasAccounts ? 'нет VK-аккаунта с рабочим прокси' : 'нет ни одного VK-аккаунта'}.</span>
+          <button type="button" className="text-link" onClick={onOpenAccounts}>Открыть «Аккаунты»</button>
+        </p>
+      )}
 
       <div className="panel table-panel vk-list">
         {loading ? (
           <div className="p-4 space-y-3"><Skeleton className="h-12 w-full" /><Skeleton className="h-12 w-full" /></div>
-        ) : !ordered.length ? (
+        ) : !ordered.length && !searchMissing ? (
           <div className="vk-empty">
             <p>
               <strong>{hasAccounts ? 'Источников VK пока нет.' : 'Для VK нужен хотя бы один аккаунт.'}</strong>{' '}
@@ -166,13 +190,27 @@ export function VkSourcesPanel({ sources, canScan, hasAccounts, loading, run, on
         ) : (
           <>
             <div className="vk-src-cols">
-              <span aria-hidden />
               <span>Источник</span>
               <span>Лиды</span>
               <span>Статус</span>
               <span>Скан</span>
               <span className="text-right">Действие</span>
             </div>
+            {searchMissing && (
+              <div className="vk-src-row vk-src-enable">
+                <div className="vk-cell-main min-w-0">
+                  <strong className="vk-name">Поиск VK по ключевым словам</strong>
+                  <span className="vk-sub">Ищет ключевые слова из настроек AI</span>
+                </div>
+                <div className="vk-src-status"><span className="badge neutral">Выключен</span></div>
+                <div className="vk-cell-actions">
+                  <Button size="sm" disabled={enabling} onClick={() => void enableSearch()}>
+                    {enabling ? <Loader2 className="animate-spin" size={14} /> : <Search size={14} />}
+                    Включить поиск по VK
+                  </Button>
+                </div>
+              </div>
+            )}
             {ordered.map((src) => {
               const d = src.data;
               const st = sourceStatus(d);
@@ -181,14 +219,13 @@ export function VkSourcesPanel({ sources, canScan, hasAccounts, loading, run, on
               const busy = scanning === src.id;
               return (
                 <div key={src.id} className="vk-src-row">
-                  <span className="vk-src-icon" aria-hidden>{isSearch ? <Search size={15} /> : <Users size={15} />}</span>
                   <div className="vk-cell-main min-w-0">
                     <strong className="vk-name" title={d.title}>{d.title || 'Сообщество VK'}</strong>
                     <span className="vk-sub">{isSearch ? 'Ключевые слова из настроек AI' : d.screenName ? `vk.com/${d.screenName}` : d.vkGroupId ? `vk.com/club${d.vkGroupId}` : 'vk.com'}</span>
-                    {d.error ? <span className="groups-err" title={d.error}>{d.error}</span> : null}
+                    {d.error ? <VkClampText className="vk-src-err" text={vkErrorView(d.error).text} title={d.error} /> : null}
                   </div>
                   <div className="vk-src-leads">
-                    <strong>{d.leadsTotal || 0}</strong>
+                    <span className="vk-src-leads-label">лиды </span><strong>{d.leadsTotal || 0}</strong>
                     {(d.leadsHot || 0) > 0 && <span className="muted"> · горячих {d.leadsHot}</span>}
                   </div>
                   <div className="vk-src-status"><span className={`badge ${st.tone}`}>{st.label}</span></div>
@@ -226,7 +263,7 @@ export function VkSourcesPanel({ sources, canScan, hasAccounts, loading, run, on
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Оставить</AlertDialogCancel>
-            <AlertDialogAction onClick={() => { if (confirm) void remove(confirm); }}>Удалить</AlertDialogAction>
+            <AlertDialogAction variant="destructive" className="vk-danger-action" onClick={() => { if (confirm) void remove(confirm); }}>Удалить</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
