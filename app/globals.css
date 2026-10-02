@@ -5100,10 +5100,51 @@ button[data-slot="button"].vk-danger-text {
     display: none;
   }
 }
+/* Bulk bar ≤600: two rows. Proxy + «Привязать», then «Удалить (N)» + quiet «Снять выбор». */
 @media (max-width: 600px) {
+  .vk-bulkbar.has-sel .groups-actionbar-right {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px;
+  }
   .vk-bulkbar .groups-actionbar-right > button {
     flex: 1 1 auto;
   }
+  .vk-bulkbar.has-sel .groups-actionbar-right > * {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+  }
+}
+/* Shown error: the field itself turns red (beats the global input border override). */
+.vk-source-add input[aria-invalid="true"],
+.vk-import-form textarea[aria-invalid="true"] {
+  border-color: var(--spike-error) !important;
+}
+/* Blocked scan / add: clearly inert (the global 0.65 still reads as clickable on dark outline buttons). */
+.vk-src-row .vk-cell-actions button:disabled,
+.vk-source-add button:disabled {
+  opacity: 0.4;
+}
+.vk-jump {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+.lead-collect {
+  flex-shrink: 0;
+  min-width: 9.5rem;
+  white-space: nowrap;
+}
+.vk-more {
+  display: flex;
+  justify-content: center;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--spike-border);
+}
+.vk-confirm-names {
+  color: var(--spike-text);
 }
 
 /* Import: form left, per-line result (or the accepted formats) right */
@@ -5197,13 +5238,14 @@ button[data-slot="button"].vk-danger-text {
 .vk-import-lines {
   display: grid;
   margin-top: 12px;
-  max-height: 260px;
+  max-height: 360px;
   overflow: auto;
+  padding-bottom: 4px;
 }
 .vk-import-line {
   display: grid;
   grid-template-columns: 72px auto minmax(0, 1fr);
-  align-items: start;
+  align-items: baseline;
   gap: 10px;
   padding: 8px 0;
   border-top: 1px solid rgba(255, 255, 255, 0.04);
@@ -5212,10 +5254,6 @@ button[data-slot="button"].vk-danger-text {
 .vk-import-no {
   color: var(--spike-muted);
   font-variant-numeric: tabular-nums;
-}
-.vk-import-no,
-.vk-import-line .badge {
-  margin-top: 1px;
 }
 .vk-import-text {
   min-width: 0;
@@ -5293,7 +5331,7 @@ button[data-slot="button"].vk-danger-text {
 .vk-src-cols,
 .vk-src-row {
   /* One fixed actions track: header and rows are separate grids and must line up. */
-  grid-template-columns: minmax(0, 1.8fr) minmax(90px, 0.5fr) minmax(110px, 0.55fr) minmax(96px, 0.5fr) 176px;
+  grid-template-columns: minmax(0, 1.6fr) minmax(150px, 0.7fr) minmax(110px, 0.55fr) minmax(96px, 0.5fr) 176px;
 }
 .vk-src-enable > .vk-cell-main { grid-column: 1 / 3; }
 .vk-src-enable > .vk-src-status { grid-column: 3; }
@@ -5379,7 +5417,7 @@ button[data-slot="button"].vk-danger-text {
 .vk-usage-line {
   display: none !important;
 }
-.vk-usage-line .is-over {
+.vk-usage-line.is-over {
   color: var(--spike-error);
 }
 .vk-status-chips {
@@ -5412,10 +5450,6 @@ button[data-slot="alert-dialog-action"].vk-danger-action,
   line-height: 1.4;
   color: var(--spike-error);
 }
-.vk-src-leads-label {
-  display: none;
-  color: var(--spike-muted);
-}
 .vk-blocked-note {
   display: flex;
   flex-wrap: wrap;
@@ -5431,9 +5465,6 @@ button[data-slot="alert-dialog-action"].vk-danger-action,
 .vk-src-leads {
   font-size: 0.8125rem;
   font-variant-numeric: tabular-nums;
-}
-.vk-src-leads strong {
-  font-size: 0.9375rem;
 }
 .vk-src-sync {
   font-size: 0.78rem;
@@ -5525,7 +5556,6 @@ button[data-slot="alert-dialog-action"].vk-danger-action,
   .vk-src-enable > .vk-cell-main,
   .vk-src-enable > .vk-src-status,
   .vk-src-enable > .vk-cell-actions { grid-column: auto; }
-  .vk-src-leads-label { display: inline; }
   .vk-usage-icon { display: none !important; }
   .vk-usage-line { display: inline !important; white-space: nowrap; }
   .vk-src-row > .vk-cell-main { grid-area: main; }
@@ -5546,7 +5576,8 @@ button[data-slot="alert-dialog-action"].vk-danger-action,
       "check proxy proxy";
   }
   .vk-row > .vk-cell-usage { padding-top: 0; }
-  .vk-import-lines { max-height: 420px; }
+  /* Narrow: the list grows with the page instead of clipping its last row in a nested scroll. */
+  .vk-import-lines { max-height: none; overflow: visible; }
   .vk-import-line {
     grid-template-columns: 64px minmax(0, 1fr);
     grid-template-areas:
@@ -5558,5 +5589,5 @@ button[data-slot="alert-dialog-action"].vk-danger-action,
   .vk-import-line > .badge { grid-area: badge; }
   .vk-import-line > .vk-import-text { grid-area: text; }
   .vk-bulkbar .groups-actionbar-right { width: 100%; }
-  .vk-bulk-proxy { flex: 1 1 100%; max-width: none; }
+  .vk-bulk-proxy { max-width: none; }
 }

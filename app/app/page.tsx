@@ -15,7 +15,7 @@ import {TaskLogDialog} from '@/components/product/task-log-dialog';
 import {EmployeesPanel} from '@/components/product/employees-panel';
 import {VkAccountsPanel,type VkAccountRecord} from '@/components/product/vk-accounts-panel';
 import {VkSourcesPanel,type VkSourceRecord} from '@/components/product/vk-sources-panel';
-import {leadPlatform,matchesLeadPlatform,matchesLeadSource,safeVkHref,vkErrorView,vkPoolCanScan,type LeadPlatformFilter} from '@/lib/vk/view';
+import {VK_GROUPS_LEDE,leadPlatform,matchesLeadPlatform,matchesLeadSource,safeVkHref,vkErrorView,vkLeadsNote,vkPoolCanScan,type LeadPlatformFilter} from '@/lib/vk/view';
 import {interleaveScans} from '@/lib/processes/scan-queue';
 import {DEFAULT_DM_SOFT_CLOSE,DEFAULT_MAILING_TASK} from '@/lib/mailing';
 import {canAccessNav,type CrmAccess,type WorkspaceInvite,type WorkspaceMember} from '@/lib/staff-types';
@@ -2787,7 +2787,18 @@ function WorkspaceHome(){
   const catalogReadyCount=catalogLinkHits.length;
   const catalogActiveMarket=MARKET_SECTIONS.find(m=>m.id===catalogMarket);
 
-  const EmptyLeads=()=> (
+  // VK filter with no rows: a no-results state that names the filter and clears it (not the Telegram first-use copy).
+  const vkLeadsFiltered=view==='Лиды'&&hasVk&&leadPlatformFilter==='vk';
+  const EmptyLeads=()=> vkLeadsFiltered?(
+    <Empty className="empty-state border-0">
+      <EmptyHeader>
+        <div className="icon-box mx-auto mb-3"><Search size={22}/></div>
+        <EmptyTitle>Нет лидов из VK с этими фильтрами</EmptyTitle>
+        <EmptyDescription>Новые лиды из VK появятся после обхода источников. Сбросьте вкладку и источник, чтобы увидеть все.</EmptyDescription>
+      </EmptyHeader>
+      <Button variant="outline" onClick={()=>{setFilter('all');setLeadGroupFilter('all');setQuery('')}}>Сбросить фильтры</Button>
+    </Empty>
+  ):(
     <Empty className="empty-state border-0">
       <EmptyHeader>
         <div className="icon-box mx-auto mb-3"><Search size={22}/></div>
@@ -3104,7 +3115,18 @@ function WorkspaceHome(){
             <div>
               <div className="eyebrow">{hasVk?'UniLab · Telegram + VK':'Telegram · UniLab'}</div>
               <h1>{view==='Обзор'?'Обзор':view==='Аккаунты'?'Менеджер аккаунтов':view}</h1>
-              <p className="muted mt-2">{viewCopy[view]}</p>
+              <p className="muted mt-2">{hasVk&&view==='Группы и каналы'?VK_GROUPS_LEDE:viewCopy[view]}</p>
+              {hasVk&&(view==='Аккаунты'||view==='Группы и каналы')&&(()=>{
+                // At 390 the VK section sits ~1200px below the fold: a plain in-page link makes it findable.
+                const target=view==='Аккаунты'?'vk-accounts':'vk-sources';
+                return (
+                  <a
+                    href={`#${target}`}
+                    className="text-link vk-jump"
+                    onClick={e=>{e.preventDefault();document.getElementById(target)?.scrollIntoView({behavior:'smooth',block:'start'})}}
+                  >{view==='Аккаунты'?'Перейти к аккаунтам VK':'Перейти к источникам VK'}</a>
+                );
+              })()}
             </div>
             <div className="flex flex-wrap gap-2 justify-end">
               {view==='Обзор'?(
@@ -3354,7 +3376,7 @@ function WorkspaceHome(){
                     }}
                   >
                     <RefreshCw size={15} className={autoRescanRunning?'animate-spin':''}/>
-                    {autoRescanRunning?'Сбор…':'Собрать лиды'}
+                    {autoRescanRunning?(hasVk?'Собираем…':'Сбор…'):'Собрать лиды'}
                   </Button>
                   <Select value={leadGroupFilter} onValueChange={setLeadGroupFilter}>
                     <SelectTrigger className={hasVk?'w-[220px] lead-filter-select':'w-[220px]'} aria-label="Источник"><SelectValue placeholder="Группа"/></SelectTrigger>
@@ -3364,7 +3386,7 @@ function WorkspaceHome(){
                         <SelectItem key={g.id} value={g.id}>{g.data.name}</SelectItem>
                       ))}
                       {leadPlatformFilter!=='telegram'&&vkSources.map(s=>(
-                        <SelectItem key={s.id} value={s.id}>VK · {s.data.title||'Источник VK'}</SelectItem>
+                        <SelectItem key={s.id} value={s.id}>VK: {s.data.title||'Источник VK'}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
@@ -3492,10 +3514,10 @@ function WorkspaceHome(){
             {currentKind==='lead'&&(
               <div className="status-note">
                 {hasVk
-                  ?`«Собрать лиды» — обход групп Telegram и источников VK сейчас. Автообход круглосуточно: каждые ${settings?.data.autoRescanMinutes||30} мин на группу Telegram и на источник VK`
+                  ?vkLeadsNote(leadPlatformFilter,settings?.data.autoRescanMinutes||30)
                   :<>«Собрать лиды» — принудительный обход. Автообход круглосуточно через Telegram-воркер из npm run dev (каждые {settings?.data.autoRescanMinutes||30} мин на группу)</>}
                 {settings?.data.lastAutoRescanAt?` · последний ${new Date(settings.data.lastAutoRescanAt).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}`:''}
-                {autoRescanRunning?' · идёт…':''}.
+                {autoRescanRunning?' · идёт…':'.'}
               </div>
             )}
             {accountCheckProgress&&currentKind==='account'&&(
@@ -3949,6 +3971,7 @@ function WorkspaceHome(){
                 proxies={list('proxy').map(p=>({id:p.id,label:proxyDisplayLabel(p.data),active:p.data.status==='active'}))}
                 searchCap={settings?.data.vkSearchDailyCap}
                 perProxyCap={Number(settings?.data.vkAccountsPerProxy)||3}
+                query={query}
                 loading={loading}
                 run={api}
                 onChanged={refresh}
@@ -5037,7 +5060,7 @@ function WorkspaceHome(){
               {detail?.data.senderUsername?` · @${detail.data.senderUsername}`:''}
               {detail?.data.conversationOpen?' · переписка':''}
               {detail?.data.needsManager?' · нужен менеджер':''}
-              {' · '}{detail&&leadPlatform(detail.data)==='vk'?'VK':'живой чат'}
+              {detail&&leadPlatform(detail.data)==='vk'?null:<>{' · '}живой чат</>}
             </DialogDescription>
           </DialogHeader>
           <div className="chat-thread px-6 py-4 overflow-y-auto flex-1 min-h-[280px] max-h-[48vh]">

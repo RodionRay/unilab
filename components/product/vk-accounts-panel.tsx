@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Check, CircleX, Loader2, Network, Search, Timer, Trash2, Upload, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -23,14 +23,19 @@ import { VkClampText } from '@/components/product/vk-clamp-text';
 import {
   countVkStatuses,
   failedChunkResults,
+  matchesVkAccountQuery,
   planVkAutoProxy,
   planVkImportChunks,
   remapChunkResults,
+  sortVkAccountsForTriage,
   tallyVkImport,
   vkAccountView,
+  vkAccountsPage,
   vkErrorView,
   vkImportHeadline,
   vkLinesToRetry,
+  vkUsageLine,
+  VK_ACCOUNTS_PAGE,
   type VkImportLineResult,
   type VkImportStatus,
   type VkStatusFilter,
@@ -44,6 +49,8 @@ type Props = {
   proxies: VkProxyOption[];
   searchCap: unknown;
   perProxyCap: number;
+  /** The page «Поиск по списку» query: narrows VK rows too (name, VK id, proxy). */
+  query: string;
   loading: boolean;
   run: (body: Record<string, unknown>) => Promise<Record<string, unknown>>;
   onChanged: () => Promise<void> | void;
@@ -104,7 +111,7 @@ function ImportResults({ results, progress, perProxyCap }: { results: VkImportLi
               <span className="vk-import-no">Строка {r.line}</span>
               <span className={`badge ${view.tone}`}>{view.label}</span>
               <span className="vk-import-text">
-                <VkClampText text={r.warning ? `${text} · ${r.warning}` : text} title={err.raw} />
+                <VkClampText text={r.warning ? `${text}. ${r.warning}` : text} title={err.raw} />
               </span>
             </li>
           );
@@ -123,12 +130,12 @@ function ImportFormats() {
         <li><span>логин:пароль:токен</span><code>seller@mail.ru:••••:vk1.a.Xy7…</code></li>
         <li><span>ссылка после входа</span><code>oauth.vk.com/blank.html#access_token=…</code></li>
       </ul>
-      <p className="small-note">Пароль отбрасывается сразу. Токен проверяется через прокси аккаунта и хранится зашифрованным — в кабинете его не видно.</p>
+      <p className="small-note">Пароль отбрасывается сразу. Токен проверяется через прокси аккаунта и хранится зашифрованным, в кабинете его не видно.</p>
     </div>
   );
 }
 
-export function VkAccountsPanel({ accounts, proxies, searchCap, perProxyCap, loading, run, onChanged }: Props) {
+export function VkAccountsPanel({ accounts, proxies, searchCap, perProxyCap, query, loading, run, onChanged }: Props) {
   const [text, setText] = useState('');
   const [proxyChoice, setProxyChoice] = useState(AUTO_PROXY);
   const [results, setResults] = useState<VkImportLineResult[] | null>(null);
@@ -142,14 +149,30 @@ export function VkAccountsPanel({ accounts, proxies, searchCap, perProxyCap, loa
   const [bindProgress, setBindProgress] = useState<Progress | null>(null);
   const [bindingIds, setBindingIds] = useState<string[]>([]);
   const [rowResults, setRowResults] = useState<Record<string, RowResult>>({});
+  // Paging resets when the query or the status chip changes: the counter is keyed by both.
+  const [paging, setPaging] = useState({ key: '', pages: 1 });
   const textRef = useRef<HTMLTextAreaElement>(null);
+
+  // A chunked import runs request by request in this tab: leaving mid-way drops the unchecked lines.
+  useEffect(() => {
+    if (!progress) return;
+    const guard = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', guard);
+    return () => window.removeEventListener('beforeunload', guard);
+  }, [progress]);
 
   const activeProxies = proxies.filter((p) => p.active);
   const proxyLabel = useMemo(() => new Map(proxies.map((p) => [p.id, p.label])), [proxies]);
   const lineCount = useMemo(() => text.split(/\r?\n/).filter((l) => l.trim()).length, [text]);
-  const views = accounts.map((a) => ({ ...a, view: vkAccountView(a.data, { searchCap, perProxyCap }) }));
+  const allViews = accounts.map((a) => ({ ...a, view: vkAccountView(a.data, { searchCap, perProxyCap }) }));
+  const views = sortVkAccountsForTriage(
+    allViews.filter((v) => matchesVkAccountQuery(v.data, proxyLabel.get(v.data.proxyId) || '', query)),
+  );
   const counts = countVkStatuses(views);
   const filtered = statusFilter === 'all' ? views : views.filter((v) => v.view.status === statusFilter);
+  const pageKey = `${query.trim()}|${statusFilter}`;
+  const pages = paging.key === pageKey ? paging.pages : 1;
+  const page = vkAccountsPage(filtered, pages);
   const filteredIds = filtered.map((v) => v.id);
   const errorIds = views.filter((v) => v.view.status === 'error').map((v) => v.id);
   const allFilteredSelected = filteredIds.length > 0 && filteredIds.every((id) => selected.includes(id));
@@ -189,7 +212,7 @@ export function VkAccountsPanel({ accounts, proxies, searchCap, perProxyCap, loa
     setRowBusy(id);
     try {
       const res = await run({ action: 'vk_account_set_proxy', id, proxyId: value === NO_PROXY ? '' : value });
-      toast.success(res.status === 'no_proxy' ? 'Прокси отвязан — аккаунт не сканирует' : `Прокси привязан${res.name ? ` · ${String(res.name)}` : ''}`);
+      toast.success(res.status === 'no_proxy' ? 'Прокси отвязан: аккаунт не сканирует' : `Прокси привязан${res.name ? `: ${String(res.name)}` : ''}`);
       setRowResults((prev) => { const next = { ...prev }; delete next[id]; return next; });
       await onChanged();
     } catch (e) {
@@ -244,11 +267,18 @@ export function VkAccountsPanel({ accounts, proxies, searchCap, perProxyCap, loa
     }
   }
 
+  const pickStatus = (id: VkStatusFilter) => {
+    setStatusFilter(id);
+    // Hidden rows must not stay selected: a bulk delete would hit accounts the user no longer sees.
+    if (id !== statusFilter) setSelected([]);
+  };
+  const confirmNames = (confirmIds ?? []).map((id) => allViews.find((a) => a.id === id)?.data.name || 'Аккаунт не проверен');
+
   const toggleFiltered = (on: boolean) =>
     setSelected((prev) => (on ? [...new Set([...prev, ...filteredIds])] : prev.filter((id) => !filteredIds.includes(id))));
 
   return (
-    <section className="vk-section" aria-labelledby="vk-accounts-title">
+    <section id="vk-accounts" className="vk-section" aria-labelledby="vk-accounts-title">
       <div className="vk-section-head">
         <div className="min-w-0">
           <h2 id="vk-accounts-title" className="vk-section-title">Аккаунты VK</h2>
@@ -288,7 +318,7 @@ export function VkAccountsPanel({ accounts, proxies, searchCap, perProxyCap, loa
           </div>
           {!lineCount && !progress && !formError && <p id="vk-import-hint" className="small-note vk-import-hint">Кнопка включится, когда вставите хотя бы одну строку</p>}
           {!loading && !activeProxies.length && (
-            <p className="small-note vk-hint-warn"><AlertTriangle size={13} />Нет активного прокси — аккаунты сохранятся без проверки со статусом «Нет прокси».</p>
+            <p className="small-note vk-hint-warn"><AlertTriangle size={13} />Нет активного прокси: аккаунты сохранятся без проверки со статусом «Нет прокси».</p>
           )}
         </div>
         {results ? <ImportResults results={results} progress={progress} perProxyCap={perProxyCap} /> : <ImportFormats />}
@@ -303,7 +333,7 @@ export function VkAccountsPanel({ accounts, proxies, searchCap, perProxyCap, loa
                 type="button"
                 aria-pressed={statusFilter === id}
                 className={`groups-filter ${statusFilter === id ? 'on' : ''}`}
-                onClick={() => setStatusFilter(id)}
+                onClick={() => pickStatus(id)}
               >
                 {label} {counts[id]}
               </button>
@@ -332,12 +362,12 @@ export function VkAccountsPanel({ accounts, proxies, searchCap, perProxyCap, loa
                     </SelectContent>
                   </Select>
                   <Button size="sm" variant="outline" disabled={bulkBusy || !activeProxies.length} title={activeProxies.length ? undefined : 'Нет активного прокси'} onClick={() => void bindSelected()}>
-                    {bindProgress ? <Loader2 className="animate-spin" size={14} /> : <Network size={14} />}Привязать прокси
+                    {bindProgress ? <Loader2 className="animate-spin" size={14} /> : <Network size={14} />}Привязать
                   </Button>
                   <Button size="sm" variant="outline" className="vk-danger-text" disabled={bulkBusy} onClick={() => setConfirmIds(selected)}>
-                    <Trash2 size={14} />Удалить выбранные ({selected.length})
+                    <Trash2 size={14} />Удалить ({selected.length})
                   </Button>
-                  <Button size="sm" variant="ghost" disabled={bulkBusy} onClick={() => setSelected([])}>Снять выбор</Button>
+                  <Button size="sm" variant="ghost" className="vk-bulk-clear" disabled={bulkBusy} onClick={() => setSelected([])}>Снять выбор</Button>
                 </>
               ) : (
                 <>
@@ -357,12 +387,16 @@ export function VkAccountsPanel({ accounts, proxies, searchCap, perProxyCap, loa
           <div className="p-4 space-y-3"><Skeleton className="h-12 w-full" /><Skeleton className="h-12 w-full" /></div>
         ) : !accounts.length ? (
           <div className="vk-empty">
-            <p><strong>VK-аккаунтов пока нет.</strong> Вставьте токены в поле выше — после первого рабочего аккаунта появится источник «Поиск VK по ключевым словам».</p>
+            <p><strong>VK-аккаунтов пока нет.</strong> Вставьте токены в поле выше. После первого рабочего аккаунта появится источник «Поиск VK по ключевым словам».</p>
           </div>
         ) : !filtered.length ? (
           <div className="vk-empty">
-            <p>Нет аккаунтов со статусом «{STATUS_CHIPS.find(([id]) => id === statusFilter)?.[1]}».</p>
-            <Button variant="outline" size="sm" onClick={() => setStatusFilter('all')}>Показать все</Button>
+            <p>
+              {statusFilter === 'all'
+                ? `Нет VK-аккаунтов по запросу «${query.trim()}».`
+                : `Нет аккаунтов со статусом «${STATUS_CHIPS.find(([id]) => id === statusFilter)?.[1]}»${query.trim() ? ` по запросу «${query.trim()}»` : ''}.`}
+            </p>
+            {statusFilter !== 'all' && <Button variant="outline" size="sm" onClick={() => pickStatus('all')}>Показать все</Button>}
           </div>
         ) : (
           <>
@@ -380,7 +414,7 @@ export function VkAccountsPanel({ accounts, proxies, searchCap, perProxyCap, loa
               <span>Сегодня</span>
               <span className="sr-only">Действие</span>
             </div>
-            {filtered.map(({ id, data, view }) => {
+            {page.shown.map(({ id, data, view }) => {
               const Icon = STATUS_ICON[view.tone];
               const busy = rowBusy === id || rowBusy === 'bulk' || bindingIds.includes(id);
               const proxyValue = data.proxyId && proxyLabel.has(data.proxyId) ? data.proxyId : NO_PROXY;
@@ -412,7 +446,7 @@ export function VkAccountsPanel({ accounts, proxies, searchCap, perProxyCap, loa
                         <SelectItem value={NO_PROXY}>Без прокси</SelectItem>
                         {proxies
                           .filter((p) => p.active || p.id === data.proxyId)
-                          .map((p) => <SelectItem key={p.id} value={p.id}>{p.label}{p.active ? '' : ' · неактивен'}</SelectItem>)}
+                          .map((p) => <SelectItem key={p.id} value={p.id}>{p.label}{p.active ? '' : ' (неактивен)'}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </div>
@@ -431,9 +465,7 @@ export function VkAccountsPanel({ accounts, proxies, searchCap, perProxyCap, loa
                     <span className={`vk-usage-icon ${searchOver ? 'is-over' : ''}`} title="Поиск по ключевым словам: сегодня / дневной лимит">
                       <Search size={13} /><em>{view.searchCalls}/{view.searchCap || '∞'}</em>
                     </span>
-                    <span className="vk-usage-line">
-                      вызовов {view.calls} · <span className={searchOver ? 'is-over' : ''}>поисков {view.searchCalls}/{view.searchCap || '∞'}</span>
-                    </span>
+                    <span className={`vk-usage-line ${searchOver ? 'is-over' : ''}`}>{vkUsageLine(view)}</span>
                   </div>
                   <div className="vk-cell-actions">
                     <Button variant="ghost" size="icon" disabled={busy} aria-label={`Удалить ${name}`} onClick={() => setConfirmIds([id])}>
@@ -443,6 +475,13 @@ export function VkAccountsPanel({ accounts, proxies, searchCap, perProxyCap, loa
                 </div>
               );
             })}
+            {page.rest > 0 && (
+              <div className="vk-more">
+                <Button variant="ghost" size="sm" onClick={() => setPaging({ key: pageKey, pages: pages + 1 })}>
+                  Показать ещё {Math.min(page.rest, VK_ACCOUNTS_PAGE)} из {page.rest}
+                </Button>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -455,7 +494,15 @@ export function VkAccountsPanel({ accounts, proxies, searchCap, perProxyCap, loa
                 ? `Удалить VK-аккаунт «${views.find((a) => a.id === confirmIds[0])?.data.name || 'Аккаунт не проверен'}»?`
                 : `Удалить VK-аккаунты: ${confirmIds?.length || 0}?`}
             </AlertDialogTitle>
-            <AlertDialogDescription>Токены удаляются без восстановления — чтобы вернуть аккаунт, импортируйте его заново. Найденные лиды останутся.</AlertDialogDescription>
+            <AlertDialogDescription>
+              {confirmNames.length > 1 && (
+                <span className="vk-confirm-names">
+                  {confirmNames.slice(0, 5).join(', ')}
+                  {confirmNames.length > 5 ? ` и ещё ${confirmNames.length - 5}` : ''}.{' '}
+                </span>
+              )}
+              Токены удаляются без восстановления. Чтобы вернуть аккаунт, импортируйте его заново. Найденные лиды останутся.
+            </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Оставить</AlertDialogCancel>

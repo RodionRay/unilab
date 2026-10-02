@@ -18,7 +18,7 @@ import {
 import { toast } from '@/lib/workspace-notifications';
 import type { VkSourceData } from '@/lib/vk/records';
 import { VkClampText } from '@/components/product/vk-clamp-text';
-import { vkErrorView } from '@/lib/vk/view';
+import { vkErrorView, vkSourceLeadsLine } from '@/lib/vk/view';
 
 export type VkSourceRecord = { id: string; data: VkSourceData };
 type LogEntry = { at: string; level: 'info' | 'ok' | 'warn' | 'error'; text: string };
@@ -43,9 +43,11 @@ function scanTime(iso: string): string {
   return new Date(t).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
-function sourceStatus(data: VkSourceData, now: number = Date.now()): { label: string; tone: string } {
+/** `blocked`: no VK account can scan, so nothing runs whatever the last scan said. */
+function sourceStatus(data: VkSourceData, blocked: boolean, now: number = Date.now()): { label: string; tone: string } {
   if (Date.parse(String(data.scanLockUntil || '')) > now) return { label: 'Сканируем…', tone: 'warning' };
   if (data.error) return { label: 'Ошибка', tone: 'danger' };
+  if (blocked) return { label: 'Остановлен', tone: 'warning' };
   if (!data.lastScanAt) return { label: 'Ждёт скана', tone: 'neutral' };
   return { label: 'Работает', tone: 'success' };
 }
@@ -61,7 +63,7 @@ function scanToast(res: Record<string, unknown>, title: string) {
     return;
   }
   const added = Number(res.added) || 0;
-  const tail = res.error ? ` · ${vkErrorView(res.error).text}` : res.more ? ' · продолжим при следующем обходе' : '';
+  const tail = res.error ? `. ${vkErrorView(res.error).text}` : res.more ? '. Продолжим при следующем обходе' : '';
   if (added) toast.success(`${title}: +${added} лидов${tail}`);
   else toast.message(`${title}: новых лидов нет${tail}`);
 }
@@ -74,7 +76,7 @@ export function VkSourcesPanel({ sources, canScan, hasAccounts, loading, run, on
   const [confirm, setConfirm] = useState<VkSourceRecord | null>(null);
   const [enabling, setEnabling] = useState(false);
   const ordered = [...sources].sort((a, b) => (a.data.type === 'search' ? -1 : 0) - (b.data.type === 'search' ? -1 : 0));
-  const scanBlockedReason = !hasAccounts ? 'Сначала добавьте VK-аккаунт' : !canScan ? 'Нет активного VK-аккаунта с прокси' : '';
+  const scanBlockedReason = !canScan ? 'Нужен VK-аккаунт с прокси' : '';
   const searchMissing = canScan && !sources.some((s) => s.data.type === 'search');
 
   async function enableSearch() {
@@ -133,7 +135,7 @@ export function VkSourcesPanel({ sources, canScan, hasAccounts, loading, run, on
   }
 
   return (
-    <section className="vk-section" aria-labelledby="vk-sources-title">
+    <section id="vk-sources" className="vk-section" aria-labelledby="vk-sources-title">
       <div className="vk-section-head">
         <div className="min-w-0">
           <h2 id="vk-sources-title" className="vk-section-title">Источники VK</h2>
@@ -182,8 +184,8 @@ export function VkSourcesPanel({ sources, canScan, hasAccounts, loading, run, on
             <p>
               <strong>{hasAccounts ? 'Источников VK пока нет.' : 'Для VK нужен хотя бы один аккаунт.'}</strong>{' '}
               {hasAccounts
-                ? 'Добавьте сообщество по ссылке — поиск по ключевым словам появится после проверки аккаунта.'
-                : 'Импортируйте токены в «Аккаунтах» — поиск по ключевым словам включится сам, сообщества добавляются здесь.'}
+                ? 'Добавьте сообщество по ссылке. Поиск по ключевым словам появится после проверки аккаунта.'
+                : 'Импортируйте токены в «Аккаунтах»: поиск по ключевым словам включится сам, сообщества добавляются здесь.'}
             </p>
             {!hasAccounts && <Button variant="outline" size="sm" onClick={onOpenAccounts}>Открыть аккаунты</Button>}
           </div>
@@ -204,7 +206,7 @@ export function VkSourcesPanel({ sources, canScan, hasAccounts, loading, run, on
                 </div>
                 <div className="vk-src-status"><span className="badge neutral">Выключен</span></div>
                 <div className="vk-cell-actions">
-                  <Button size="sm" disabled={enabling} onClick={() => void enableSearch()}>
+                  <Button size="sm" variant="outline" disabled={enabling} onClick={() => void enableSearch()}>
                     {enabling ? <Loader2 className="animate-spin" size={14} /> : <Search size={14} />}
                     Включить поиск по VK
                   </Button>
@@ -213,7 +215,7 @@ export function VkSourcesPanel({ sources, canScan, hasAccounts, loading, run, on
             )}
             {ordered.map((src) => {
               const d = src.data;
-              const st = sourceStatus(d);
+              const st = sourceStatus(d, !canScan);
               const at = scanTime(d.lastScanAt);
               const isSearch = d.type === 'search';
               const busy = scanning === src.id;
@@ -224,13 +226,10 @@ export function VkSourcesPanel({ sources, canScan, hasAccounts, loading, run, on
                     <span className="vk-sub">{isSearch ? 'Ключевые слова из настроек AI' : d.screenName ? `vk.com/${d.screenName}` : d.vkGroupId ? `vk.com/club${d.vkGroupId}` : 'vk.com'}</span>
                     {d.error ? <VkClampText className="vk-src-err" text={vkErrorView(d.error).text} title={d.error} /> : null}
                   </div>
-                  <div className="vk-src-leads">
-                    <span className="vk-src-leads-label">лиды </span><strong>{d.leadsTotal || 0}</strong>
-                    {(d.leadsHot || 0) > 0 && <span className="muted"> · горячих {d.leadsHot}</span>}
-                  </div>
+                  <div className="vk-src-leads">{vkSourceLeadsLine(d.leadsTotal || 0, d.leadsHot || 0)}</div>
                   <div className="vk-src-status"><span className={`badge ${st.tone}`}>{st.label}</span></div>
                   <div className="vk-src-sync" title={at ? `Последний скан ${at}` : 'Ещё не сканировали'}>
-                    <span className="vk-src-sync-label">Скан</span>{at || '—'}
+                    <span className="vk-src-sync-label">Скан</span>{at || 'не было'}
                   </div>
                   <div className="vk-cell-actions">
                     <Button size="sm" variant="outline" disabled={busy || !!scanBlockedReason} title={scanBlockedReason || undefined} onClick={() => void scan(src)}>
