@@ -215,8 +215,9 @@ Source: read-only scout of origin/dev @671338d + Telegram docs (core.telegram.or
   memory.
 - `/tma/*` iframe allowance limited to telegram origins; API routes keep `frame-ancestors 'none'`.
 - `R::POST` Origin check stays; tma requests come from our own origin.
-- `POST /api/tma/link` (cookie) requires Origin = own origin, or `Sec-Fetch-Site: same-origin` when Origin is absent;
-  otherwise 403 (`lib/tma/http.ts::isSameOriginRequest`, security L5).
+- `POST /api/tma/link` (cookie) requires Origin = own origin (the `req.url` origin or the `APP_URL` origin: behind a
+  TLS-terminating proxy `req.url` is `http://` while the browser sends `https://`), or `Sec-Fetch-Site: same-origin`
+  when Origin is absent; otherwise 403 (`lib/tma/http.ts::isSameOriginRequest`, security L5). X-Forwarded-* is never trusted.
 
 ## Risks
 - R1 PR carries the unmerged bot branches (W0) — merge order matters; polling-only bot (a webhook would conflict).

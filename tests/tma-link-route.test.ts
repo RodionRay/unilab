@@ -73,6 +73,28 @@ describe('POST /api/tma/link',()=>{
   expect(await raw({action:'status'},{origin:'http://crm.test','sec-fetch-site':'cross-site'})).toBe(200);
  });
 
+ it('за туннелем (cloudflared → wrangler dev): Origin = APP_URL проходит, хотя req.url — http; чужой Origin и X-Forwarded-Host не доверяются',async()=>{
+  const TUNNEL='https://mesa-delight-lanes-commonly.trycloudflare.com';
+  const at=async(url:string,headers:Record<string,string>)=>(await linkPOST(new Request(url,{
+   method:'POST',headers:{'Content-Type':'application/json',...headers},body:JSON.stringify({action:'status'}),
+  }))).status;
+  const behindTunnel='http://mesa-delight-lanes-commonly.trycloudflare.com/api/tma/link';
+  const loopback='http://127.0.0.1:5280/api/tma/link';
+
+  vi.stubEnv('APP_URL',`${TUNNEL}/`);
+  const viaTunnel=await at(behindTunnel,{origin:TUNNEL});
+  const viaLoopback=await at(loopback,{origin:TUNNEL});
+  const foreign=await at(behindTunnel,{origin:'https://evil.example'});
+  const forgedForwardedHost=await at(loopback,{origin:'https://evil.example','x-forwarded-host':'evil.example','x-forwarded-proto':'https'});
+  vi.stubEnv('APP_URL','');
+  const noAppUrl=await at(loopback,{origin:TUNNEL,'x-forwarded-host':'mesa-delight-lanes-commonly.trycloudflare.com','x-forwarded-proto':'https'});
+  vi.stubEnv('APP_URL','javascript:alert(1)');
+  const badAppUrl=await at(loopback,{origin:'null'});
+
+  expect([viaTunnel,viaLoopback]).toEqual([200,200]);
+  expect([foreign,forgedForwardedHost,noAppUrl,badAppUrl]).toEqual([403,403,403,403]);
+ });
+
  it('REQ-L1: create_code → ссылка t.me/<bot>?start=link_<code> (≤64 символа payload), срок 10 мин, getMe кеширует username',async()=>{
   const r=await call({action:'create_code'});
 

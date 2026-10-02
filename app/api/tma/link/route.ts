@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
 export async function POST(req: Request): Promise<Response> {
   const user = await getSessionUser();
   if (!user?.userId) return tmaError(401, "session_expired", { error: "Войдите в рабочее пространство" });
-  if (!isSameOriginRequest(req)) return tmaError(403, "forbidden", { error: "Недопустимый источник запроса" });
+  if (!isSameOriginRequest(req, readEnv("APP_URL"))) return tmaError(403, "forbidden", { error: "Недопустимый источник запроса" });
   const parsed = linkRequestSchema.safeParse(await readJsonObject(req, 2048));
   if (!parsed.success) return tmaError(400, "bad_request");
   try {

@@ -32,9 +32,22 @@ export async function readJsonObject(req: Request, maxBytes: number): Promise<Re
 /**
  * Same-origin proof for cookie-authenticated, state-changing requests (security L5): the Origin equals
  * this origin, or — when a browser omits Origin — Sec-Fetch-Site says same-origin. Anything else is refused.
+ * "This origin" is the request URL's origin or the configured public APP_URL origin: behind a TLS-terminating
+ * proxy (cloudflared → `wrangler dev`) `req.url` arrives as `http://<public host>` while the browser sends
+ * `Origin: https://<public host>`. Forwarded headers (X-Forwarded-Host/Proto) are client-controlled: never read.
  */
-export function isSameOriginRequest(req: Request): boolean {
+export function isSameOriginRequest(req: Request, appUrl: string | undefined): boolean {
   const origin = req.headers.get("origin");
-  if (origin) return origin === new URL(req.url).origin;
+  if (origin) return origin === new URL(req.url).origin || origin === httpOrigin(appUrl);
   return req.headers.get("sec-fetch-site") === "same-origin";
+}
+
+function httpOrigin(raw: string | undefined): string | null {
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.origin : null;
+  } catch {
+    return null;
+  }
 }
