@@ -24,6 +24,8 @@ export type ChatHeaderProps = {
   theme: ChatTheme;
   readOnly: boolean;
   canCopy: boolean;
+  /** One-column layout: the theme toggle lives in the ⋮ menu (the header button is hidden there). */
+  themeInMenu: boolean;
   /** Focus target when the chat opens full-screen (narrow layouts). */
   headingRef?: Ref<HTMLHeadingElement>;
   /** External badges (e.g. account penalty) rendered inside `[data-slot=chat-header-badges]`. */
@@ -46,6 +48,7 @@ export function ChatHeader({
   readOnly,
   canCopy,
   headingRef,
+  themeInMenu,
   badges,
   onThemeToggle,
   onBack,
@@ -107,10 +110,12 @@ export function ChatHeader({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="chat-menu" data-chat-theme={theme}>
-            <DropdownMenuItem onSelect={onThemeToggle}>
-              {theme === "dark" ? <Sun aria-hidden /> : <Moon aria-hidden />}
-              {themeLabel}
-            </DropdownMenuItem>
+            {themeInMenu ? (
+              <DropdownMenuItem onSelect={onThemeToggle}>
+                {theme === "dark" ? <Sun aria-hidden /> : <Moon aria-hidden />}
+                {themeLabel}
+              </DropdownMenuItem>
+            ) : null}
             <DropdownMenuItem disabled={readOnly} onSelect={onEdit}>
               <Pencil aria-hidden />
               Правки лида

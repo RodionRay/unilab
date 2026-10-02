@@ -1,7 +1,7 @@
 "use client";
 
-import { memo, useId, useMemo, type KeyboardEvent, type ReactNode } from "react";
-import { CircleAlert, Plus, Search, X } from "lucide-react";
+import { memo, useId, useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
+import { CircleAlert, Loader2, Plus, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
@@ -23,7 +23,7 @@ export type ChatListProps = {
   readOnly: boolean;
   /** Records failed to load ("" = fine). */
   loadError: string;
-  onReload: () => void;
+  onReload: () => Promise<unknown> | void;
   /** Next step when there are no chats at all; shown in the list only in the one-column layout. */
   firstRun?: ReactNode;
   /** Optional per-row badge next to the name (e.g. account penalty on the staff branch). */
@@ -62,7 +62,7 @@ function ListEmpty({ folder, query, counts, firstRun, onFolderChange, onQueryCha
   if (!searching && counts.fresh + counts.viewed === 0) {
     return (
       <Empty className="chat-list-empty">
-        <EmptyHeader>
+        <EmptyHeader className="chat-list-zero-label">
           <EmptyTitle>Нет диалогов</EmptyTitle>
         </EmptyHeader>
         {firstRun ? <div className="chat-list-firstrun">{firstRun}</div> : null}
@@ -91,6 +91,34 @@ function ListEmpty({ folder, query, counts, firstRun, onFolderChange, onQueryCha
             {folder === "all" ? `Просмотренные: ${other}` : `Новые: ${other}`}
           </Button>
         ) : null}
+      </EmptyContent>
+    </Empty>
+  );
+}
+
+/** Records failed to load: say so and retry once at a time. */
+function LoadError({ message, onReload }: { message: string; onReload: () => Promise<unknown> | void }) {
+  const [busy, setBusy] = useState(false);
+  const retry = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await onReload();
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Empty className="chat-list-empty" role="alert">
+      <EmptyHeader>
+        <EmptyTitle>Не удалось загрузить диалоги</EmptyTitle>
+        <EmptyDescription>{message}</EmptyDescription>
+      </EmptyHeader>
+      <EmptyContent>
+        <Button variant="outline" size="sm" disabled={busy} aria-busy={busy} onClick={() => void retry()}>
+          {busy ? <Loader2 className="animate-spin" aria-hidden /> : null}
+          {busy ? "Загружаем…" : "Повторить"}
+        </Button>
       </EmptyContent>
     </Empty>
   );
@@ -170,7 +198,7 @@ function ChatListView(props: ChatListProps) {
           <h1 className="chat-list-title" tabIndex={-1}>
             Переписки
           </h1>
-          {loading ? null : <span className="chat-list-total">{counts.fresh + counts.viewed}</span>}
+          {loading || loadError ? null : <span className="chat-list-total">{counts.fresh + counts.viewed}</span>}
           <Button variant="outline" size="sm" className="chat-add-lead" disabled={readOnly} onClick={props.onAddLead}>
             <Plus aria-hidden />
             Добавить лид
@@ -221,17 +249,7 @@ function ChatListView(props: ChatListProps) {
         {loading ? (
           <ListSkeleton />
         ) : loadError && !leads.length ? (
-          <Empty className="chat-list-empty" role="alert">
-            <EmptyHeader>
-              <EmptyTitle>Не удалось загрузить диалоги</EmptyTitle>
-              <EmptyDescription>{loadError}</EmptyDescription>
-            </EmptyHeader>
-            <EmptyContent>
-              <Button variant="outline" size="sm" onClick={props.onReload}>
-                Повторить
-              </Button>
-            </EmptyContent>
-          </Empty>
+          <LoadError message={loadError} onReload={props.onReload} />
         ) : leads.length ? (
           <>
             <ul className="chat-list-items">

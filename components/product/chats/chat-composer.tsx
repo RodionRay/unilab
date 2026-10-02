@@ -13,7 +13,8 @@ export type ChatComposerProps = {
   mode: ChatMode;
   sending: boolean;
   readOnly: boolean;
-  telegramConnected: boolean;
+  /** null = unknown (records not loaded): no «не подключён» notice, but nothing can be sent either. */
+  telegramConnected: boolean | null;
   /** The lead has a Telegram id/username: a DM is possible. */
   dmAvailable: boolean;
   /** The lead is bound to a group with a link: a reply in the group is possible. */
@@ -31,7 +32,7 @@ type Notice = { icon: LucideIcon; text: string; action?: { label: string; run: (
 
 function noticeFor(p: ChatComposerProps): Notice | null {
   if (p.readOnly) return { icon: Eye, text: "Режим наблюдателя: читать можно, отправка недоступна." };
-  if (!p.telegramConnected) return { icon: PlugZap, text: "Telegram не подключён.", action: { label: "Настроить аккаунты", run: p.onConnect } };
+  if (p.telegramConnected === false) return { icon: PlugZap, text: "Telegram не подключён.", action: { label: "Настроить аккаунты", run: p.onConnect } };
   if (p.mode === "dm" && !p.dmAvailable) {
     return {
       icon: TriangleAlert,
@@ -45,7 +46,7 @@ function noticeFor(p: ChatComposerProps): Notice | null {
 export function ChatComposer(props: ChatComposerProps) {
   const { text, mode, sending, readOnly, telegramConnected, dmAvailable, chatAvailable, sourceText, groupName } = props;
   const reachable = mode === "chat" ? chatAvailable : dmAvailable;
-  const canSend = !readOnly && telegramConnected && reachable && !sending && text.trim().length > 0;
+  const canSend = !readOnly && telegramConnected === true && reachable && !sending && text.trim().length > 0;
   const send = () => {
     if (canSend) props.onSend(text, mode);
   };
@@ -110,7 +111,7 @@ export function ChatComposer(props: ChatComposerProps) {
             variant="ghost"
             size="icon"
             className="chat-icon-btn chat-ai-btn"
-            disabled={readOnly || sending || !telegramConnected}
+            disabled={readOnly || sending || telegramConnected !== true}
             aria-label="Черновик AI"
             title="Черновик AI: подготовить ответ"
             onClick={props.onDraft}

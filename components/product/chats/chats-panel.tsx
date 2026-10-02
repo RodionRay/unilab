@@ -52,7 +52,8 @@ export type ChatsPanelProps = {
   text: string;
   mode: ChatMode;
   readOnly: boolean;
-  telegramConnected: boolean;
+  /** null = unknown until records load. */
+  telegramConnected: boolean | null;
   /** Rendered in the chat header `[data-slot=chat-header-badges]` (account penalty badge etc.). */
   headerBadges?: ReactNode;
   /** Optional badge next to the name in each list row. */
@@ -82,7 +83,7 @@ export type ChatsPanelProps = {
   onReload: () => void;
 };
 
-type FirstRunProps = { telegramConnected: boolean; onConnect: () => void; onOpenLeads: () => void };
+type FirstRunProps = { telegramConnected: boolean | null; onConnect: () => void; onOpenLeads: () => void };
 
 /** No chats at all: one next step instead of «Выберите диалог». */
 function FirstRun({ telegramConnected, onConnect, onOpenLeads }: FirstRunProps) {
@@ -91,12 +92,12 @@ function FirstRun({ telegramConnected, onConnect, onOpenLeads }: FirstRunProps) 
       <div className="chat-placeholder-card">
         <h2 className="chat-placeholder-title">Переписок пока нет</h2>
         <p className="chat-placeholder-text">
-          {telegramConnected
+          {telegramConnected !== false
             ? "Диалог появится, когда вы ответите лиду или клиент напишет в ответ."
             : "Подключите Telegram-аккаунты: с них уходят ответы и приходят сообщения клиентов."}
         </p>
-        <Button className="chat-placeholder-cta" onClick={telegramConnected ? onOpenLeads : onConnect}>
-          {telegramConnected ? "Открыть лиды" : "Настроить аккаунты"}
+        <Button className="chat-placeholder-cta" onClick={telegramConnected === false ? onConnect : onOpenLeads}>
+          {telegramConnected === false ? "Настроить аккаунты" : "Открыть лиды"}
         </Button>
       </div>
     </div>
@@ -252,6 +253,7 @@ export function ChatsPanel(props: ChatsPanelProps) {
                 readOnly={props.readOnly}
                 canCopy={props.text.length > 0}
                 headingRef={headingRef}
+                themeInMenu={narrow}
                 badges={props.headerBadges}
                 onThemeToggle={() => setTheme(theme === "dark" ? "light" : "dark")}
                 onBack={props.onBack}
@@ -269,7 +271,7 @@ export function ChatsPanel(props: ChatsPanelProps) {
                     : "Вы ещё не писали клиенту. Напишите сами или нажмите «Черновик AI» справа от поля ввода."
                 }
                 messageHref={messageHref}
-                canRetry={!props.readOnly && props.telegramConnected && !sending}
+                canRetry={!props.readOnly && props.telegramConnected === true && !sending}
                 onRetry={(m) => void send(m.text, m.mode, true)}
                 onCopy={props.onCopy}
               />
@@ -290,15 +292,15 @@ export function ChatsPanel(props: ChatsPanelProps) {
                 onSend={(text, mode) => void send(text, mode, false)}
               />
             </>
-          ) : !props.loading && !props.loadError && props.counts.fresh + props.counts.viewed === 0 && !query.trim() ? (
+          ) : props.loading || props.loadError ? null : props.counts.fresh + props.counts.viewed === 0 && !query.trim() ? (
             <FirstRun telegramConnected={props.telegramConnected} onConnect={props.onConnect} onOpenLeads={props.onOpenLeads} />
-          ) : (
+          ) : query.trim() && listLeads.length === 0 ? null : (
             <NoChatSelected leads={listLeads} onOpen={open} />
           )}
         </section>
       </div>
       <AlertDialog open={confirmDraft} onOpenChange={setConfirmDraft}>
-        <AlertDialogContent>
+        <AlertDialogContent className="chat-dialog" data-chat-theme={theme}>
           <AlertDialogHeader>
             <AlertDialogTitle>Заменить текст черновиком?</AlertDialogTitle>
             <AlertDialogDescription>В поле ввода уже есть текст. Черновик AI заменит его целиком.</AlertDialogDescription>

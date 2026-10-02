@@ -6092,6 +6092,62 @@ body:has(.chats-panel[data-chat-open="true"]) .assistant-root {
   }
 }
 
+/* toasts never cover the composer: with a chat open they stack above it */
+body:has(.chats-panel[data-chat-open="true"]) [data-sonner-toaster][data-y-position="bottom"] {
+  bottom: 124px !important;
+}
+@media (max-width: 767px) {
+  body:has(.chats-panel[data-chat-open="true"]) [data-sonner-toaster][data-y-position="bottom"] {
+    bottom: calc(110px + env(safe-area-inset-bottom)) !important;
+  }
+}
+
+/* one-column empty list: only the first-run card, no extra «Нет диалогов» label */
+@container chats (max-width: 699px) {
+  .chats-panel .chat-list-zero-label {
+    display: none;
+  }
+}
+
+/* focus: one ring token everywhere; hover is a fill, never a ring */
+.chats-panel .chat-header-actions :is(a, button):focus-visible {
+  outline: 2px solid var(--chat-focus-ring) !important;
+  outline-offset: 2px !important;
+  box-shadow: none !important;
+}
+.chats-panel .chat-header-actions :is(a, button):hover:not(:focus-visible) {
+  outline: none !important;
+  box-shadow: none !important;
+}
+.chats-panel .chat-folders-list {
+  overflow: visible;
+}
+.chats-panel .chat-folder:focus-visible {
+  outline-offset: 2px !important;
+}
+
+/* alert dialogs over the light chat theme (portaled: themed via body:has) */
+body:has(.chats-panel[data-chat-theme="light"]) [data-slot="alert-dialog-overlay"] {
+  background: rgba(20, 17, 13, 0.32) !important;
+}
+body:has(.chats-panel[data-chat-theme="light"]) [data-slot="alert-dialog-content"] {
+  background: #ffffff !important;
+  color: #14110d !important;
+  border: 1px solid #e4e1dc !important;
+  box-shadow: 0 18px 48px rgba(70, 50, 20, 0.22) !important;
+}
+body:has(.chats-panel[data-chat-theme="light"]) [data-slot="alert-dialog-content"] :is([data-slot="alert-dialog-title"], h2) {
+  color: #14110d !important;
+}
+body:has(.chats-panel[data-chat-theme="light"]) [data-slot="alert-dialog-content"] [data-slot="alert-dialog-description"] {
+  color: #4f493f !important;
+}
+body:has(.chats-panel[data-chat-theme="light"]) [data-slot="alert-dialog-content"] button[data-variant="outline"] {
+  color: #14110d !important;
+  background: #f1efec !important;
+  border-color: #e4e1dc !important;
+}
+
 /* ---------- small additions: add lead, row badge, notice action ---------- */
 /* the app's outline buttons are dark-only (white ink !important): re-ink them for the chat palette */
 .chats-panel button[data-slot="button"][data-variant="outline"] {

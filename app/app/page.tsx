@@ -465,6 +465,8 @@ function WorkspaceHome(){
   const [accountImportProgress,setAccountImportProgress]=useState('');
   const [proxyCheckProgress,setProxyCheckProgress]=useState<{done:number;total:number;active:number;inactive:number}|null>(null);
   const [telegramConnected,setTelegramConnected]=useState(false);
+  /** Worker status is known only after a successful load: a failed load must not read as «не подключён». */
+  const [telegramKnown,setTelegramKnown]=useState(false);
   const [accountCheckProgress,setAccountCheckProgress]=useState<{done:number;total:number;active:number}|null>(null);
   const [catalogOpen,setCatalogOpen]=useState(false);
   const [catalogQuery,setCatalogQuery]=useState('');
@@ -569,6 +571,7 @@ function WorkspaceHome(){
       const data=await api();
       setRecords(data.records);
       setTelegramConnected(!!data.telegramConnected);
+      setTelegramKnown(true);
       setAiMeta(data.ai||null);
       if(data.workspace){
         setWorkspaceMeta({
@@ -3051,7 +3054,7 @@ function WorkspaceHome(){
         <SidebarFooter>
           <div className="sidebar-help">
             <Plug size={18}/>
-            <p>{telegramConnected?'Telegram подключён':'Telegram ещё не подключён'}</p>
+            <p>{!telegramKnown?(loading?'Проверяем подключение Telegram…':'Статус Telegram не загружен'):telegramConnected?'Telegram подключён':'Telegram ещё не подключён'}</p>
             <button onClick={()=>navigate('Аккаунты')}>Настроить аккаунты <ArrowRight size={13}/></button>
           </div>
           <div className="foot-account">
@@ -3070,7 +3073,7 @@ function WorkspaceHome(){
           <div className="flex items-center gap-3 text-sm">
             <SidebarTrigger/>
             <span className="muted hidden sm:inline">UniLab</span>
-            <ChevronRight size={14} className="text-[var(--spike-muted)]"/>
+            <ChevronRight size={14} className="hidden sm:inline-block text-[var(--spike-muted)]"/>
             <span className="font-semibold">{view}</span>
           </div>
           <div className="topbar-actions">
@@ -3316,7 +3319,7 @@ function WorkspaceHome(){
               text={chatText}
               mode={chatMode}
               readOnly={chatReadOnly}
-              telegramConnected={telegramConnected}
+              telegramConnected={telegramKnown?telegramConnected:null}
               onFolderChange={setFilter}
               onQueryChange={setQuery}
               onTextChange={setChatText}
@@ -3333,7 +3336,7 @@ function WorkspaceHome(){
               onConnect={()=>navigate('Аккаунты')}
               onOpenLeads={()=>navigate('Лиды')}
               loadError={error}
-              onReload={()=>{void refresh()}}
+              onReload={()=>refresh()}
             />
           )}
           {view!=='Обзор'&&view!=='Уведомления'&&view!=='AI-ассистент'&&view!=='Настройки'&&view!=='Сбор аудитории'&&view!=='Инвайтинг'&&view!=='Рассылка'&&view!=='Сотрудники'&&view!=='Переписки'&&<>
