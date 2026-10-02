@@ -242,3 +242,40 @@ export async function listAccountEvents(
     at: String(r.at),
   }));
 }
+
+export const ACCOUNT_EVENT_TYPE_LABELS: Readonly<Record<AccountEventType, string>> = {
+  spamblock: "Спамблок (PEER_FLOOD)",
+  flood_wait: "FloodWait",
+  spambot: "@SpamBot: ограничен",
+  frozen: "Заморозка",
+  write_ban: "Бан на запись в чаты",
+  privacy: "Приватность получателя",
+  peer_blocked: "Получатель заблокировал",
+};
+
+export const ACCOUNT_EVENT_CONTEXT_LABELS: Readonly<Record<AccountEventContext, string>> = {
+  join: "вступление",
+  mailing: "рассылка",
+  invite: "инвайтинг",
+  dm: "ответ в ЛС",
+  check: "проверка",
+  collect: "сбор аудитории",
+  scan: "сканирование",
+  peer_check: "проверка собеседников",
+};
+
+/** «FloodWait · вступление · 7 мин» — one line per journal row. */
+export function accountEventTitle(e: Pick<AccountEvent, "type" | "context" | "waitSec">): string {
+  const type = ACCOUNT_EVENT_TYPE_LABELS[e.type] ?? e.type;
+  const ctx = ACCOUNT_EVENT_CONTEXT_LABELS[e.context] ?? e.context;
+  const wait = e.waitSec ? ` · ${formatWait(e.waitSec)}` : "";
+  return `${type} · ${ctx}${wait}`;
+}
+
+export function formatWait(sec: number): string {
+  if (sec < 60) return `${sec} с`;
+  if (sec < 3600) return `${Math.round(sec / 60)} мин`;
+  const h = Math.floor(sec / 3600);
+  const m = Math.round((sec % 3600) / 60);
+  return m ? `${h} ч ${m} мин` : `${h} ч`;
+}

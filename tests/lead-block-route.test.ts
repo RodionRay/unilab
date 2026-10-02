@@ -11,6 +11,8 @@ vi.mock('@/lib/auth',async(importOriginal)=>({
 import {GET,POST} from '@/app/api/workspace/route';
 
 const post=(body:Record<string,unknown>)=>POST(postRequest(body));
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- test reads arbitrary JSON
+const json=async(r:Response|Promise<Response>):Promise<any>=>(await r).json();
 const send=(text='Привет')=>post({action:'send_lead_message',id:CHAT_LEAD,mode:'dm',text});
 const recentReply=()=>[{text:'Здравствуйте',mode:'dm',at:new Date().toISOString(),ok:true,error:'',messageId:'10',link:'',chatId:'777',from:'us'}];
 const journal=()=>testDb().sqlite.prepare('SELECT account_id AS accountId,type,context,wait_sec AS waitSec FROM account_events ORDER BY at').all() as {accountId:string;type:string;context:string;waitSec:number|null}[];
@@ -44,7 +46,7 @@ describe('«вероятно заблокировал» и журнал штра
     expect(signal.reasons.map(r=>r.code)).toEqual(['blocked_error']);
     expect(journal()).toEqual([{accountId:ACC_A,type:'peer_blocked',context:'dm',waitSec:null}]);
 
-    const list=await (await post({action:'account_events',accountId:ACC_A})).json();
+    const list=await json(post({action:'account_events',accountId:ACC_A}));
     expect(list.events).toHaveLength(1);
     expect(list.events[0]).toMatchObject({type:'peer_blocked',context:'dm'});
   });
@@ -68,7 +70,7 @@ describe('«вероятно заблокировал» и журнал штра
     expect((await send()).status).toBe(200);
     expect(readRecord(CHAT_LEAD).blockSignal).toMatchObject({accountId:ACC_A,visibleStatus:true,visiblePhoto:true,reasons:[]});
 
-    const first=await (await post({action:'check_lead_blocks'})).json();
+    const first=await json(post({action:'check_lead_blocks'}));
     expect(first).toMatchObject({ok:true,checked:1,flagged:1,accountId:ACC_A});
     const peerCalls=calls.filter(c=>c.path==='/peer-status');
     expect(peerCalls).toHaveLength(1);
@@ -77,7 +79,7 @@ describe('«вероятно заблокировал» и журнал штра
     expect(signal.reasons.map(r=>r.code)).toEqual(['profile_hidden']);
     expect(signal.reasons[0]!.detail).toContain('не прочитано');
 
-    const second=await (await post({action:'check_lead_blocks'})).json();
+    const second=await json(post({action:'check_lead_blocks'}));
     expect(second.checked).toBe(0);
     expect(calls.filter(c=>c.path==='/peer-status')).toHaveLength(1);
   });
@@ -86,7 +88,7 @@ describe('«вероятно заблокировал» и журнал штра
     addChatLead({replies:[]});
     const {calls}=stubWorker(()=>({ok:true,peers:[]}));
 
-    const out=await (await post({action:'check_lead_blocks'})).json();
+    const out=await json(post({action:'check_lead_blocks'}));
 
     expect(out.checked).toBe(0);
     expect(calls).toHaveLength(0);
@@ -107,7 +109,7 @@ describe('«вероятно заблокировал» и журнал штра
     stubWorker(call=>call.path==='/health'?{ok:true}:{ok:false,status:'spamblock',error:'PEER_FLOOD: Too many requests'});
     await send();
 
-    const data=await (await GET()).json();
+    const data=await json(GET());
 
     expect(data.accountPenalties[ACC_A]).toMatchObject({day:1,week:1,all:1});
   });

@@ -1550,6 +1550,62 @@ button.studio-metric:hover .studio-metric-card {
 .acc-limits .is-over em {
   color: var(--spike-danger, #fb977d);
 }
+/* Журнал штрафов аккаунта — components/product/account-penalties.tsx */
+.acc-penalties {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-height: 24px;
+  padding: 2px 4px;
+  margin: -2px -4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  text-align: left;
+}
+.acc-penalties span {
+  color: var(--spike-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.acc-penalties em {
+  font-style: normal;
+  color: var(--spike-text);
+  font-weight: 550;
+}
+.acc-penalties.is-hot span:first-child em {
+  color: var(--spike-danger, #fb977d);
+}
+.acc-penalties.is-none em {
+  color: var(--spike-muted);
+  font-weight: 400;
+}
+.acc-penalties:focus-visible {
+  outline: 2px solid var(--spike-text);
+  outline-offset: 2px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .acc-penalties:hover {
+    background: var(--spike-hover);
+  }
+}
+/* «Вероятно, заблокировал» в шапке переписки — components/product/lead-block-badge.tsx */
+.lead-block-note {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.lead-block-reason {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--spike-muted);
+  overflow-wrap: anywhere;
+}
 .acc-limits-head {
   display: inline-flex;
   align-items: center;

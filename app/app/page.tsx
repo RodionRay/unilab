@@ -12,6 +12,9 @@ import {AudiencePanel,AudienceTaskFields} from '@/components/product/audience-pa
 import {InvitePanel,InviteModePicker,InviteTaskFields} from '@/components/product/invite-panel';
 import {MailingPanel,MailingTaskFields,MailingDeliveriesView} from '@/components/product/mailing-panel';
 import {TaskLogDialog} from '@/components/product/task-log-dialog';
+import {AccountPenaltyCell,AccountPenaltyDialog} from '@/components/product/account-penalties';
+import {LeadBlockBadge} from '@/components/product/lead-block-badge';
+import type {AccountEvent,AccountEventCounts} from '@/lib/account-events';
 import {EmployeesPanel} from '@/components/product/employees-panel';
 import {DEFAULT_DM_SOFT_CLOSE,DEFAULT_MAILING_TASK} from '@/lib/mailing';
 import {canAccessNav,type CrmAccess,type WorkspaceInvite,type WorkspaceMember} from '@/lib/staff-types';
@@ -464,6 +467,9 @@ function WorkspaceHome(){
   const [accountImportProgress,setAccountImportProgress]=useState('');
   const [proxyCheckProgress,setProxyCheckProgress]=useState<{done:number;total:number;active:number;inactive:number}|null>(null);
   const [telegramConnected,setTelegramConnected]=useState(false);
+  const [accountPenalties,setAccountPenalties]=useState<Record<string,AccountEventCounts>>({});
+  const [penaltyAccount,setPenaltyAccount]=useState<{id:string;name:string}|null>(null);
+  const loadAccountEvents=useCallback(async(accountId:string):Promise<AccountEvent[]>=>(await api({action:'account_events',accountId})).events||[],[]);
   const [accountCheckProgress,setAccountCheckProgress]=useState<{done:number;total:number;active:number}|null>(null);
   const [catalogOpen,setCatalogOpen]=useState(false);
   const [catalogQuery,setCatalogQuery]=useState('');
@@ -565,6 +571,7 @@ function WorkspaceHome(){
       const data=await api();
       setRecords(data.records);
       setTelegramConnected(!!data.telegramConnected);
+      setAccountPenalties(data.accountPenalties||{});
       setAiMeta(data.ai||null);
       if(data.workspace){
         setWorkspaceMeta({
@@ -2801,6 +2808,7 @@ function WorkspaceHome(){
           {statusBadge(r.data.status)}
           {r.data.needsManager&&<span className="badge warning">Клиент ответил</span>}
           {!r.data.needsManager&&r.data.conversationOpen&&<span className="badge success">Переписка</span>}
+          <LeadBlockBadge signal={r.data.blockSignal}/>
         </div>
         <p className="mt-2 text-[14px] leading-6 line-clamp-2 muted">
           {r.data.incomingLastText||r.data.message}
@@ -3688,6 +3696,7 @@ function WorkspaceHome(){
                         </span>
                       </TableHead>
                       <SortableTableHead columnKey="status" sortKey={sortKey} sortDir={sortDir} onSort={onSort}>Статус</SortableTableHead>
+                      <TableHead title="Журнал штрафов Telegram: спамблок, FloodWait, @SpamBot, заморозка">Штрафы</TableHead>
                       <SortableTableHead columnKey="cooldown" sortKey={sortKey} sortDir={sortDir} onSort={onSort}>Отлёжка</SortableTableHead>
                       <SortableTableHead columnKey="proxy" sortKey={sortKey} sortDir={sortDir} onSort={onSort}>Связи</SortableTableHead>
                       <SortableTableHead columnKey="updated" sortKey={sortKey} sortDir={sortDir} onSort={onSort}>Обновлено</SortableTableHead>
@@ -3729,6 +3738,9 @@ function WorkspaceHome(){
                           <TableCell><AccountLimitsCell data={r.data}/></TableCell>
                           <TableCell className="min-w-0">
                             <AccountStatusCell status={rowStatus} error={r.data.error} cooldownUntil={r.data.cooldownUntil}/>
+                          </TableCell>
+                          <TableCell>
+                            <AccountPenaltyCell counts={accountPenalties[r.id]} onOpen={()=>setPenaltyAccount({id:r.id,name:displayName})}/>
                           </TableCell>
                           <TableCell className="whitespace-nowrap">
                             {coolLeft?(
@@ -4466,6 +4478,12 @@ function WorkspaceHome(){
         </DialogContent>
       </Dialog>
 
+      <AccountPenaltyDialog
+        account={penaltyAccount}
+        counts={penaltyAccount?accountPenalties[penaltyAccount.id]:undefined}
+        onClose={()=>setPenaltyAccount(null)}
+        load={loadAccountEvents}
+      />
       <TaskLogDialog
         open={taskLog}
         liveLog={taskLog?.taskId?(records.find(r=>r.id===taskLog.taskId)?.data?.log||taskLog.log):taskLog?.log}
@@ -4946,6 +4964,7 @@ function WorkspaceHome(){
               {detail?.data.name}
               {detail&&tempBadge(detail.data.temperature)}
             </DialogTitle>
+            {detail&&<LeadBlockBadge signal={detail.data.blockSignal} withReason/>}
             <DialogDescription>
               {detail?.data.source}
               {detail?.data.senderUsername?` · @${detail.data.senderUsername}`:''}
