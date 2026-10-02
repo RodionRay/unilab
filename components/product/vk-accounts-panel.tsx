@@ -162,8 +162,13 @@ export function VkAccountsPanel({ accounts, proxies, searchCap, perProxyCap, que
   }, [progress]);
 
   // Like a status-chip change: a new search hides rows, and bulk actions must never hit rows the user can't see.
+  // Reset during render (React's "adjust state on prop change" pattern), not in an effect.
   const queryKey = query.trim();
-  useEffect(() => { setSelected([]); }, [queryKey]);
+  const [selectionQuery, setSelectionQuery] = useState(queryKey);
+  if (selectionQuery !== queryKey) {
+    setSelectionQuery(queryKey);
+    setSelected([]);
+  }
 
   const activeProxies = proxies.filter((p) => p.active);
   const proxyLabel = useMemo(() => new Map(proxies.map((p) => [p.id, p.label])), [proxies]);
