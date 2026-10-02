@@ -106,7 +106,7 @@ export function ChatHeader({
               <MoreVertical aria-hidden />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="chat-menu">
+          <DropdownMenuContent align="end" className="chat-menu" data-chat-theme={theme}>
             <DropdownMenuItem onSelect={onThemeToggle}>
               {theme === "dark" ? <Sun aria-hidden /> : <Moon aria-hidden />}
               {themeLabel}

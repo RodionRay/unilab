@@ -78,19 +78,6 @@ export function ChatComposer(props: ChatComposerProps) {
           </p>
         ) : null}
         <div className="chat-compose-row">
-          {mode === "dm" ? (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="chat-icon-btn"
-              disabled={readOnly || !chatAvailable}
-              aria-label="Ответить в группе на исходный пост"
-              title={chatAvailable ? "Ответить в группе на исходный пост" : "У лида нет ссылки на группу"}
-              onClick={() => props.onModeChange("chat")}
-            >
-              <Reply aria-hidden />
-            </Button>
-          ) : null}
           <Textarea
             data-chat-composer
             className="chat-input"
@@ -106,6 +93,19 @@ export function ChatComposer(props: ChatComposerProps) {
               send();
             }}
           />
+          {mode === "dm" ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="chat-icon-btn"
+              disabled={readOnly || !chatAvailable}
+              aria-label="Ответить в группе на исходный пост"
+              title={chatAvailable ? "Ответить в группе на исходный пост" : "У лида нет ссылки на группу"}
+              onClick={() => props.onModeChange("chat")}
+            >
+              <Reply aria-hidden />
+            </Button>
+          ) : null}
           <Button
             variant="ghost"
             size="icon"

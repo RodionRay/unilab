@@ -75,7 +75,33 @@ export type ChatsPanelProps = {
   onAddLead: () => void;
   /** «Настроить аккаунты» when Telegram is not connected. */
   onConnect: () => void;
+  /** First run (no chats at all): go where conversations start. */
+  onOpenLeads: () => void;
+  /** Records failed to load ("" = fine): the list shows it with «Повторить». */
+  loadError: string;
+  onReload: () => void;
 };
+
+type FirstRunProps = { telegramConnected: boolean; onConnect: () => void; onOpenLeads: () => void };
+
+/** No chats at all: one next step instead of «Выберите диалог». */
+function FirstRun({ telegramConnected, onConnect, onOpenLeads }: FirstRunProps) {
+  return (
+    <div className="chat-placeholder">
+      <div className="chat-placeholder-card">
+        <h2 className="chat-placeholder-title">Переписок пока нет</h2>
+        <p className="chat-placeholder-text">
+          {telegramConnected
+            ? "Диалог появится, когда вы ответите лиду или клиент напишет в ответ."
+            : "Подключите Telegram-аккаунты: с них уходят ответы и приходят сообщения клиентов."}
+        </p>
+        <Button className="chat-placeholder-cta" onClick={telegramConnected ? onOpenLeads : onConnect}>
+          {telegramConnected ? "Открыть лиды" : "Настроить аккаунты"}
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 function NoChatSelected({ leads, onOpen }: { leads: readonly ChatLead[]; onOpen: (lead: ChatLead) => void }) {
   const firstUnread = leads.find((l) => chatListItem(l).unreadCount > 0) ?? null;
@@ -198,6 +224,8 @@ export function ChatsPanel(props: ChatsPanelProps) {
           counts={props.counts}
           query={query}
           readOnly={props.readOnly}
+          loadError={props.loadError}
+          onReload={props.onReload}
           renderRowBadge={props.renderRowBadge}
           onFolderChange={props.onFolderChange}
           onQueryChange={props.onQueryChange}
@@ -261,6 +289,8 @@ export function ChatsPanel(props: ChatsPanelProps) {
                 onSend={(text, mode) => void send(text, mode, false)}
               />
             </>
+          ) : !props.loading && !props.loadError && props.counts.fresh + props.counts.viewed === 0 && !query.trim() ? (
+            <FirstRun telegramConnected={props.telegramConnected} onConnect={props.onConnect} onOpenLeads={props.onOpenLeads} />
           ) : (
             <NoChatSelected leads={listLeads} onOpen={open} />
           )}

@@ -21,6 +21,9 @@ export type ChatListProps = {
   counts: { fresh: number; viewed: number };
   query: string;
   readOnly: boolean;
+  /** Records failed to load ("" = fine). */
+  loadError: string;
+  onReload: () => void;
   /** Optional per-row badge next to the name (e.g. account penalty on the staff branch). */
   renderRowBadge?: (lead: ChatLead) => ReactNode;
   onFolderChange: (folder: ChatFolder) => void;
@@ -132,7 +135,7 @@ const ChatListRow = memo(function ChatListRow({ lead, active, badge, onOpen }: R
 });
 
 function ChatListView(props: ChatListProps) {
-  const { leads, activeId, loading, folder, counts, query, readOnly, renderRowBadge, onFolderChange, onQueryChange, onOpen } = props;
+  const { leads, activeId, loading, folder, counts, query, readOnly, loadError, renderRowBadge, onFolderChange, onQueryChange, onOpen } = props;
   const uid = useId();
   const panelId = `${uid}-panel`;
   const tabId = (f: ChatFolder) => `${uid}-tab-${f}`;
@@ -204,6 +207,18 @@ function ChatListView(props: ChatListProps) {
       <div className="chat-list-scroll" role="tabpanel" id={panelId} aria-labelledby={tabId(folder)}>
         {loading ? (
           <ListSkeleton />
+        ) : loadError && !leads.length ? (
+          <Empty className="chat-list-empty" role="alert">
+            <EmptyHeader>
+              <EmptyTitle>Не удалось загрузить диалоги</EmptyTitle>
+              <EmptyDescription>{loadError}</EmptyDescription>
+            </EmptyHeader>
+            <EmptyContent>
+              <Button variant="outline" size="sm" onClick={props.onReload}>
+                Повторить
+              </Button>
+            </EmptyContent>
+          </Empty>
         ) : leads.length ? (
           <>
             <ul className="chat-list-items">

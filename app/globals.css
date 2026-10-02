@@ -5021,7 +5021,7 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   color-scheme: dark;
   --chat-link: rgba(255, 255, 255, 0.78);
   --chat-focus-ring: #ffb347;
-  --chat-card-bg: rgba(16, 16, 16, 0.86);
+  --chat-card-bg: #1d1d1d;
   --chat-card-text: rgba(255, 255, 255, 0.92);
   --chat-card-muted: rgba(255, 255, 255, 0.7);
 }
@@ -5070,6 +5070,7 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   max-width: none;
   padding: 0;
 }
+.workspace:has(> [data-chats-panel]) > .error-banner,
 .workspace:has(> [data-chats-panel]) > .app-footer {
   display: none;
 }
@@ -5410,9 +5411,13 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   font-size: 13px;
   color: var(--chat-muted);
 }
-.chat-list-more:hover {
+.chats-panel .chat-list-more {
+  color: var(--chat-accent-text);
   text-decoration: underline;
   text-underline-offset: 3px;
+}
+.chat-list-more:hover {
+  text-decoration-thickness: 2px;
 }
 .chat-list-more:focus-visible {
   outline: 2px solid var(--chat-accent);
@@ -5990,6 +5995,7 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   padding: 24px;
 }
 .chat-placeholder-card {
+  border: 1px solid var(--chat-pane-border);
   max-width: 360px;
   padding: 18px 22px 20px;
   border-radius: 18px;
@@ -6018,19 +6024,12 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   text-overflow: ellipsis;
 }
 
-/* ---------- help widget: same bottom-right place as on every page, never over the composer ---------- */
-@media (min-width: 768px) {
-  body:has([data-chats-panel]) .assistant-fab {
-    padding: 14px;
-    border-radius: 16px;
-  }
-  body:has([data-chats-panel]) .assistant-fab-label {
-    display: none;
-  }
-  /* the FAB (52px at right/bottom 20px) sits in this gutter beside the send button */
-  .chats-panel .chat-compose {
-    padding-right: 84px;
-  }
+/* ---------- help widget: bottom-right as on every page; hidden while a chat is open (never over the composer) ---------- */
+body:has([data-chats-panel]) .assistant-root {
+  z-index: 40;
+}
+body:has(.chats-panel[data-chat-open="true"]) .assistant-root {
+  display: none;
 }
 
 /* ---------- focus: visible ring on every chat control (WCAG 2.4.7 / 2.4.11) ---------- */
@@ -6054,6 +6053,29 @@ button[data-slot="button"][data-variant="ghost"]:hover {
 }
 .chats-panel .chat-header-name:focus:not(:focus-visible) {
   outline: none;
+}
+
+/* ---------- ⋮ menu follows the chat palette (it is portaled out of the panel, so it carries the theme attr) ---------- */
+[data-chat-theme="light"].chat-menu {
+  background: #ffffff !important;
+  color: #14110d !important;
+  border: 1px solid #e4e1dc !important;
+  box-shadow: 0 8px 24px rgba(70, 50, 20, 0.16) !important;
+}
+[data-chat-theme="light"].chat-menu [role="menuitem"] {
+  color: #14110d;
+}
+[data-chat-theme="light"].chat-menu [role="menuitem"] svg:not([class*="text-"]) {
+  color: #655f57;
+}
+[data-chat-theme="light"].chat-menu [role="menuitem"][data-highlighted] {
+  background: #f4f2ef;
+}
+[data-chat-theme="light"].chat-menu [role="menuitem"][data-variant="destructive"] {
+  color: #b42318;
+}
+[data-chat-theme="light"].chat-menu [role="separator"] {
+  background: #e4e1dc;
 }
 
 /* ---------- small additions: add lead, row badge, notice action ---------- */
@@ -6137,9 +6159,6 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   .chats-panel button.chat-send[data-slot="button"] {
     width: 48px;
     height: 48px;
-  }
-  body:has(.chats-panel[data-chat-open="true"]) .assistant-root {
-    display: none;
   }
 }
 
