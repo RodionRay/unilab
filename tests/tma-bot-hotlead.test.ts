@@ -17,6 +17,7 @@ const TG=901;
 type TgCall={chat:string;text:string;markup:unknown};
 const tg:TgCall[]=[];
 let temperature='hot';
+let groupFailures=0;
 
 function installFetch(messages:string[]){
  vi.stubGlobal('fetch',vi.fn(async(url:string,init?:RequestInit)=>{
@@ -32,6 +33,10 @@ function installFetch(messages:string[]){
    return Response.json({choices:[{message:{content:JSON.stringify(ids.map(id=>({id,reason:'ok',temperature})))}}]});
   }
   if(u.includes('api.telegram.org')){
+   if(String(body.chat_id)==='42'&&groupFailures>0){
+    groupFailures--;
+    return Response.json({ok:false,description:'Bad Gateway'},{status:502});
+   }
    tg.push({chat:String(body.chat_id),text:String(body.text||''),markup:body.reply_markup});
    return Response.json({ok:true,result:{message_id:tg.length}});
   }
@@ -51,6 +56,7 @@ beforeEach(async()=>{
  login(OWNER);
  tg.length=0;
  temperature='hot';
+ groupFailures=0;
  vi.stubEnv('ENCRYPTION_KEY','ab'.repeat(32));
  vi.stubEnv('AI_API_KEY','sk-test-not-real');
  vi.stubEnv('APP_URL','https://app.test');
@@ -96,6 +102,20 @@ describe('личные уведомления о горячих лидах (REQ-
 
   expect(leadIds()).toHaveLength(5);
   expect(tg.filter(c=>c.chat===String(TG))).toHaveLength(3);
+ });
+
+ it('сбой отправки в группу и повтор при следующем скане → ЛС ровно одно',async()=>{
+  groupFailures=1;
+  installFetch(targets(1));
+
+  await scan();
+  const afterFirst=tg.filter(c=>c.chat===String(TG)).length;
+  await scan();
+
+  expect(afterFirst).toBe(1);
+  expect(leadIds()).toHaveLength(1);
+  expect(tg.filter(c=>c.chat==='42')).toHaveLength(1);
+  expect(tg.filter(c=>c.chat===String(TG))).toHaveLength(1);
  });
 
  it('тёплый лид → только группа',async()=>{
