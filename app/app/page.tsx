@@ -530,6 +530,7 @@ function WorkspaceHome(){
   const [staffMembers,setStaffMembers]=useState<WorkspaceMember[]>([]);
   const [staffInvites,setStaffInvites]=useState<WorkspaceInvite[]>([]);
   const [workspaceMeta,setWorkspaceMeta]=useState<{isOwner:boolean;role:string;access:CrmAccess;ownerId:string}|null>(null);
+  const chatReadOnly=!!workspaceMeta&&!workspaceMeta.isOwner&&workspaceMeta.role==='viewer';
   const [meInfo,setMeInfo]=useState<{userId:string;email:string;name:string}|null>(null);
   const [inviteWizardStep,setInviteWizardStep]=useState<1|2>(1);
   const [taskLog,setTaskLog]=useState<{title:string;log:any[];taskId?:string}|null>(null);
@@ -712,6 +713,14 @@ function WorkspaceHome(){
   const chatLeads=list('lead').filter(r=>(!!r.data.draft||!!r.data.conversationOpen));
   const freshChats=chatLeads.filter(r=>!r.data.viewed);
   const viewedChats=chatLeads.filter(r=>!!r.data.viewed);
+  const chatGroupRefs=useMemo(()=>Object.fromEntries(records.filter(r=>r.kind==='group').map(g=>[g.id,{name:String(g.data.name||''),url:String(g.data.url||'')}])),[records]);
+  const chatAccountNames=useMemo(()=>Object.fromEntries(records.filter(r=>r.kind==='account').map(a=>[a.id,accountDisplayName(a.data)])),[records]);
+  const chatCounts=useMemo(()=>{
+    const q=query.toLowerCase();
+    const hit=(r:RecordItem)=>!q||JSON.stringify(r.data).toLowerCase().includes(q);
+    const chats=records.filter(r=>r.kind==='lead'&&(!!r.data.draft||!!r.data.conversationOpen)&&hit(r));
+    return {fresh:chats.filter(r=>!r.data.viewed).length,viewed:chats.filter(r=>!!r.data.viewed).length};
+  },[records,query]);
 
   const allowedNav=useMemo(()=>{
     if(!workspaceMeta||workspaceMeta.isOwner)return null;
@@ -1521,7 +1530,7 @@ function WorkspaceHome(){
     setChatMode('dm');
     setChatText(item.data.draft||'');
     const patch=markLeadOpened(item.data,new Date().toISOString());
-    if(!patch)return;
+    if(!patch||chatReadOnly)return;
     const before={viewed:item.data.viewed,viewedAt:item.data.viewedAt,needsManager:item.data.needsManager};
     setRecords(prev=>prev.map(r=>r.id===item.id?{...r,data:{...r.data,...patch}}:r));
     setDetail(d=>d&&d.id===item.id?{...d,data:{...d.data,...patch}}:d);
@@ -1544,11 +1553,12 @@ function WorkspaceHome(){
     return key;
   }
 
-  async function sendLeadReply(force=false){
-    if(!detail||!chatText.trim())return;
+  /** `msg` = explicit text/mode (chat composer, retry of a failed bubble); `keepComposer` for retries. */
+  async function sendLeadReply(force=false,msg?:{text:string;mode:'dm'|'chat';keepComposer?:boolean}){
+    const text=(msg?msg.text:chatText).trim();
+    if(!detail||!text)return;
     if(!telegramConnected){toast.error('Запустите: npm run dev');return}
-    const text=chatText.trim();
-    const mode=chatMode;
+    const mode=msg?msg.mode:chatMode;
     const clientMsgId=replySendKey(detail.id,mode,text);
     setBusy(true);
     try{
@@ -1561,12 +1571,12 @@ function WorkspaceHome(){
           :(r.link?'Отправлено в чат — ссылка на ответ сохранена':'Отправлено в чат'),
       );
       replySendKeyRef.current=null;
-      setChatText('');
+      if(!msg?.keepComposer)setChatText('');
     }catch(e){
       const err=e as Error&{status?:number;data?:{unknown?:boolean;lead?:RecordItem['data']}};
       if(err.data?.lead)setDetail({...detail,data:err.data.lead});
       if(err.data?.unknown){
-        toast.error(err.message,{action:{label:'Отправить ещё раз',onClick:()=>{void sendLeadReply(true)}}});
+        toast.error(err.message,{action:{label:'Отправить ещё раз',onClick:()=>{void sendLeadReply(true,msg)}}});
       }else{
         toast.error(err.message);
       }
@@ -3070,7 +3080,7 @@ function WorkspaceHome(){
         </header>
 
         <div className="workspace" key={view}>
-          <div className="page-heading">
+          {view!=='Переписки'&&<div className="page-heading">
             <div>
               <div className="eyebrow">Telegram · UniLab</div>
               <h1>{view==='Обзор'?'Обзор':view==='Аккаунты'?'Менеджер аккаунтов':view}</h1>
@@ -3096,7 +3106,7 @@ function WorkspaceHome(){
                 </Button>
               )}
             </div>
-          </div>
+          </div>}
 
           {error&&(
             <div role="alert" className="error-banner">
@@ -3291,28 +3301,31 @@ function WorkspaceHome(){
           {view==='Переписки'&&(
             <ChatsPanel
               leads={listRows}
-              activeLead={detail?(records.find(r=>r.id===detail.id)??detail):null}
+              activeLead={detail?records.find(r=>r.id===detail.id)??null:null}
               loading={loading}
               folder={filter==='viewed'?'viewed':'all'}
-              counts={{fresh:freshChats.length,viewed:viewedChats.length}}
+              counts={chatCounts}
               query={query}
-              groups={Object.fromEntries(list('group').map(g=>[g.id,{name:String(g.data.name||''),url:String(g.data.url||'')}]))}
-              accounts={Object.fromEntries(list('account').map(a=>[a.id,accountDisplayName(a.data)]))}
+              groups={chatGroupRefs}
+              accounts={chatAccountNames}
               text={chatText}
               mode={chatMode}
-              sending={busy}
-              readOnly={!!workspaceMeta&&!workspaceMeta.isOwner&&workspaceMeta.role==='viewer'}
+              readOnly={chatReadOnly}
+              telegramConnected={telegramConnected}
               onFolderChange={setFilter}
               onQueryChange={setQuery}
               onTextChange={setChatText}
               onModeChange={setChatMode}
               onOpen={lead=>{const item=records.find(r=>r.id===lead.id);if(item)void openLead(item)}}
               onBack={()=>{setDetail(null);setChatText('')}}
-              onSend={()=>{void sendLeadReply()}}
+              onSend={(text,mode)=>sendLeadReply(false,{text,mode})}
+              onRetry={(text,mode)=>sendLeadReply(false,{text,mode,keepComposer:true})}
               onDraft={async()=>{if(!detail)return;await draft(detail);const updated=records.find(r=>r.id===detail.id)||detail;setChatText(prev=>prev||updated.data.draft||'')}}
-              onEdit={()=>{if(detail){open('lead',detail);setDetail(null)}}}
-              onDelete={()=>{setDeleting(detail);setDetail(null)}}
-              onCopy={async()=>{try{await navigator.clipboard.writeText(chatText);toast.success('Скопировано')}catch{toast.error('Не удалось скопировать')}}}
+              onEdit={()=>{if(detail)open('lead',detail)}}
+              onDelete={()=>setDeleting(detail)}
+              onCopy={async(text)=>{try{await navigator.clipboard.writeText(text);toast.success('Скопировано')}catch{toast.error('Не удалось скопировать')}}}
+              onAddLead={()=>open('lead')}
+              onConnect={()=>navigate('Аккаунты')}
             />
           )}
           {view!=='Обзор'&&view!=='Уведомления'&&view!=='AI-ассистент'&&view!=='Настройки'&&view!=='Сбор аудитории'&&view!=='Инвайтинг'&&view!=='Рассылка'&&view!=='Сотрудники'&&view!=='Переписки'&&<>

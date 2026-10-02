@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 import { ArrowLeft, Copy, ExternalLink, Moon, MoreVertical, Pencil, Send, Sun, Trash2, UsersRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,6 +24,8 @@ export type ChatHeaderProps = {
   theme: ChatTheme;
   readOnly: boolean;
   canCopy: boolean;
+  /** Focus target when the chat opens full-screen (narrow layouts). */
+  headingRef?: Ref<HTMLHeadingElement>;
   /** External badges (e.g. account penalty) rendered inside `[data-slot=chat-header-badges]`. */
   badges?: ReactNode;
   onThemeToggle: () => void;
@@ -33,46 +35,62 @@ export type ChatHeaderProps = {
   onDelete: () => void;
 };
 
-export function ChatHeader(props: ChatHeaderProps) {
-  const { leadId, name, username, groupName, accountName, telegramHref, theme, readOnly, canCopy, badges } = props;
+export function ChatHeader({
+  leadId,
+  name,
+  username,
+  groupName,
+  accountName,
+  telegramHref,
+  theme,
+  readOnly,
+  canCopy,
+  headingRef,
+  badges,
+  onThemeToggle,
+  onBack,
+  onEdit,
+  onCopy,
+  onDelete,
+}: ChatHeaderProps) {
+  const themeLabel = theme === "dark" ? "Светлая тема переписок" : "Тёмная тема переписок";
   return (
     <header className="chat-header">
-      <Button variant="ghost" size="icon" className="chat-icon-btn chat-back" data-chat-back aria-label="Назад к списку" onClick={props.onBack}>
+      <Button variant="ghost" size="icon" className="chat-icon-btn chat-back" data-chat-back aria-label="Назад к списку" onClick={onBack}>
         <ArrowLeft aria-hidden />
       </Button>
       <ChatAvatar id={leadId} name={name} size="md" />
       <div className="chat-header-info">
         <div className="chat-header-title">
-          <h2 className="chat-header-name">{name}</h2>
+          <h2 className="chat-header-name" ref={headingRef} tabIndex={-1}>
+            {name}
+          </h2>
           <span data-slot="chat-header-badges" className="chat-header-badges">
             {badges}
           </span>
         </div>
         <p className="chat-header-sub">
-          {username ? <span className="chat-header-seg is-username">@{username}</span> : null}
-          {groupName ? (
-            <span className="chat-header-seg" title="Группа, где найден запрос">
-              <UsersRound size={13} aria-hidden />
-              {groupName}
+          {username ? (
+            <span className="chat-header-seg is-username" title={`@${username}`}>
+              <span className="chat-header-seg-text">@{username}</span>
             </span>
           ) : null}
           {accountName ? (
-            <span className="chat-header-seg" title="Аккаунт, с которого идёт переписка">
+            <span className="chat-header-seg is-account" title={`Переписка идёт с аккаунта «${accountName}»`}>
               <Send size={12} aria-hidden />
-              через {accountName}
+              <span className="chat-header-seg-text">через {accountName}</span>
+            </span>
+          ) : null}
+          {groupName ? (
+            <span className="chat-header-seg is-group" title={`Запрос найден в «${groupName}»`}>
+              <UsersRound size={13} aria-hidden />
+              <span className="chat-header-seg-text">{groupName}</span>
             </span>
           ) : null}
         </p>
       </div>
       <div className="chat-header-actions">
-        <Button
-          variant="ghost"
-          size="icon"
-          className="chat-icon-btn chat-theme-btn"
-          aria-label={theme === "dark" ? "Светлая тема чата" : "Тёмная тема чата"}
-          title={theme === "dark" ? "Светлая тема чата" : "Тёмная тема чата"}
-          onClick={props.onThemeToggle}
-        >
+        <Button variant="ghost" size="icon" className="chat-icon-btn chat-theme-btn" aria-label={themeLabel} title={themeLabel} onClick={onThemeToggle}>
           {theme === "dark" ? <Sun aria-hidden /> : <Moon aria-hidden />}
         </Button>
         {telegramHref ? (
@@ -89,20 +107,20 @@ export function ChatHeader(props: ChatHeaderProps) {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="chat-menu">
-            <DropdownMenuItem onSelect={props.onThemeToggle}>
+            <DropdownMenuItem onSelect={onThemeToggle}>
               {theme === "dark" ? <Sun aria-hidden /> : <Moon aria-hidden />}
-              {theme === "dark" ? "Светлая тема чата" : "Тёмная тема чата"}
+              {themeLabel}
             </DropdownMenuItem>
-            <DropdownMenuItem disabled={readOnly} onSelect={props.onEdit}>
+            <DropdownMenuItem disabled={readOnly} onSelect={onEdit}>
               <Pencil aria-hidden />
               Правки лида
             </DropdownMenuItem>
-            <DropdownMenuItem disabled={!canCopy} onSelect={props.onCopy}>
+            <DropdownMenuItem disabled={!canCopy} onSelect={onCopy}>
               <Copy aria-hidden />
               Копировать текст
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem variant="destructive" disabled={readOnly} onSelect={props.onDelete}>
+            <DropdownMenuItem variant="destructive" disabled={readOnly} onSelect={onDelete}>
               <Trash2 aria-hidden />
               Удалить лид
             </DropdownMenuItem>

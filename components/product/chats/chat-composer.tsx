@@ -1,6 +1,7 @@
 "use client";
 
-import { BotMessageSquare, CornerUpLeft, Eye, Loader2, Reply, SendHorizontal, TriangleAlert, X } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+import { BotMessageSquare, CornerUpLeft, Eye, Loader2, PlugZap, Reply, SendHorizontal, TriangleAlert, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { isSendShortcut } from "@/lib/chat-view";
@@ -12,6 +13,7 @@ export type ChatComposerProps = {
   mode: ChatMode;
   sending: boolean;
   readOnly: boolean;
+  telegramConnected: boolean;
   /** The lead has a Telegram id/username: a DM is possible. */
   dmAvailable: boolean;
   /** The lead is bound to a group with a link: a reply in the group is possible. */
@@ -22,19 +24,32 @@ export type ChatComposerProps = {
   onModeChange: (mode: ChatMode) => void;
   onSend: (text: string, mode: ChatMode) => void;
   onDraft: () => void;
+  onConnect: () => void;
 };
 
+type Notice = { icon: LucideIcon; text: string; action?: { label: string; run: () => void } };
+
+function noticeFor(p: ChatComposerProps): Notice | null {
+  if (p.readOnly) return { icon: Eye, text: "Режим наблюдателя: читать можно, отправка недоступна." };
+  if (!p.telegramConnected) return { icon: PlugZap, text: "Telegram не подключён.", action: { label: "Настроить аккаунты", run: p.onConnect } };
+  if (p.mode === "dm" && !p.dmAvailable) {
+    return {
+      icon: TriangleAlert,
+      text: "Нет связи с клиентом в личке: ответьте в группе.",
+      action: p.chatAvailable ? { label: "Ответить в группе", run: () => p.onModeChange("chat") } : undefined,
+    };
+  }
+  return null;
+}
+
 export function ChatComposer(props: ChatComposerProps) {
-  const { text, mode, sending, readOnly, dmAvailable, chatAvailable, sourceText, groupName } = props;
-  const canSend = !readOnly && !sending && text.trim().length > 0;
+  const { text, mode, sending, readOnly, telegramConnected, dmAvailable, chatAvailable, sourceText, groupName } = props;
+  const reachable = mode === "chat" ? chatAvailable : dmAvailable;
+  const canSend = !readOnly && telegramConnected && reachable && !sending && text.trim().length > 0;
   const send = () => {
     if (canSend) props.onSend(text, mode);
   };
-  const notice = readOnly
-    ? { icon: Eye, text: "Режим наблюдателя: читать можно, отправка недоступна." }
-    : mode === "dm" && !dmAvailable
-      ? { icon: TriangleAlert, text: "Нет Telegram id клиента — пересканируйте группу или ответьте в группе." }
-      : null;
+  const notice = noticeFor(props);
 
   return (
     <div className="chat-compose" data-mode={mode}>
@@ -54,22 +69,28 @@ export function ChatComposer(props: ChatComposerProps) {
         {notice ? (
           <p className="chat-compose-notice" role="note">
             <notice.icon size={14} aria-hidden />
-            {notice.text}
+            <span>{notice.text}</span>
+            {notice.action ? (
+              <button type="button" className="chat-compose-notice-action" onClick={notice.action.run}>
+                {notice.action.label}
+              </button>
+            ) : null}
           </p>
         ) : null}
         <div className="chat-compose-row">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="chat-icon-btn"
-            aria-pressed={mode === "chat"}
-            disabled={readOnly || (!chatAvailable && mode === "dm")}
-            aria-label="Ответить в группе на исходный пост"
-            title={chatAvailable ? "Ответить в группе на исходный пост" : "У лида нет ссылки на группу"}
-            onClick={() => props.onModeChange(mode === "chat" ? "dm" : "chat")}
-          >
-            <Reply aria-hidden />
-          </Button>
+          {mode === "dm" ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="chat-icon-btn"
+              disabled={readOnly || !chatAvailable}
+              aria-label="Ответить в группе на исходный пост"
+              title={chatAvailable ? "Ответить в группе на исходный пост" : "У лида нет ссылки на группу"}
+              onClick={() => props.onModeChange("chat")}
+            >
+              <Reply aria-hidden />
+            </Button>
+          ) : null}
           <Textarea
             data-chat-composer
             className="chat-input"
@@ -89,7 +110,7 @@ export function ChatComposer(props: ChatComposerProps) {
             variant="ghost"
             size="icon"
             className="chat-icon-btn chat-ai-btn"
-            disabled={readOnly || sending}
+            disabled={readOnly || sending || !telegramConnected}
             aria-label="Черновик AI"
             title="Черновик AI: подготовить ответ"
             onClick={props.onDraft}

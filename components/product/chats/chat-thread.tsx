@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowDown, CornerUpLeft, ExternalLink, UsersRound } from "lucide-react";
+import { ArrowDown, Copy, CornerUpLeft, ExternalLink, RotateCw, UsersRound } from "lucide-react";
 import { Bubble } from "@/components/ui/bubble";
 import { Button } from "@/components/ui/button";
 import { Marker, MarkerContent } from "@/components/ui/marker";
-import type { ChatThread, ThreadMessage } from "@/lib/chat-view";
+import { describeSendError, type ChatThread, type ThreadMessage } from "@/lib/chat-view";
 import { ChatTick } from "./chat-ticks";
 
 export type ChatThreadProps = {
@@ -16,6 +16,10 @@ export type ChatThreadProps = {
   /** Hint under a thread with no replies yet. */
   emptyHint: string;
   messageHref: (message: ThreadMessage) => string;
+  /** Resend of a failed message is possible now (connected, not read-only, nothing in flight). */
+  canRetry: boolean;
+  onRetry: (message: ThreadMessage) => void;
+  onCopy: (text: string) => void;
 };
 
 /** Pixels from the bottom that still count as "at the bottom" (new messages keep the view pinned). */
@@ -35,7 +39,16 @@ function Tail({ out }: { out: boolean }) {
   );
 }
 
-function MessageBubble({ m, groupName, href }: { m: ThreadMessage; groupName: string; href: string }) {
+type BubbleProps = {
+  m: ThreadMessage;
+  groupName: string;
+  href: string;
+  canRetry: boolean;
+  onRetry: (m: ThreadMessage) => void;
+  onCopy: (text: string) => void;
+};
+
+function MessageBubble({ m, groupName, href, canRetry, onRetry, onCopy }: BubbleProps) {
   const out = m.side === "out";
   // Reserves room on the last line so the absolute time/ticks never overlap text (Telegram's in-bubble stamp).
   const spacer = m.time || m.tick ? <span className="chat-stamp-spacer" data-out={out || undefined} aria-hidden /> : null;
@@ -69,13 +82,9 @@ function MessageBubble({ m, groupName, href }: { m: ThreadMessage; groupName: st
         ) : null}
         <p className="chat-text">
           {m.text}
-          {href || m.error ? null : spacer}
+          {href || m.tick === "failed" ? null : spacer}
         </p>
-        {m.error ? (
-          <p className="chat-error" role="note">
-            {m.error}
-          </p>
-        ) : null}
+        {m.tick === "failed" ? <FailedNote m={m} canRetry={canRetry} onRetry={onRetry} onCopy={onCopy} /> : null}
         {href ? (
           <p className="chat-link-row">
             <a className="chat-link" href={href} target="_blank" rel="noreferrer">
@@ -96,7 +105,29 @@ function MessageBubble({ m, groupName, href }: { m: ThreadMessage; groupName: st
   );
 }
 
-export function ChatThreadView({ chatKey, thread, groupName, emptyHint, messageHref }: ChatThreadProps) {
+/** Failed send: plain-language reason (Telegram code in the tooltip) and the two ways out. */
+function FailedNote({ m, canRetry, onRetry, onCopy }: Omit<BubbleProps, "groupName" | "href">) {
+  const err = describeSendError(m.error);
+  return (
+    <div className="chat-error" role="note">
+      <p className="chat-error-text" title={err.code || undefined}>
+        {err.text}
+      </p>
+      <div className="chat-error-actions">
+        <button type="button" className="chat-error-btn" data-chat-retry disabled={!canRetry} onClick={() => onRetry(m)}>
+          <RotateCw size={13} aria-hidden />
+          Повторить
+        </button>
+        <button type="button" className="chat-error-btn" onClick={() => onCopy(m.text)}>
+          <Copy size={13} aria-hidden />
+          Копировать
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function ChatThreadView({ chatKey, thread, groupName, emptyHint, messageHref, canRetry, onRetry, onCopy }: ChatThreadProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const dividerRef = useRef<HTMLDivElement>(null);
   const nearBottom = useRef(true);
@@ -151,7 +182,17 @@ export function ChatThreadView({ chatKey, thread, groupName, emptyHint, messageH
                 </Marker>
               );
             }
-            return <MessageBubble key={item.key} m={item} groupName={groupName} href={messageHref(item)} />;
+            return (
+              <MessageBubble
+                key={item.key}
+                m={item}
+                groupName={groupName}
+                href={messageHref(item)}
+                canRetry={canRetry}
+                onRetry={onRetry}
+                onCopy={onCopy}
+              />
+            );
           })}
           {onlySource && emptyHint ? (
             <Marker className="chat-empty-hint">

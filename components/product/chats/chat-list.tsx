@@ -1,11 +1,11 @@
 "use client";
 
-import { CircleAlert, Search, X } from "lucide-react";
+import { memo, useId, useMemo, type KeyboardEvent, type ReactNode } from "react";
+import { CircleAlert, Plus, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { chatListItem, type ChatLead } from "@/lib/chat-view";
 import { ChatAvatar } from "./chat-avatar";
 import { ChatTick } from "./chat-ticks";
@@ -17,13 +17,22 @@ export type ChatListProps = {
   activeId: string | null;
   loading: boolean;
   folder: ChatFolder;
+  /** Per folder; already narrowed by the search when it is not empty. */
   counts: { fresh: number; viewed: number };
   query: string;
-  now?: Date;
+  readOnly: boolean;
+  /** Optional per-row badge next to the name (e.g. account penalty on the staff branch). */
+  renderRowBadge?: (lead: ChatLead) => ReactNode;
   onFolderChange: (folder: ChatFolder) => void;
   onQueryChange: (query: string) => void;
   onOpen: (lead: ChatLead) => void;
+  onAddLead: () => void;
 };
+
+const FOLDERS: readonly { value: ChatFolder; label: string }[] = [
+  { value: "all", label: "Новые" },
+  { value: "viewed", label: "Просмотренные" },
+];
 
 function ListSkeleton() {
   return (
@@ -63,7 +72,7 @@ function ListEmpty({ folder, query, counts, onFolderChange, onQueryChange }: Pic
           </Button>
         ) : other > 0 ? (
           <Button variant="outline" size="sm" onClick={() => onFolderChange(folder === "all" ? "viewed" : "all")}>
-            {folder === "all" ? `Просмотренные (${other})` : `Новые (${other})`}
+            {folder === "all" ? `Просмотренные: ${other}` : `Новые: ${other}`}
           </Button>
         ) : null}
       </EmptyContent>
@@ -71,9 +80,12 @@ function ListEmpty({ folder, query, counts, onFolderChange, onQueryChange }: Pic
   );
 }
 
-function ChatListRow({ lead, active, now, onOpen }: { lead: ChatLead; active: boolean; now?: Date; onOpen: (lead: ChatLead) => void }) {
+type RowProps = { lead: ChatLead; active: boolean; badge: ReactNode; onOpen: (lead: ChatLead) => void };
+
+/** Memoised: typing in the composer or polling other leads does not re-render unchanged rows. */
+const ChatListRow = memo(function ChatListRow({ lead, active, badge, onOpen }: RowProps) {
   const name = String(lead.data.name || "Без имени");
-  const row = chatListItem(lead, { now });
+  const row = useMemo(() => chatListItem(lead), [lead]);
   return (
     <li>
       <button
@@ -89,6 +101,7 @@ function ChatListRow({ lead, active, now, onOpen }: { lead: ChatLead; active: bo
         <span className="chat-item-body">
           <span className="chat-item-line">
             <span className="chat-item-name">{name}</span>
+            {badge ? <span className="chat-item-badge">{badge}</span> : null}
             <span className="chat-item-time">
               {row.lastTick && row.lastTick !== "failed" ? <ChatTick state={row.lastTick} size={14} /> : null}
               {row.timeLabel}
@@ -106,8 +119,9 @@ function ChatListRow({ lead, active, now, onOpen }: { lead: ChatLead; active: bo
               </span>
             ) : null}
             {row.unreadCount > 0 ? (
-              <span className="chat-unread-pill" aria-label={`Непрочитанных: ${row.unreadCount}`}>
-                {row.unreadCount}
+              <span className="chat-unread-pill">
+                <span aria-hidden>{row.unreadCount}</span>
+                <span className="sr-only">Непрочитанных: {row.unreadCount}</span>
               </span>
             ) : null}
           </span>
@@ -115,16 +129,34 @@ function ChatListRow({ lead, active, now, onOpen }: { lead: ChatLead; active: bo
       </button>
     </li>
   );
-}
+});
 
-export function ChatList(props: ChatListProps) {
-  const { leads, activeId, loading, folder, counts, query, now, onFolderChange, onQueryChange, onOpen } = props;
+function ChatListView(props: ChatListProps) {
+  const { leads, activeId, loading, folder, counts, query, readOnly, renderRowBadge, onFolderChange, onQueryChange, onOpen } = props;
+  const uid = useId();
+  const panelId = `${uid}-panel`;
+  const tabId = (f: ChatFolder) => `${uid}-tab-${f}`;
+  const searching = query.trim().length > 0;
+
+  // WAI-ARIA tabs: arrows move between the two folders.
+  const onTabKey = (e: KeyboardEvent<HTMLButtonElement>) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight" && e.key !== "Home" && e.key !== "End") return;
+    e.preventDefault();
+    const next: ChatFolder = folder === "all" ? "viewed" : "all";
+    onFolderChange(next);
+    document.getElementById(tabId(next))?.focus();
+  };
+
   return (
     <section className="chat-list" aria-label="Диалоги">
       <header className="chat-list-head">
         <div className="chat-list-titlebar">
           <h1 className="chat-list-title">Переписки</h1>
           {loading ? null : <span className="chat-list-total">{counts.fresh + counts.viewed}</span>}
+          <Button variant="outline" size="sm" className="chat-add-lead" disabled={readOnly} onClick={props.onAddLead}>
+            <Plus aria-hidden />
+            Добавить лид
+          </Button>
         </div>
         <label className="chat-search">
           <Search size={17} aria-hidden />
@@ -142,30 +174,50 @@ export function ChatList(props: ChatListProps) {
             </button>
           ) : null}
         </label>
-        <Tabs value={folder} onValueChange={(v) => onFolderChange(v === "viewed" ? "viewed" : "all")} className="chat-folders">
-          <TabsList variant="line" className="chat-folders-list">
-            <TabsTrigger value="all" className="chat-folder">
-              Новые{counts.fresh ? <span className="chat-folder-count">{counts.fresh}</span> : null}
-            </TabsTrigger>
-            <TabsTrigger value="viewed" className="chat-folder">
-              Просмотренные{counts.viewed ? <span className="chat-folder-count">{counts.viewed}</span> : null}
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
+        <div className="chat-folders-list" role="tablist" aria-label={searching ? "Папки, найдено по поиску" : "Папки"}>
+          {FOLDERS.map((f) => {
+            const n = f.value === "all" ? counts.fresh : counts.viewed;
+            const selected = folder === f.value;
+            return (
+              <button
+                key={f.value}
+                type="button"
+                role="tab"
+                id={tabId(f.value)}
+                className="chat-folder"
+                data-state={selected ? "active" : "inactive"}
+                aria-selected={selected}
+                aria-controls={panelId}
+                tabIndex={selected ? 0 : -1}
+                onKeyDown={onTabKey}
+                onClick={() => onFolderChange(f.value)}
+              >
+                {f.label}
+                {n ? <span className="chat-folder-count">{n}</span> : null}
+              </button>
+            );
+          })}
+        </div>
       </header>
-      <div className="chat-list-scroll">
+      <div className="chat-list-scroll" role="tabpanel" id={panelId} aria-labelledby={tabId(folder)}>
         {loading ? (
           <ListSkeleton />
         ) : leads.length ? (
           <>
             <ul className="chat-list-items">
               {leads.map((lead) => (
-                <ChatListRow key={lead.id} lead={lead} active={lead.id === activeId} now={now} onOpen={onOpen} />
+                <ChatListRow
+                  key={lead.id}
+                  lead={lead}
+                  active={lead.id === activeId}
+                  badge={renderRowBadge ? renderRowBadge(lead) : null}
+                  onOpen={onOpen}
+                />
               ))}
             </ul>
-            {folder === "all" && counts.viewed > 0 && !query ? (
+            {folder === "all" && counts.viewed > 0 && !searching ? (
               <button type="button" className="chat-list-more" onClick={() => onFolderChange("viewed")}>
-                Открытые диалоги — в «Просмотренных»: {counts.viewed}
+                Просмотренные: {counts.viewed}
               </button>
             ) : null}
           </>
@@ -176,3 +228,5 @@ export function ChatList(props: ChatListProps) {
     </section>
   );
 }
+
+export const ChatList = memo(ChatListView);
