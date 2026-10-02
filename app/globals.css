@@ -6057,6 +6057,17 @@ button[data-slot="button"][data-variant="ghost"]:hover {
 }
 
 /* ---------- small additions: add lead, row badge, notice action ---------- */
+/* the app's outline buttons are dark-only (white ink !important): re-ink them for the chat palette */
+.chats-panel button[data-slot="button"][data-variant="outline"] {
+  color: var(--chat-text) !important;
+  background: var(--chat-input-bg) !important;
+  border-color: var(--chat-pane-border) !important;
+}
+.chats-panel button[data-slot="button"][data-variant="outline"]:hover:not(:disabled) {
+  color: var(--chat-text) !important;
+  background: var(--chat-item-hover) !important;
+  border-color: var(--chat-accent) !important;
+}
 .chats-panel .chat-add-lead {
   margin-left: auto;
   height: 32px;
