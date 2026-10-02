@@ -215,6 +215,13 @@ export async function findLinkById(db: D1LikeDatabase, id: string): Promise<TmaL
  * row is created lazily. Skipped when the member unlinked before (a revoked row exists) or is already
  * linked to another Telegram account.
  */
+async function bindFromLoginWidget(db: D1LikeDatabase, owner: string, userId: string, tg: TelegramIdentity, botId: string): Promise<TmaLink | null> {
+  const prior = await db.prepare("SELECT id FROM tma_links WHERE owner=? AND user_id=? LIMIT 1").bind(owner, userId).first();
+  if (prior) return null;
+  if ((await resolveWorkspaceContext(userId)).ownerId !== owner) return null;
+  return findLinkById(db, await bindLink(db, owner, userId, tg, botId));
+}
+
 async function linkFromLoginWidget(db: D1LikeDatabase, owner: string, tg: TelegramIdentity, botId: string): Promise<TmaLink | null> {
   await ensureUserTables();
   const oauth = await db
@@ -222,11 +229,24 @@ async function linkFromLoginWidget(db: D1LikeDatabase, owner: string, tg: Telegr
     .bind(String(tg.id))
     .first<{ user_id: string }>();
   const userId = oauth?.user_id ? String(oauth.user_id) : "";
-  if (!userId) return null;
-  const prior = await db.prepare("SELECT id FROM tma_links WHERE owner=? AND user_id=? LIMIT 1").bind(owner, userId).first();
-  if (prior) return null;
-  if ((await resolveWorkspaceContext(userId)).ownerId !== owner) return null;
-  return findLinkById(db, await bindLink(db, owner, userId, tg, botId));
+  return userId ? bindFromLoginWidget(db, owner, userId, tg, botId) : null;
+}
+
+/**
+ * The member's active link for web settings, materialising a Login-Widget link (REQ-L3) so settings show
+ * «подключено» + «Отключить» before the first launch. Never takes a tg id actively linked to someone else.
+ */
+export async function findOrLinkForUser(db: D1LikeDatabase, owner: string, userId: string, botId: string): Promise<TmaLink | null> {
+  const active = await findActiveLinkForUser(db, owner, userId);
+  if (active || !botId) return active;
+  await ensureUserTables();
+  const oauth = await db
+    .prepare("SELECT provider_user_id FROM oauth_accounts WHERE provider='telegram' AND user_id=? LIMIT 1")
+    .bind(userId)
+    .first<{ provider_user_id: string }>();
+  const tgId = Number(oauth?.provider_user_id);
+  if (!Number.isSafeInteger(tgId) || tgId <= 0 || (await findActiveLink(db, owner, tgId))) return null;
+  return bindFromLoginWidget(db, owner, userId, { id: tgId, username: "" }, botId);
 }
 
 /** Active link of `tg` in `owner`, falling back to the Login-Widget account (REQ-L3). Membership is checked by the caller. */

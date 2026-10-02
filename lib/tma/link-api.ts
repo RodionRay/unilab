@@ -10,7 +10,7 @@ import {
   LINK_START_PREFIX,
   TMA_LINK_RATE_LIMITS,
   createLinkCode,
-  findActiveLinkForUser,
+  findOrLinkForUser,
   revokeLink,
   setDmNotices,
 } from "@/lib/tma/links";
@@ -38,8 +38,8 @@ export function miniAppUrl(appUrl: string | undefined, wsKey: string): string {
 }
 
 async function linkStatus(db: D1LikeDatabase, owner: string, userId: string, appUrl: string): Promise<LinkStatus> {
-  const link = await findActiveLinkForUser(db, owner, userId);
   const bot = await readWorkspaceBot(db, owner);
+  const link = await findOrLinkForUser(db, owner, userId, bot.botId);
   return {
     linked: Boolean(link),
     tgUsername: link?.tgUsername ?? "",
@@ -108,6 +108,8 @@ export async function handleLinkRequest(
     case "unlink": {
       const target = await unlinkTarget(ctx, req.userId);
       if (!target.ok) return target.result;
+      // A Login-Widget member who never launched has no row yet: create it first so the revoke sticks (REQ-L3).
+      await findOrLinkForUser(db, ctx.ownerId, target.userId, (await readWorkspaceBot(db, ctx.ownerId)).botId);
       const revoked = await revokeLink(db, ctx.ownerId, target.userId);
       if (revoked) await resetMenuButton(db, ctx.ownerId, revoked.tgUserId);
       return { status: 200, body: await linkStatus(db, ctx.ownerId, target.userId, appUrl) };

@@ -142,6 +142,41 @@ describe('POST /api/tma/link',()=>{
   expect(await findActiveLinkForUser(testDb().db,OWNER,OWNER)).not.toBeNull();
  });
 
+ it('REQ-L3: участник с Login Widget видит «подключено» и может отключить; после отключения не перепривязывается',async()=>{
+  testDb().sqlite.prepare("INSERT INTO oauth_accounts(id,user_id,provider,provider_user_id,created) VALUES(?,?,?,?,?)")
+   .run(crypto.randomUUID(),OWNER,'telegram','777','x');
+
+  const before=await call({action:'status'});
+  const off=await call({action:'unlink'});
+  const after=await call({action:'status'});
+
+  expect(before.json.linked).toBe(true);
+  expect(off.json.linked).toBe(false);
+  expect(after.json.linked).toBe(false);
+ });
+
+ it('REQ-L3: «Отключить» до первого статуса тоже отключает Login Widget (без авто-перепривязки)',async()=>{
+  testDb().sqlite.prepare("INSERT INTO oauth_accounts(id,user_id,provider,provider_user_id,created) VALUES(?,?,?,?,?)")
+   .run(crypto.randomUUID(),OWNER,'telegram','779','x');
+
+  const off=await call({action:'unlink'});
+
+  expect(off.json.linked).toBe(false);
+  expect((await call({action:'status'})).json.linked).toBe(false);
+ });
+
+ it('REQ-L3: tg из Login Widget уже привязан к другому сотруднику → статус не перехватывает чужую привязку',async()=>{
+  addMember('manager-1','manager');
+  await linkTelegram('manager-1',778);
+  testDb().sqlite.prepare("INSERT INTO oauth_accounts(id,user_id,provider,provider_user_id,created) VALUES(?,?,?,?,?)")
+   .run(crypto.randomUUID(),OWNER,'telegram','778','x');
+
+  const own=await call({action:'status'});
+
+  expect(own.json.linked).toBe(false);
+  expect((await findActiveLinkForUser(testDb().db,OWNER,'manager-1'))?.tgUserId).toBe(778);
+ });
+
  it('REQ-L4: админ отключает сотрудника своего кабинета; менеджер — нет; чужой кабинет — нет',async()=>{
   addMember('admin-1','admin');
   addMember('manager-1','manager');

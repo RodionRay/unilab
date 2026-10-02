@@ -111,7 +111,8 @@ Source: read-only scout of origin/dev @671338d + Telegram docs (core.telegram.or
   same member is allowed. Mini app URLs (menu button, «Открыть» buttons) come only from a public https `APP_URL`,
   never from the request Host (`lib/tma/bot-link.ts::publicMiniAppUrl`).
 - REQ-L3 Where a member already has a Login-Widget `oauth_accounts` telegram row, the system shall accept that tg id
-  as linked without a code.
+  as linked without a code; link status/unlink materialise that link (`lib/tma/links.ts::findOrLinkForUser`), so settings
+  show it as linked with «Отключить», never taking a tg id actively linked to another member; after unlink no auto-relink.
 - REQ-L4 When a member (or an admin for them) presses «Отключить», the system shall revoke the link, reset the chat's
   menu button and invalidate live tma tokens (REQ-A5). v1: admin path is server-only (`POST /api/tma/link {action:"unlink",userId}`); the admin button in «Сотрудники» → v1.1 (D-8).
 - REQ-L5 Expired, reused or foreign-workspace codes shall be rejected with a bot reply that leaks no workspace data.
