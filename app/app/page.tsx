@@ -13,6 +13,9 @@ import {InvitePanel,InviteModePicker,InviteTaskFields} from '@/components/produc
 import {MailingPanel,MailingTaskFields,MailingDeliveriesView} from '@/components/product/mailing-panel';
 import {TaskLogDialog} from '@/components/product/task-log-dialog';
 import {EmployeesPanel} from '@/components/product/employees-panel';
+import {VkAccountsPanel,type VkAccountRecord} from '@/components/product/vk-accounts-panel';
+import {VkSourcesPanel,type VkSourceRecord} from '@/components/product/vk-sources-panel';
+import {leadPlatform,matchesLeadPlatform,matchesLeadSource,safeVkHref,vkPoolCanScan,type LeadPlatformFilter} from '@/lib/vk/view';
 import {DEFAULT_DM_SOFT_CLOSE,DEFAULT_MAILING_TASK} from '@/lib/mailing';
 import {canAccessNav,type CrmAccess,type WorkspaceInvite,type WorkspaceMember} from '@/lib/staff-types';
 import {DEFAULT_NAV} from '@/components/product/workspace-nav';
@@ -480,6 +483,7 @@ function WorkspaceHome(){
   const [aiMeta,setAiMeta]=useState<{provider?:string;hasEnvKey?:boolean}|null>(null);
   const [lastLeadFunnel,setLastLeadFunnel]=useState<{worker?:number;core?:number;matched?:number;added?:number}|null>(null);
   const [leadGroupFilter,setLeadGroupFilter]=useState('all');
+  const [leadPlatformFilter,setLeadPlatformFilter]=useState<LeadPlatformFilter>('all');
   const [groupFilter,setGroupFilter]=useState<'all'|'need'|'joined'|'pending'|'error'>('all');
   const [groupSelected,setGroupSelected]=useState<string[]>([]);
   const [bulkAccountId,setBulkAccountId]=useState('');
@@ -652,7 +656,7 @@ function WorkspaceHome(){
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[records]);
-  const navigate=(name:NavName)=>{setView(name);setQuery('');setFilter('all');setLeadGroupFilter('all');setAccountSelected([]);setGroupFilter('all');setGroupSelected([]);setAudienceSearch('');setInviteSearch('');setMailingSearch('')};
+  const navigate=(name:NavName)=>{setView(name);setQuery('');setFilter('all');setLeadGroupFilter('all');setLeadPlatformFilter('all');setAccountSelected([]);setGroupFilter('all');setGroupSelected([]);setAudienceSearch('');setInviteSearch('');setMailingSearch('')};
   const openTask=(kind:'audience_task'|'invite_task'|'mailing_task',item?:RecordItem)=>{
     setInviteWizardStep(item?2:1);
     setModal({kind,item});
@@ -2594,13 +2598,19 @@ function WorkspaceHome(){
   }
 
   const currentKind=kinds[view];
+  // VK rows ride in the same records payload under their own kinds (spec vk-lead-source D2).
+  const vkAccounts:VkAccountRecord[]=records.filter(r=>String(r.kind)==='vk_account').map(r=>({id:r.id,data:r.data}));
+  const vkSources:VkSourceRecord[]=records.filter(r=>String(r.kind)==='vk_source').map(r=>({id:r.id,data:r.data}));
+  // A Telegram-only workspace keeps its Leads view exactly as before: no badge, no platform filter.
+  const hasVk=vkAccounts.length>0||vkSources.length>0||records.some(r=>r.kind==='lead'&&leadPlatform(r.data)==='vk');
   const displayed=records.filter(r=>{
     if(r.kind!==(currentKind||'lead'))return false;
     if(view==='Переписки'&&!r.data.draft&&!r.data.conversationOpen)return false;
     const leadTabs=currentKind==='lead'&&(view==='Лиды'||view==='Переписки');
     if(leadTabs){
       if(!leadVisibleInTab(r.data,filter))return false;
-      if(view==='Лиды'&&leadGroupFilter!=='all'&&r.data.groupId!==leadGroupFilter)return false;
+      if(view==='Лиды'&&!matchesLeadSource(r.data,leadGroupFilter))return false;
+      if(view==='Лиды'&&!matchesLeadPlatform(r.data,leadPlatformFilter))return false;
     }else if(filter!=='all'&&filter!=='viewed'){
       if(currentKind==='lead'){
         if(filter==='hot'||filter==='warm'||filter==='cold'){
@@ -2686,7 +2696,7 @@ function WorkspaceHome(){
     types:listSortTypes,
     defaultKey:currentKind==='lead'?'created':currentKind==='account'?'updated':null,
     defaultDir:currentKind==='lead'||currentKind==='account'?'desc':'asc',
-    resetKey:`${view}-${filter}-${groupFilter}-${leadGroupFilter}-${currentKind||''}`,
+    resetKey:`${view}-${filter}-${groupFilter}-${leadGroupFilter}-${leadPlatformFilter}-${currentKind||''}`,
   });
 
   const change=(key:string,value:string)=>setForm((f:any)=>({...f,[key]:value}));
@@ -2797,6 +2807,9 @@ function WorkspaceHome(){
       <button className="text-left flex-1 min-w-0" onClick={()=>openLead(r)}>
         <div className="flex gap-3 items-center flex-wrap">
           <span className="row-title">{r.data.name}</span>
+          {hasVk&&(leadPlatform(r.data)==='vk'
+            ?<span className="badge platform-vk">VK</span>
+            :<span className="badge neutral">Telegram</span>)}
           {tempBadge(r.data.temperature)}
           {statusBadge(r.data.status)}
           {r.data.needsManager&&<span className="badge warning">Клиент ответил</span>}
@@ -3323,14 +3336,36 @@ function WorkspaceHome(){
                     {autoRescanRunning?'Сбор…':'Собрать лиды'}
                   </Button>
                   <Select value={leadGroupFilter} onValueChange={setLeadGroupFilter}>
-                    <SelectTrigger className="w-[220px]"><SelectValue placeholder="Группа"/></SelectTrigger>
+                    <SelectTrigger className="w-[220px]" aria-label="Источник"><SelectValue placeholder="Группа"/></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="all">Все группы</SelectItem>
-                      {list('group').map(g=>(
+                      <SelectItem value="all">{hasVk?'Все источники':'Все группы'}</SelectItem>
+                      {leadPlatformFilter!=='vk'&&list('group').map(g=>(
                         <SelectItem key={g.id} value={g.id}>{g.data.name}</SelectItem>
+                      ))}
+                      {leadPlatformFilter!=='telegram'&&vkSources.map(s=>(
+                        <SelectItem key={s.id} value={s.id}>VK · {s.data.title||'Источник VK'}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
+                  {hasVk&&(
+                    <Select
+                      value={leadPlatformFilter}
+                      onValueChange={v=>{
+                        const next=v as LeadPlatformFilter;
+                        setLeadPlatformFilter(next);
+                        // A source of the other platform would hide every lead: drop it.
+                        const isVkSource=vkSources.some(s=>s.id===leadGroupFilter);
+                        if(leadGroupFilter!=='all'&&((next==='vk'&&!isVkSource)||(next==='telegram'&&isVkSource)))setLeadGroupFilter('all');
+                      }}
+                    >
+                      <SelectTrigger className="w-[160px]" aria-label="Площадка"><SelectValue/></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Все площадки</SelectItem>
+                        <SelectItem value="telegram">Telegram</SelectItem>
+                        <SelectItem value="vk">VK</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  )}
                   <Tabs value={filter} onValueChange={(v)=>setFilter(v)}>
                     <TabsList>
                       <TabsTrigger value="all">Все</TabsTrigger>
@@ -3629,6 +3664,17 @@ function WorkspaceHome(){
                   <section className="panel groups-list-panel">
                     {renderConnectedGroups(sortedList)}
                   </section>
+
+                  <VkSourcesPanel
+                    sources={vkSources}
+                    canScan={vkPoolCanScan(vkAccounts)}
+                    hasAccounts={vkAccounts.length>0}
+                    loading={loading}
+                    run={api}
+                    onChanged={refresh}
+                    onOpenAccounts={()=>navigate('Аккаунты')}
+                    onOpenLog={(title,log)=>setTaskLog({title,log})}
+                  />
                 </div>
               ):displayed.length?(
                 <>
@@ -3874,6 +3920,17 @@ function WorkspaceHome(){
                 </Empty>
               )}
             </section>
+            {currentKind==='account'&&(
+              <VkAccountsPanel
+                accounts={vkAccounts}
+                proxies={list('proxy').map(p=>({id:p.id,label:proxyDisplayLabel(p.data),active:p.data.status==='active'}))}
+                searchCap={settings?.data.vkSearchDailyCap}
+                perProxyCap={Number(settings?.data.vkAccountsPerProxy)||3}
+                loading={loading}
+                run={api}
+                onChanged={refresh}
+              />
+            )}
           </>}
 
           {view==='AI-ассистент'&&(
@@ -4951,7 +5008,7 @@ function WorkspaceHome(){
               {detail?.data.senderUsername?` · @${detail.data.senderUsername}`:''}
               {detail?.data.conversationOpen?' · переписка':''}
               {detail?.data.needsManager?' · нужен менеджер':''}
-              {' · '}живой чат
+              {' · '}{detail&&leadPlatform(detail.data)==='vk'?'VK':'живой чат'}
             </DialogDescription>
           </DialogHeader>
           <div className="chat-thread px-6 py-4 overflow-y-auto flex-1 min-h-[280px] max-h-[48vh]">
@@ -4992,6 +5049,27 @@ function WorkspaceHome(){
               </div>
             )}
           </div>
+          {detail&&leadPlatform(detail.data)==='vk'?(()=>{
+            const vkHref=safeVkHref(detail.data.url);
+            return (
+              <div className="chat-composer px-6 py-4 border-t border-[var(--spike-border)] space-y-3">
+                <div className="flex flex-wrap gap-2">
+                  {vkHref&&(
+                    <Button asChild>
+                      <a href={vkHref} target="_blank" rel="noopener noreferrer">Открыть в VK<ExternalLink size={15}/><span className="sr-only"> (откроется в новой вкладке)</span></a>
+                    </Button>
+                  )}
+                  <Button variant="ghost" onClick={()=>{open('lead',detail);setDetail(null)}}>Правки</Button>
+                  <Button variant="ghost" aria-label="Удалить лид" onClick={()=>{setDeleting(detail);setDetail(null)}}><Trash2 size={15}/></Button>
+                </div>
+                <p className="small-note">
+                  {vkHref
+                    ?'Ответ в VK пишется вручную: откройте пост и ответьте со своего аккаунта.'
+                    :'Ссылка на пост не сохранилась — найдите его по тексту в источнике «'+String(detail.data.source||'VK')+'».'}
+                </p>
+              </div>
+            );
+          })():(
           <div className="chat-composer px-6 py-4 border-t border-[var(--spike-border)] space-y-3">
             <Tabs value={chatMode} onValueChange={v=>setChatMode(v as 'dm'|'chat')}>
               <TabsList>
@@ -5025,6 +5103,7 @@ function WorkspaceHome(){
                 : 'Сообщение уйдёт в группу ответом на исходный пост.'}
             </p>
           </div>
+          )}
         </DialogContent>
       </Dialog>
 
