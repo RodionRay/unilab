@@ -151,7 +151,9 @@ function ChatListView(props: ChatListProps) {
     <section className="chat-list" aria-label="Диалоги">
       <header className="chat-list-head">
         <div className="chat-list-titlebar">
-          <h1 className="chat-list-title">Переписки</h1>
+          <h1 className="chat-list-title" tabIndex={-1}>
+            Переписки
+          </h1>
           {loading ? null : <span className="chat-list-total">{counts.fresh + counts.viewed}</span>}
           <Button variant="outline" size="sm" className="chat-add-lead" disabled={readOnly} onClick={props.onAddLead}>
             <Plus aria-hidden />

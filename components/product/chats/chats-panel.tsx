@@ -142,13 +142,22 @@ export function ChatsPanel(props: ChatsPanelProps) {
 
   // Narrow layouts: focus the chat title on open, the opened row on back.
   const lastOpenedId = useRef<string | null>(null);
+  const lastOpenedIndex = useRef(0);
+  useEffect(() => {
+    if (opened) lastOpenedIndex.current = opened.index;
+  }, [opened]);
   useEffect(() => {
     if (!narrow) return;
     if (activeId) {
       lastOpenedId.current = activeId;
       headingRef.current?.focus();
     } else if (lastOpenedId.current) {
-      rootRef.current?.querySelector<HTMLElement>(`[data-chat-item][data-lead-id="${CSS.escape(lastOpenedId.current)}"]`)?.focus();
+      // the opened row may have moved to «Просмотренные»: fall back to the row now in its slot, then the title
+      const root = rootRef.current;
+      const rows = Array.from(root?.querySelectorAll<HTMLElement>("[data-chat-item]") ?? []);
+      const same = rows.find((r) => r.dataset.leadId === lastOpenedId.current);
+      const slot = rows[Math.min(Math.max(lastOpenedIndex.current, 0), rows.length - 1)];
+      (same ?? slot ?? root?.querySelector<HTMLElement>(".chat-list-title"))?.focus();
     }
   }, [activeId, narrow]);
 
