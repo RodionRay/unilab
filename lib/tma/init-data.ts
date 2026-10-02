@@ -16,7 +16,11 @@ export type InitDataResult =
   | { ok: true; user: TmaTelegramUser; authDate: number }
   | { ok: false; code: "invalid_init_data" | "init_data_expired" };
 
-const DEFAULT_MAX_AGE_SEC = 3600;
+/**
+ * 10 min: initData is replayable until it ages out (security L4); the client exchanges it once on launch and
+ * reopening from the bot brings a fresh one, so a short window costs members nothing.
+ */
+const DEFAULT_MAX_AGE_SEC = 600;
 /** Clock skew tolerated for an auth_date in the future. */
 const MAX_FUTURE_SKEW_SEC = 60;
 const HASH_RE = /^[0-9a-f]{64}$/;
@@ -25,7 +29,7 @@ const BOT_ID_RE = /^(\d{1,20}):/;
 const INVALID: InitDataResult = { ok: false, code: "invalid_init_data" };
 const EXPIRED: InitDataResult = { ok: false, code: "init_data_expired" };
 
-/** `TMA_INITDATA_MAX_AGE` (seconds, positive integer), default 3600. */
+/** `TMA_INITDATA_MAX_AGE` (seconds, positive integer), default 600. */
 export function initDataMaxAgeSec(): number {
   const configured = Number(readEnv("TMA_INITDATA_MAX_AGE"));
   return Number.isInteger(configured) && configured > 0 ? configured : DEFAULT_MAX_AGE_SEC;

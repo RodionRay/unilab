@@ -75,8 +75,8 @@ describe('REQ-A1 · initData HMAC (WebAppData)',()=>{
 
 describe('REQ-A2 · свежесть auth_date',()=>{
  it('ровно max age — ещё принимается, на секунду старше — init_data_expired',async()=>{
-  const edge=signInitData(launchFields(USER,NOW-3600),TMA_BOT_TOKEN);
-  const old=signInitData(launchFields(USER,NOW-3601),TMA_BOT_TOKEN);
+  const edge=signInitData(launchFields(USER,NOW-600),TMA_BOT_TOKEN);
+  const old=signInitData(launchFields(USER,NOW-601),TMA_BOT_TOKEN);
 
   expect((await verifyInitData(edge,TMA_BOT_TOKEN,{nowSec:NOW})).ok).toBe(true);
   expect(await verifyInitData(old,TMA_BOT_TOKEN,{nowSec:NOW})).toEqual({ok:false,code:'init_data_expired'});
@@ -96,11 +96,11 @@ describe('REQ-A2 · свежесть auth_date',()=>{
   expect(await verifyInitData(old,TMA_BOT_TOKEN,{nowSec:NOW})).toEqual({ok:false,code:'invalid_init_data'});
  });
 
- it('TMA_INITDATA_MAX_AGE переопределяет окно; мусор → 3600',()=>{
-  vi.stubEnv('TMA_INITDATA_MAX_AGE','600');
-  expect(initDataMaxAgeSec()).toBe(600);
+ it('TMA_INITDATA_MAX_AGE переопределяет окно; мусор → 600 (по умолчанию)',()=>{
+  vi.stubEnv('TMA_INITDATA_MAX_AGE','300');
+  expect(initDataMaxAgeSec()).toBe(300);
   vi.stubEnv('TMA_INITDATA_MAX_AGE','abc');
-  expect(initDataMaxAgeSec()).toBe(3600);
+  expect(initDataMaxAgeSec()).toBe(600);
  });
 });
 

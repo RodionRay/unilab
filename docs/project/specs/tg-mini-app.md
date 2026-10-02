@@ -77,7 +77,8 @@ Source: read-only scout of origin/dev @671338d + Telegram docs (core.telegram.or
 ### Auth & tenancy (security-critical)
 - REQ-A1 When `POST /api/tma/session` receives initData, the system shall verify the HMAC with the bot token of the
   workspace named by `wsKey`, using constant-time comparison, and reject on mismatch with 401 and no detail.
-- REQ-A2 If `auth_date` is older than `TMA_INITDATA_MAX_AGE` (default 3600 s) or more than 60 s in the future, the
+- REQ-A2 If `auth_date` is older than `TMA_INITDATA_MAX_AGE` (default 600 s; the client exchanges once per launch,
+  reopening from the bot brings fresh initData) or more than 60 s in the future, the
   system shall reject the exchange with 401.
 - REQ-A3 If the workspace has no bot token, an unknown `wsKey`, or the verified `user.id` is not linked to an active
   member of that workspace, the system shall return 403 with a neutral message and the bot's link instructions.
@@ -150,7 +151,7 @@ Source: read-only scout of origin/dev @671338d + Telegram docs (core.telegram.or
 | A4 | Launch via Bot API only (menu button + inline web_app), no BotFather Main Mini App | per-bot manual step doesn't scale; high | add startapp links later |
 | A5 | No public prod; testing = stand + HTTPS tunnel + a dedicated test bot | DECIDED D4 | — |
 | A6 | MVP excludes settings, staff, proxies, groups CRUD, deletes, AI assistant chat | DECIDED D2 | — |
-| A7 | `TMA_INITDATA_MAX_AGE` 1 h, bearer 1 h, reopen to renew | Telegram common practice; medium | config value |
+| A7 | `TMA_INITDATA_MAX_AGE` 10 min (security L4), bearer 1 h, reopen to renew | Telegram common practice; medium | config value |
 | A8 | Feed endpoints new (`/api/tma/*`), actions reuse `R::POST` handlers | avoid duplicating 5000-line logic; high | — |
 | A9 | Bot token stays plaintext in settings (move to sealed `secret` = separate task) | out of scope; flagged risk | security-reviewer may block |
 | A10 | Visual language: Telegram theme params + UniLab accent | DECIDED D5 | — |
