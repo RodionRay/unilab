@@ -84,6 +84,34 @@ describe('«Лиды» · set_lead_triage (API)',()=>{
     expect(readRecord(LEAD_A).status).toBe('new');
   });
 
+  it('сотрудник без доступа к лидам и чатам — 403; с одним доступом «Переписки» — можно',async()=>{
+    const member=(userId:string,access:Record<string,boolean>)=>testDb().sqlite
+      .prepare('INSERT INTO workspace_members(id,workspace_owner_id,user_id,role,access,created) VALUES(?,?,?,?,?,?)')
+      .run(crypto.randomUUID(),OWNER,userId,'manager',JSON.stringify({...ALL_CRM_ACCESS,leads:false,chats:false,...access}),new Date().toISOString());
+    member('no-leads',{});
+    member('chats-only',{chats:true});
+
+    login('no-leads');
+    expect((await triage([LEAD_A],'lead')).status).toBe(403);
+    expect(readRecord(LEAD_A).status).toBe('new');
+
+    login('chats-only');
+    expect((await triage([LEAD_A],'lead')).status).toBe(200);
+    expect(readRecord(LEAD_A).status).toBe('working');
+  });
+
+  it('пачка на 250 лидов (несколько SQL-кусков): всё перенесено, остальные поля целы',async()=>{
+    const ids=Array.from({length:250},(_,i)=>`f0000000-0000-4000-8000-${String(i).padStart(12,'0')}`);
+    for(const id of ids)addLead(id,{replies:[{text:'привет',from:'us'}],draft:'черновик'});
+
+    const res=await triage(ids,'rejected');
+
+    expect(await res.json()).toMatchObject({changed:250,missing:[]});
+    const n=testDb().sqlite.prepare("SELECT count(*) AS n FROM records WHERE kind='lead' AND json_extract(data,'$.status')='archived'").get() as {n:number};
+    expect(n.n).toBe(250);
+    expect(readRecord(ids[249])).toMatchObject({status:'archived',draft:'черновик',viewed:true,replies:[{text:'привет',from:'us'}]});
+  });
+
   it('наблюдатель получает 403, лид остаётся в «Новых»',async()=>{
     testDb().sqlite.prepare('INSERT INTO workspace_members(id,workspace_owner_id,user_id,role,access,created) VALUES(?,?,?,?,?,?)')
       .run(crypto.randomUUID(),OWNER,'viewer-1','viewer',JSON.stringify({...ALL_CRM_ACCESS,staff:false}),new Date().toISOString());

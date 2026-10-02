@@ -29,7 +29,7 @@ import {Empty,EmptyHeader,EmptyTitle,EmptyDescription} from '@/components/ui/emp
 import {Toaster} from 'sonner';
 import {toast} from '@/lib/workspace-notifications';
 import {markLeadOpened} from '@/lib/lead-conversation';
-import {LEAD_TRIAGE_STATUS,LEAD_TRIAGE_TAB_LABELS,leadInTriageTab,leadTriage,leadUnread,leadsLinkTarget,triageCounts,type LeadTemperatureFilter,type LeadTriage,type LeadTriageTab} from '@/lib/lead-triage';
+import {LEAD_TRIAGE_STATUS,LEAD_TRIAGE_TAB_LABELS,chunkIds,planTriageUndo,leadInTriageTab,leadTriage,leadUnread,leadsLinkTarget,triageCounts,type LeadTemperatureFilter,type LeadTriage,type LeadTriageTab} from '@/lib/lead-triage';
 import {LeadBulkBar,LeadTriageActions,LeadTriageTabs} from '@/components/product/lead-triage';
 import {SidebarProvider,Sidebar,SidebarHeader,SidebarContent,SidebarFooter,SidebarInset,SidebarTrigger} from '@/components/ui/sidebar';
 import {parseProxyLine,parseProxyLines,type ProxyProtocol} from '@/lib/proxy-line';
@@ -1547,28 +1547,28 @@ function WorkspaceHome(){
   }
 
   /**
-   * Ручной разбор лидов (set_lead_triage): оптимистично, откат при ошибке, «Отменить» в тосте
-   * возвращает каждому лиду прежний статус. Открытие лида статус не меняет.
+   * Ручной разбор лидов (set_lead_triage): оптимистично, при ошибке откат и перечитывание, «Отменить» в тосте
+   * возвращает каждому лиду прежний статус (если его не перенесли ещё раз). Открытие лида статус не меняет.
    */
   async function moveLeads(ids:string[],to:LeadTriage){
-    const before=new Map(records.filter(r=>r.kind==='lead'&&ids.includes(r.id)).map(r=>[r.id,leadTriage(r.data)]));
+    const before=new Map(records.filter(r=>r.kind==='lead'&&ids.includes(r.id)).map(r=>[r.id,leadTriage(r.data)] as const));
     const targets=[...before].filter(([,t])=>t!==to).map(([id])=>id);
     if(!targets.length)return;
     setLeadSelected(prev=>prev.filter(id=>!targets.includes(id)));
     if(!await commitTriage(targets,to,id=>before.get(id)||'new'))return;
     const what=targets.length===1?'Лид':`Лидов: ${targets.length}`;
     toast.success(`${what} → «${LEAD_TRIAGE_TAB_LABELS[to]}»`,{
+      position:'bottom-center',
+      duration:8000,
       action:{label:'Отменить',onClick:()=>{
-        // Не читает records: тост живёт дольше рендера, прежние статусы взяты из before
-        for(const back of ['new','lead','rejected'] as LeadTriage[]){
-          const group=targets.filter(id=>before.get(id)===back);
-          if(group.length)void commitTriage(group,back,()=>to);
-        }
+        // Тост живёт дольше рендера: текущее состояние берём из recordsRef, прежнее — из before
+        const current=(id:string)=>{const r=recordsRef.current.find(x=>x.id===id);return r?leadTriage(r.data):undefined};
+        for(const step of planTriageUndo(targets,before,to,current))void commitTriage(step.ids,step.to,()=>to);
       }},
     });
   }
 
-  /** Оптимистичная запись разбора; при ошибке откат к `rollback(id)`. */
+  /** Оптимистичная запись разбора пачками ≤ MAX_TRIAGE_IDS; при ошибке откат к `rollback(id)` и перечитывание. */
   async function commitTriage(ids:string[],to:LeadTriage,rollback:(id:string)=>LeadTriage){
     const patchStatus=(pick:(id:string)=>string|undefined)=>{
       setRecords(prev=>prev.map(r=>{const st=pick(r.id);return st?{...r,data:{...r.data,status:st}}:r}));
@@ -1576,12 +1576,18 @@ function WorkspaceHome(){
     };
     patchStatus(id=>ids.includes(id)?LEAD_TRIAGE_STATUS[to]:undefined);
     try{
-      const r=await api({action:'set_lead_triage',ids,triage:to});
-      if(Array.isArray(r.missing)&&r.missing.length)await refresh();
+      let missing=0;
+      for(const chunk of chunkIds(ids)){
+        const r=await api({action:'set_lead_triage',ids:chunk,triage:to});
+        missing+=Array.isArray(r.missing)?r.missing.length:0;
+      }
+      if(missing)await refresh();
       return true;
     }catch(e){
       patchStatus(id=>ids.includes(id)?LEAD_TRIAGE_STATUS[rollback(id)]:undefined);
       toast.error(`Не удалось перенести: ${(e as Error).message}`);
+      // Часть пачек могла записаться — сверяемся с сервером
+      try{await refresh()}catch{/* */}
       return false;
     }
   }
@@ -2669,7 +2675,7 @@ function WorkspaceHome(){
   });
 
   const leadScope=view==='Лиды'
-    ?list('lead').filter(r=>(leadGroupFilter==='all'||r.data.groupId===leadGroupFilter)&&leadInTriageTab(r.data,'all',leadTemp))
+    ?list('lead').filter(r=>(leadGroupFilter==='all'||r.data.groupId===leadGroupFilter)&&leadInTriageTab(r.data,'all',leadTemp)&&JSON.stringify(r.data).toLowerCase().includes(query.toLowerCase()))
     :[];
   const leadTabCounts=triageCounts(leadScope.map(r=>r.data));
 

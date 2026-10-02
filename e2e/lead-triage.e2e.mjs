@@ -111,6 +111,33 @@ async function overview(page){
   log('REQ-8 overview ok: Новые 2 · Лиды 3 · «Все лиды» → tab «Лиды»');
 }
 
+/** 390 px: card actions, bulk bar and the undo toast are reachable on a phone (after the desktop journey). */
+async function mobile(page){
+  const c=await counts(page);
+  const first=page.getByTestId('lead-row').first();
+  await first.getByRole('button').first().click();
+  const dlg=page.getByRole('dialog');
+  await dlg.waitFor();
+  await page.waitForTimeout(500);
+  await page.screenshot({path:`${out}/390-02-card.png`});
+  await page.keyboard.press('Escape');
+  await dlg.waitFor({state:'hidden'});
+  await first.getByRole('checkbox').click();
+  await expect(page.getByTestId('lead-bulk-bar')).toContainText('Выбрано 1');
+  await page.getByTestId('lead-bulk-bar').scrollIntoViewIfNeeded();
+  await page.screenshot({path:`${out}/390-03-bulk.png`});
+  await page.getByTestId('lead-bulk-rejected').click();
+  await expect.poll(()=>counts(page)).toEqual({...c,new:c.new-1,rejected:c.rejected+1});
+  const undo=page.getByRole('button',{name:'Отменить'}).first();
+  await undo.waitFor();
+  await page.waitForTimeout(600);
+  await page.screenshot({path:`${out}/390-04-undo-toast.png`});
+  await undo.click({trial:true});
+  await undo.click();
+  await expect.poll(()=>counts(page)).toEqual(c);
+  log('390 ok: card, bulk «Не подходит», undo toast reachable');
+}
+
 try{
   const browser=await chromium.launch();
   for(const vp of [{w:1280,h:860,n:'1280'},{w:390,h:844,n:'390'}]){
@@ -122,10 +149,14 @@ try{
     page.on('pageerror',e=>errors.push(String(e)));
     await page.goto(base+'/app?view=leads');
     await page.getByTestId('lead-tab-new').waitFor();
+    await page.getByTestId('lead-row').first().waitFor();
+    await page.waitForTimeout(400);
     await page.screenshot({path:`${out}/${vp.n}-01-new-tab.png`});
     if(vp.n==='1280'){
       await journey(page);
       await overview(page);
+    }else{
+      await mobile(page);
     }
     if(errors.length)throw new Error('page errors: '+errors.join(' | '));
     await ctx.close();

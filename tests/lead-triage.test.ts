@@ -5,6 +5,8 @@ import {
   leadUnread,
   leadsLinkTarget,
   triageActionsFor,
+  planTriageUndo,
+  chunkIds,
   triageCounts,
 } from '@/lib/lead-triage';
 import {markLeadOpened} from '@/lib/lead-conversation';
@@ -77,5 +79,29 @@ describe('REQ-8 ссылки из обзора',()=>{
     expect(leadsLinkTarget('viewed')).toEqual({tab:'new',temperature:'all'});
     expect(leadsLinkTarget('working')).toEqual({tab:'lead',temperature:'all'});
     expect(leadsLinkTarget('archived')).toEqual({tab:'rejected',temperature:'all'});
+  });
+});
+
+describe('REQ-5 отмена и пачки',()=>{
+  it('отмена возвращает каждого в прежнюю вкладку, если его не перенесли ещё раз',()=>{
+    const before=new Map<string,'new'|'lead'|'rejected'>([['a','new'],['b','lead'],['c','new']]);
+    const now:Record<string,'new'|'lead'|'rejected'>={a:'rejected',b:'rejected',c:'lead'};
+
+    const plan=planTriageUndo(['a','b','c'],before,'rejected',id=>now[id]);
+
+    expect(plan).toEqual([{to:'new',ids:['a']},{to:'lead',ids:['b']}]);
+  });
+
+  it('удалённый лид в отмену не попадает',()=>{
+    expect(planTriageUndo(['x'],new Map([['x','new']]),'lead',()=>undefined)).toEqual([]);
+  });
+
+  it('выбор больше лимита режется на запросы по 500',()=>{
+    const ids=Array.from({length:1201},(_,i)=>String(i));
+
+    const chunks=chunkIds(ids);
+
+    expect(chunks.map(c=>c.length)).toEqual([500,500,201]);
+    expect(chunks.flat()).toEqual(ids);
   });
 });

@@ -11,8 +11,10 @@ export type LeadTemperatureFilter = "all" | "hot" | "warm" | "cold";
 
 export const LEAD_TRIAGES: readonly LeadTriage[] = ["new", "lead", "rejected"];
 export const LEAD_TRIAGE_TABS: readonly LeadTriageTab[] = ["new", "lead", "rejected", "all"];
-/** Bulk request cap for `set_lead_triage` (one D1 statement per lead). */
+/** Ids per `set_lead_triage` request; the client splits larger selections. */
 export const MAX_TRIAGE_IDS = 500;
+/** Ids per SQL statement inside `set_lead_triage` (2 statements per chunk, far below D1 bind/query limits). */
+export const TRIAGE_SQL_CHUNK = 100;
 
 export const LEAD_TRIAGE_STATUS: Readonly<Record<LeadTriage, LeadStatus>> = {
   new: "new",
@@ -81,4 +83,28 @@ export function leadsLinkTarget(filter: string | undefined): { tab: LeadTriageTa
 
 export function isLeadTriage(v: unknown): v is LeadTriage {
   return typeof v === "string" && (LEAD_TRIAGES as readonly string[]).includes(v);
+}
+
+/**
+ * Undo plan for a triage move: each lead goes back to its state before the move, but only while it is still
+ * where the move put it — a later decision on the same lead wins over an older toast.
+ */
+export function planTriageUndo(
+  moved: readonly string[],
+  before: ReadonlyMap<string, LeadTriage>,
+  movedTo: LeadTriage,
+  current: (id: string) => LeadTriage | undefined,
+): { to: LeadTriage; ids: string[] }[] {
+  const plan: { to: LeadTriage; ids: string[] }[] = [];
+  for (const to of LEAD_TRIAGES) {
+    const ids = moved.filter((id) => before.get(id) === to && current(id) === movedTo);
+    if (ids.length) plan.push({ to, ids });
+  }
+  return plan;
+}
+
+export function chunkIds(ids: readonly string[], size = MAX_TRIAGE_IDS): string[][] {
+  const out: string[][] = [];
+  for (let i = 0; i < ids.length; i += size) out.push(ids.slice(i, i + size));
+  return out;
 }

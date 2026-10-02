@@ -56,7 +56,7 @@ import {JOIN_GATE_ROTATE_WAIT_SEC,JOIN_PENDING_ERROR,audienceJoinGate,classifyCo
 import {authorizeWorkspaceAction,keepOwnerSecretsOnSave,visibleRecordsFor,type WorkspaceActor} from '@/lib/security/workspace-authz';
 import {ALL_CRM_ACCESS} from '@/lib/staff-types';
 import {INBOX_CURSOR_MARGIN_SEC,applySendOutcome,findSendBlock,leadReplies,markLeadOpened,mergeIncomingDm,nextInboxCursor,withPendingSend,type LeadData,type ReplyEntry,type SendOutcome} from '@/lib/lead-conversation';
-import {LEAD_TRIAGES,LEAD_TRIAGE_STATUS,MAX_TRIAGE_IDS,type LeadTriage} from '@/lib/lead-triage';
+import {LEAD_TRIAGES,LEAD_TRIAGE_STATUS,MAX_TRIAGE_IDS,TRIAGE_SQL_CHUNK,type LeadTriage} from '@/lib/lead-triage';
 import type {D1LikeDatabase} from '@/lib/db';
 import {env} from 'cloudflare:workers';
 import {z} from 'zod';
@@ -2677,20 +2677,26 @@ export async function POST(req:Request){const actor=await readActor();if(!actor)
   return done.result?reply({ok:true,already:true}):reply({ok:true,lead:done.lead});
  }
  if(b.action==='set_lead_triage'){
-  // Ручной разбор «Лидов» (lib/lead-triage.ts): меняется только status, повтор — no-op
-  const req=z.object({
+  // Ручной разбор «Лидов» (lib/lead-triage.ts): меняется только status, повтор — no-op.
+  // json_set правит одно поле атомарно; конкурентный mutateLead (CAS по data) увидит смену и перечитает.
+  const input=z.object({
    ids:z.array(z.string().uuid()).min(1).max(MAX_TRIAGE_IDS),
    triage:z.enum(LEAD_TRIAGES as [LeadTriage,...LeadTriage[]]),
   }).parse({ids:b.ids,triage:b.triage});
-  const status=LEAD_TRIAGE_STATUS[req.triage];
-  const missing:string[]=[];
+  const status=LEAD_TRIAGE_STATUS[input.triage];
+  const ids=[...new Set(input.ids)];
+  const found=new Set<string>();
   let changed=0;
-  for(const id of new Set(req.ids)){
-   const done=await mutateLead(db,owner,id,lead=>lead.status===status?{result:false}:{next:{...lead,status},result:true});
-   if(!done)missing.push(id);
-   else if(done.result)changed++;
+  for(let i=0;i<ids.length;i+=TRIAGE_SQL_CHUNK){
+   const chunk=ids.slice(i,i+TRIAGE_SQL_CHUNK);
+   const marks=chunk.map(()=>'?').join(',');
+   const rows=await db.prepare(`SELECT id FROM records WHERE owner=? AND kind='lead' AND id IN (${marks})`).bind(owner,...chunk).all();
+   for(const r of rows.results)found.add(String(r.id));
+   const upd=await db.prepare(`UPDATE records SET data=json_set(data,'$.status',?) WHERE owner=? AND kind='lead' AND id IN (${marks}) AND coalesce(json_extract(data,'$.status'),'') IS NOT ?`)
+    .bind(status,owner,...chunk,status).run();
+   changed+=upd.meta.changes;
   }
-  return reply({ok:true,status,changed,missing});
+  return reply({ok:true,status,changed,missing:ids.filter(id=>!found.has(id))});
  }
  if(b.action==='rebuild_product'){
   const config:any=await db.prepare('SELECT * FROM records WHERE owner=? AND kind=? LIMIT 1').bind(owner,'settings').first();
