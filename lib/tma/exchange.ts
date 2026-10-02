@@ -23,7 +23,8 @@ export const TMA_ERROR_TEXT: Readonly<Record<TmaErrorCode, string>> = {
 
 /**
  * REQ-A8: POST /api/tma/session per client IP (every attempt, counted before any HMAC work) and per
- * workspace key (failed exchanges only, so members' own launches never lock the others out).
+ * workspace key (only failures behind a valid HMAC, so neither members' own launches nor a stranger's
+ * junk/forged initData lock the members out).
  */
 export const TMA_SESSION_RATE_LIMITS = {
   perIp: { name: "tma-session-ip", limit: 30, windowSec: 900 },
@@ -80,12 +81,15 @@ export async function exchangeInitData(db: D1LikeDatabase, req: SessionRequest):
   };
 }
 
-/** exchangeInitData behind the per-wsKey limit: blocked once the window holds too many failed exchanges. */
+/** Failures that passed the bot-token HMAC: a stranger without the token cannot produce them. */
+const AUTHENTIC_FAILURES: ReadonlySet<TmaErrorCode> = new Set<TmaErrorCode>(["not_linked", "init_data_expired"]);
+
+/** exchangeInitData behind the per-wsKey limit: blocked once the window holds too many authentic failures. */
 export async function exchangeWithinWsKeyLimit(db: D1LikeDatabase, req: SessionRequest, nowMs = Date.now()): Promise<ExchangeResult> {
   const rule = TMA_SESSION_RATE_LIMITS.failedPerWsKey;
   const room = await peekRateLimit(rule, req.wsKey, nowMs);
   if (!room.allowed) return { ok: false, status: 429, code: "rate_limited", retryAfterSec: room.retryAfterSec };
   const result = await exchangeInitData(db, req);
-  if (!result.ok) await consumeRateLimit(rule, req.wsKey, nowMs);
+  if (!result.ok && AUTHENTIC_FAILURES.has(result.code)) await consumeRateLimit(rule, req.wsKey, nowMs);
   return result;
 }

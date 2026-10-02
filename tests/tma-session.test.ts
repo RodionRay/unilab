@@ -145,12 +145,14 @@ describe('POST /api/tma/session',()=>{
   expect(last?.json.code).toBe('rate_limited');
  });
 
- it('REQ-A8: лимит по wsKey держит и при смене IP',async()=>{
+ it('REQ-A8: мусор/поддельный HMAC со многих IP не закрывает wsKey привязанному (только лимит по IP)',async()=>{
+  await linkTelegram(OWNER,TG);
   const key=await wsKeyOf();
-  let last:Response|null=null;
-  for(let i=0;i<301;i++)last=(await exchange({wsKey:key,initData:'x=1'},`198.51.100.${i%250}`)).res;
+  for(let i=0;i<301;i++)await exchange({wsKey:key,initData:i%2?'x=1':initDataFor(TG+1,'1:forged')},`198.51.100.${i%250}`);
 
-  expect(last?.status).toBe(429);
+  const after=await exchange({wsKey:key,initData:initDataFor(TG)},'192.0.2.1');
+
+  expect(after.res.status).toBe(200);
  });
 
  it('REQ-A8: удачные обмены привязанных сотрудников не тратят лимит wsKey',async()=>{
@@ -163,10 +165,10 @@ describe('POST /api/tma/session',()=>{
   expect(after.res.status).toBe(200);
  });
 
- it('REQ-A8: после лимита неудачных обменов wsKey закрыт и для привязанного',async()=>{
+ it('REQ-A8: после лимита HMAC-валидных неудачных обменов (not_linked) wsKey закрыт и при смене IP',async()=>{
   await linkTelegram(OWNER,TG);
   const key=await wsKeyOf();
-  for(let i=0;i<300;i++)await exchange({wsKey:key,initData:'x=1'},`198.51.100.${i%250}`);
+  for(let i=0;i<300;i++)await exchange({wsKey:key,initData:initDataFor(TG+1)},`198.51.100.${i%250}`);
 
   const after=await exchange({wsKey:key,initData:initDataFor(TG)},'192.0.2.1');
 
