@@ -1,4 +1,7 @@
-/** Lead list tabs in the CRM (app/app/page.tsx «Лиды» / «Переписки»). */
+/**
+ * Read/unread folders of «Переписки» (app/app/page.tsx). The «Лиды» page uses manual triage instead
+ * (lib/lead-triage.ts, superseding REQ-L3 of docs/project/specs/mvp-bugfix.md).
+ */
 
 export type LeadTabData = {
   status?: string;

@@ -31,6 +31,8 @@ import {Empty,EmptyHeader,EmptyTitle,EmptyDescription} from '@/components/ui/emp
 import {Toaster} from 'sonner';
 import {toast} from '@/lib/workspace-notifications';
 import {markLeadOpened} from '@/lib/lead-conversation';
+import {LEAD_TRIAGE_STATUS,LEAD_TRIAGE_TAB_LABELS,chunkIds,planTriageUndo,leadInTriageTab,leadTriage,leadUnread,leadsLinkTarget,triageCounts,type LeadTemperatureFilter,type LeadTriage,type LeadTriageTab} from '@/lib/lead-triage';
+import {LeadBulkBar,LeadTriageActions,LeadTriageTabs} from '@/components/product/lead-triage';
 import {SidebarProvider,Sidebar,SidebarHeader,SidebarContent,SidebarFooter,SidebarInset,SidebarTrigger} from '@/components/ui/sidebar';
 import {parseProxyLine,parseProxyLines,type ProxyProtocol} from '@/lib/proxy-line';
 import {accountPhoneKey,canonicalizeTgUrl,duplicateReason,findDuplicate,proxyIdentityKey,telegramEntityKey} from '@/lib/record-identity';
@@ -143,7 +145,7 @@ AI будет использовать этот текст для отбора �
   invite_task:{...DEFAULT_INVITE_TASK},
   mailing_task:{...DEFAULT_MAILING_TASK},
 };
-const viewCopy:Record<string,string>={'Обзор':'Лиды, чаты и статус подключений — всё важное на одном экране.','Уведомления':'Журнал событий кабинета: сканы, вступления, рассылки, ошибки и сохранения.','Лиды':'Новые запросы: просмотренные скрываются из общей сетки.','Переписки':'Ответы клиентов: откройте диалог — он уйдёт в «Просмотренные». Новый ответ клиента снова в «Новые».','Группы и каналы':'Поиск тем под AI → вступление → реальные лиды из чатов.','Сбор аудитории':'Аккаунт → источник → фильтры → база участников для инвайтинга.','Инвайтинг':'Приглашение собранной аудитории в вашу группу: обычный и продвинутый режим.','Рассылка':'Личные сообщения базе или лидам: смешанные аккаунты, Spintax или уникальные AI-тексты, полный лог доставок.','Аккаунты':'Статусы, дневные лимиты, отлёжка, прокси и группы — всё по каждому аккаунту.','Прокси':'host:port:user:password — список или по одному.','AI-ассистент':'Ядро поиска лидов, продукт, плюс/минус слова, обучение и обход групп.','Сотрудники':'Роли, доступы к разделам CRM и приглашения коллег по ссылке.','Настройки':'Глубина скана, профиль кабинета и уведомления о лидах в Telegram-бота.'};
+const viewCopy:Record<string,string>={'Обзор':'Лиды, чаты и статус подключений — всё важное на одном экране.','Уведомления':'Журнал событий кабинета: сканы, вступления, рассылки, ошибки и сохранения.','Лиды':'Разбирайте вручную: «В лиды» или «Не подходит». Открытие лида его не переносит.','Переписки':'Ответы клиентов: откройте диалог — он уйдёт в «Просмотренные». Новый ответ клиента снова в «Новые».','Группы и каналы':'Поиск тем под AI → вступление → реальные лиды из чатов.','Сбор аудитории':'Аккаунт → источник → фильтры → база участников для инвайтинга.','Инвайтинг':'Приглашение собранной аудитории в вашу группу: обычный и продвинутый режим.','Рассылка':'Личные сообщения базе или лидам: смешанные аккаунты, Spintax или уникальные AI-тексты, полный лог доставок.','Аккаунты':'Статусы, дневные лимиты, отлёжка, прокси и группы — всё по каждому аккаунту.','Прокси':'host:port:user:password — список или по одному.','AI-ассистент':'Ядро поиска лидов, продукт, плюс/минус слова, обучение и обход групп.','Сотрудники':'Роли, доступы к разделам CRM и приглашения коллег по ссылке.','Настройки':'Глубина скана, профиль кабинета и уведомления о лидах в Telegram-бота.'};
 
 async function api(body?:unknown){
   const r=await fetch('/api/workspace',body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{cache:'no-store'});
@@ -371,8 +373,8 @@ function statusBadge(status:string,kind?:Kind){
     const tone=accountStatusTone(status==='active'?'active':status==='checking'?'setup':'inactive');
     return <span className={`badge ${tone==='default'?'':tone}`}>{label}</span>;
   }
-  if(status==='working')return <span className="badge success">В работе</span>;
-  if(status==='archived')return <span className="badge neutral">Архив</span>;
+  if(status==='working')return <span className="badge success">Лид</span>;
+  if(status==='archived')return <span className="badge neutral">Отклонён</span>;
   return <span className="badge">Новый</span>;
 }
 
@@ -482,6 +484,10 @@ function WorkspaceHome(){
   const [aiMeta,setAiMeta]=useState<{provider?:string;hasEnvKey?:boolean}|null>(null);
   const [lastLeadFunnel,setLastLeadFunnel]=useState<{worker?:number;core?:number;matched?:number;added?:number}|null>(null);
   const [leadGroupFilter,setLeadGroupFilter]=useState('all');
+  // «Лиды»: ручной разбор (lib/lead-triage.ts) — вкладка, температура, выбор строк
+  const [leadTab,setLeadTab]=useState<LeadTriageTab>('new');
+  const [leadTemp,setLeadTemp]=useState<LeadTemperatureFilter>('all');
+  const [leadSelected,setLeadSelected]=useState<string[]>([]);
   const [groupFilter,setGroupFilter]=useState<'all'|'need'|'joined'|'pending'|'error'>('all');
   const [groupSelected,setGroupSelected]=useState<string[]>([]);
   const [bulkAccountId,setBulkAccountId]=useState('');
@@ -682,11 +688,14 @@ function WorkspaceHome(){
     setForm(data);
     setFormError('');
   };
-  const goLeads=(opts?:{groupId?:string;filter?:string})=>{
+  const goLeads=(opts?:{groupId?:string;filter?:string;temperature?:LeadTemperatureFilter})=>{
     setView('Лиды');
     setQuery('');
     setLeadGroupFilter(opts?.groupId||'all');
-    setFilter(opts?.filter||'all');
+    const target=leadsLinkTarget(opts?.filter);
+    setLeadTab(target.tab);
+    setLeadTemp(opts?.temperature||target.temperature);
+    setLeadSelected([]);
   };
   const goChats=(filter:'all'|'need'|'joined'|'pending'|'error'='all')=>{
     setView('Группы и каналы');
@@ -723,11 +732,14 @@ function WorkspaceHome(){
   const list=(kind:Kind)=>records.filter(r=>r.kind===kind);
   const settings=list('settings')[0];
   const aiKeyReady=!!(settings?.hasSecret||aiMeta?.hasEnvKey);
-  const freshLeads=list('lead').filter(r=>!r.data.viewed);
-  const viewedLeads=list('lead').filter(r=>!!r.data.viewed);
+  const freshLeads=list('lead').filter(r=>leadTriage(r.data)==='new');
+  const unreadFreshLeads=freshLeads.filter(r=>leadUnread(r.data));
   const chatLeads=list('lead').filter(r=>(!!r.data.draft||!!r.data.conversationOpen));
   const freshChats=chatLeads.filter(r=>!r.data.viewed);
   const viewedChats=chatLeads.filter(r=>!!r.data.viewed);
+
+  /** Наблюдатель только читает: кнопки разбора неактивны (API ответит 403). */
+  const canEditLeads=!workspaceMeta||workspaceMeta.isOwner||workspaceMeta.role!=='viewer';
 
   const allowedNav=useMemo(()=>{
     if(!workspaceMeta||workspaceMeta.isOwner)return null;
@@ -765,7 +777,7 @@ function WorkspaceHome(){
     const proxies=list('proxy').filter(r=>r.data.status!=='active').length;
     const badges:Partial<Record<NavName,number>>={
       'Уведомления':notices.filter(n=>!n.read).length,
-      'Лиды':freshLeads.length,
+      'Лиды':unreadFreshLeads.length,
       'Переписки':needManager,
       'Группы и каналы':groups,
       'Сбор аудитории':audienceBusy,
@@ -778,7 +790,7 @@ function WorkspaceHome(){
     };
     return badges;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[records,freshLeads.length,aiKeyReady,notices,staffInvites.length]);
+  },[records,unreadFreshLeads.length,aiKeyReady,notices,staffInvites.length]);
 
   useEffect(()=>{
     const d=settings?.data||{};
@@ -1568,7 +1580,53 @@ function WorkspaceHome(){
       // Просмотр не блокируем, но и не показываем «просмотрено», если сервер не записал (403 у наблюдателя)
       setRecords(prev=>prev.map(r=>r.id===item.id?{...r,data:{...r.data,...before}}:r));
       setDetail(d=>d&&d.id===item.id?{...d,data:{...d.data,...before}}:d);
-      toast.error(`Отметка «просмотрено» не сохранена: ${(e as Error).message}`);
+      toast.error(`Отметка «прочитано» не сохранена: ${(e as Error).message}`);
+    }
+  }
+
+  /**
+   * Ручной разбор лидов (set_lead_triage): оптимистично, при ошибке откат и перечитывание, «Отменить» в тосте
+   * возвращает каждому лиду прежний статус (если его не перенесли ещё раз). Открытие лида статус не меняет.
+   */
+  async function moveLeads(ids:string[],to:LeadTriage){
+    const before=new Map(records.filter(r=>r.kind==='lead'&&ids.includes(r.id)).map(r=>[r.id,leadTriage(r.data)] as const));
+    const targets=[...before].filter(([,t])=>t!==to).map(([id])=>id);
+    if(!targets.length)return;
+    setLeadSelected(prev=>prev.filter(id=>!targets.includes(id)));
+    if(!await commitTriage(targets,to,id=>before.get(id)||'new'))return;
+    const what=targets.length===1?'Лид':`Лидов: ${targets.length}`;
+    toast.success(`${what} → «${LEAD_TRIAGE_TAB_LABELS[to]}»`,{
+      position:'bottom-center',
+      duration:8000,
+      action:{label:'Отменить',onClick:()=>{
+        // Тост живёт дольше рендера: текущее состояние берём из recordsRef, прежнее — из before
+        const current=(id:string)=>{const r=recordsRef.current.find(x=>x.id===id);return r?leadTriage(r.data):undefined};
+        for(const step of planTriageUndo(targets,before,to,current))void commitTriage(step.ids,step.to,()=>to);
+      }},
+    });
+  }
+
+  /** Оптимистичная запись разбора пачками ≤ MAX_TRIAGE_IDS; при ошибке откат к `rollback(id)` и перечитывание. */
+  async function commitTriage(ids:string[],to:LeadTriage,rollback:(id:string)=>LeadTriage){
+    const patchStatus=(pick:(id:string)=>string|undefined)=>{
+      setRecords(prev=>prev.map(r=>{const st=pick(r.id);return st?{...r,data:{...r.data,status:st}}:r}));
+      setDetail(d=>{const st=d?pick(d.id):undefined;return d&&st?{...d,data:{...d.data,status:st}}:d});
+    };
+    patchStatus(id=>ids.includes(id)?LEAD_TRIAGE_STATUS[to]:undefined);
+    try{
+      let missing=0;
+      for(const chunk of chunkIds(ids)){
+        const r=await api({action:'set_lead_triage',ids:chunk,triage:to});
+        missing+=Array.isArray(r.missing)?r.missing.length:0;
+      }
+      if(missing)await refresh();
+      return true;
+    }catch(e){
+      patchStatus(id=>ids.includes(id)?LEAD_TRIAGE_STATUS[rollback(id)]:undefined);
+      toast.error(`Не удалось перенести: ${(e as Error).message}`);
+      // Часть пачек могла записаться — сверяемся с сервером
+      try{await refresh()}catch{/* */}
+      return false;
     }
   }
 
@@ -2636,9 +2694,11 @@ function WorkspaceHome(){
     if(r.kind!==(currentKind||'lead'))return false;
     if(view==='Переписки'&&!r.data.draft&&!r.data.conversationOpen)return false;
     const leadTabs=currentKind==='lead'&&(view==='Лиды'||view==='Переписки');
-    if(leadTabs){
+    if(view==='Лиды'&&currentKind==='lead'){
+      if(!leadInTriageTab(r.data,leadTab,leadTemp))return false;
+      if(leadGroupFilter!=='all'&&r.data.groupId!==leadGroupFilter)return false;
+    }else if(leadTabs){
       if(!leadVisibleInTab(r.data,filter))return false;
-      if(view==='Лиды'&&leadGroupFilter!=='all'&&r.data.groupId!==leadGroupFilter)return false;
     }else if(filter!=='all'&&filter!=='viewed'){
       if(currentKind==='lead'){
         if(filter==='hot'||filter==='warm'||filter==='cold'){
@@ -2651,6 +2711,11 @@ function WorkspaceHome(){
     }
     return JSON.stringify(r.data).toLowerCase().includes(query.toLowerCase());
   });
+
+  const leadScope=view==='Лиды'
+    ?list('lead').filter(r=>(leadGroupFilter==='all'||r.data.groupId===leadGroupFilter)&&leadInTriageTab(r.data,'all',leadTemp)&&JSON.stringify(r.data).toLowerCase().includes(query.toLowerCase()))
+    :[];
+  const leadTabCounts=triageCounts(leadScope.map(r=>r.data));
 
   const listRows=useMemo(()=>{
     if(currentKind==='group'){
@@ -2724,7 +2789,7 @@ function WorkspaceHome(){
     types:listSortTypes,
     defaultKey:currentKind==='lead'?'created':currentKind==='account'?'updated':null,
     defaultDir:currentKind==='lead'||currentKind==='account'?'desc':'asc',
-    resetKey:`${view}-${filter}-${groupFilter}-${leadGroupFilter}-${currentKind||''}`,
+    resetKey:`${view}-${filter}-${groupFilter}-${leadGroupFilter}-${leadTab}-${leadTemp}-${currentKind||''}`,
   });
 
   const change=(key:string,value:string)=>setForm((f:any)=>({...f,[key]:value}));
@@ -2804,25 +2869,44 @@ function WorkspaceHome(){
         <EmptyTitle>
           {view==='Переписки'
             ?(filter==='viewed'?'Пока нет просмотренных диалогов':'Нет новых диалогов')
-            :'Пока нет подходящих запросов'}
+            :leadTabCounts.all===0?'Пока нет подходящих запросов'
+            :leadTab==='lead'?'В «Лидах» пока пусто'
+            :leadTab==='rejected'?'Отклонённых нет'
+            :`Нет лидов во вкладке «${LEAD_TRIAGE_TAB_LABELS[leadTab]}»`}
         </EmptyTitle>
         <EmptyDescription>
           {view==='Переписки'
             ?(filter==='viewed'
               ?'Откройте диалог во вкладке «Новые» — он появится здесь.'
               :'Когда клиент ответит или появится черновик — диалог будет здесь. Открытие переносит в «Просмотренные».')
-            :'Добавьте тематические группы или внесите первый лид вручную.'}
+            :leadTabCounts.all===0?'Добавьте тематические группы или внесите первый лид вручную.'
+            :leadTab==='lead'?'Откройте «Новые» и нажмите «В лиды» у подходящих запросов. Открытие лида его не переносит.'
+            :leadTab==='rejected'?'Сюда попадают лиды, отмеченные «Не подходит». Вернуть можно в любой момент.'
+            :'Смените температуру или группу в фильтрах.'}
         </EmptyDescription>
       </EmptyHeader>
-      {view!=='Переписки'&&(
+      {view!=='Переписки'&&leadTabCounts.all===0&&(
         <Button variant="outline" onClick={()=>open('lead')}><Plus size={16}/>Добавить лид</Button>
       )}
     </Empty>
   );
 
   const renderLeads=(items:RecordItem[])=>{
+    const triage=view==='Лиды';
+    const selectedHere=triage?items.filter(r=>leadSelected.includes(r.id)).map(r=>r.id):[];
     return items.length?(
     <>
+      {triage&&(
+        <LeadBulkBar
+          selected={selectedHere.length}
+          total={items.length}
+          tab={leadTab}
+          disabled={!canEditLeads}
+          onSelectAll={all=>setLeadSelected(all?items.map(r=>r.id):[])}
+          onClear={()=>setLeadSelected([])}
+          onMove={to=>void moveLeads(selectedHere,to)}
+        />
+      )}
       <div className="leads-list-cols">
         <SortHeaderButton columnKey="name" sortKey={sortKey} sortDir={sortDir} onSort={onSort}>Лид</SortHeaderButton>
         <SortHeaderButton columnKey="temperature" sortKey={sortKey} sortDir={sortDir} onSort={onSort}>Темп.</SortHeaderButton>
@@ -2831,10 +2915,19 @@ function WorkspaceHome(){
         <SortHeaderButton columnKey="created" sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="justify-self-end">Дата</SortHeaderButton>
       </div>
       {items.map(r=>(
-    <div className="lead-row" key={r.id}>
+    <div className={`lead-row ${triage&&leadSelected.includes(r.id)?'ring-1 ring-[var(--spike-primary)]':''}`} key={r.id} data-testid="lead-row" data-lead-id={r.id}>
+      {triage&&(
+        <Checkbox
+          className="mt-1 shrink-0"
+          checked={leadSelected.includes(r.id)}
+          onCheckedChange={v=>setLeadSelected(prev=>v===true?[...new Set([...prev,r.id])]:prev.filter(id=>id!==r.id))}
+          aria-label={`Выбрать ${r.data.name||'лид'}`}
+        />
+      )}
       <button className="text-left flex-1 min-w-0" onClick={()=>openLead(r)}>
         <div className="flex gap-3 items-center flex-wrap">
-          <span className="row-title">{r.data.name}</span>
+          {leadUnread(r.data)&&<span className="size-2 shrink-0 rounded-full bg-[var(--spike-primary)]" role="img" aria-label="Не прочитан" title="Не прочитан"/>}
+          <span className={`row-title ${leadUnread(r.data)?'font-bold':''}`}>{r.data.name}</span>
           {tempBadge(r.data.temperature)}
           {statusBadge(r.data.status)}
           {r.data.needsManager&&<span className="badge warning">Клиент ответил</span>}
@@ -2849,8 +2942,11 @@ function WorkspaceHome(){
         {r.data.reason&&!r.data.incomingLastText&&<p className="small-note mt-1">AI: {r.data.reason}</p>}
         <p className="small-note mt-2">{r.data.source} · {new Date(r.data.conversationAt||r.created).toLocaleDateString('ru-RU')}</p>
       </button>
-      <div className="flex flex-col gap-1 shrink-0">
+      <div className="flex flex-col items-end gap-2 shrink-0">
         <Button variant="ghost" onClick={()=>openLead(r)}>Открыть<ChevronRight size={16}/></Button>
+        {triage&&(
+          <LeadTriageActions compact current={leadTriage(r.data)} name={String(r.data.name||'лид')} disabled={!canEditLeads} onMove={to=>void moveLeads([r.id],to)}/>
+        )}
       </div>
     </div>
   ))}
@@ -3013,9 +3109,10 @@ function WorkspaceHome(){
     tasksWarn,
     tasksError,
   };
-  const hotN=allLeads.filter(r=>r.data.temperature==='hot'&&!r.data.viewed).length;
-  const warmN=allLeads.filter(r=>r.data.temperature==='warm'&&!r.data.viewed).length;
-  const coldN=allLeads.filter(r=>r.data.temperature==='cold'&&!r.data.viewed).length;
+  const untriaged=(r:RecordItem)=>leadTriage(r.data)==='new';
+  const hotN=allLeads.filter(r=>r.data.temperature==='hot'&&untriaged(r)).length;
+  const warmN=allLeads.filter(r=>r.data.temperature==='warm'&&untriaged(r)).length;
+  const coldN=allLeads.filter(r=>r.data.temperature==='cold'&&untriaged(r)).length;
   const leadCountByGroup=new Map<string,number>();
   const freshByGroup=new Map<string,number>();
   const hotByGroup=new Map<string,number>();
@@ -3023,8 +3120,8 @@ function WorkspaceHome(){
     const gid=String(r.data.groupId||'');
     if(!gid)continue;
     leadCountByGroup.set(gid,(leadCountByGroup.get(gid)||0)+1);
-    if(!r.data.viewed)freshByGroup.set(gid,(freshByGroup.get(gid)||0)+1);
-    if(r.data.temperature==='hot'&&!r.data.viewed)hotByGroup.set(gid,(hotByGroup.get(gid)||0)+1);
+    if(untriaged(r))freshByGroup.set(gid,(freshByGroup.get(gid)||0)+1);
+    if(r.data.temperature==='hot'&&untriaged(r))hotByGroup.set(gid,(hotByGroup.get(gid)||0)+1);
   }
   const overviewChats=groupsAll.map(g=>({
     id:g.id,
@@ -3048,6 +3145,7 @@ function WorkspaceHome(){
       source:String(r.data.source||''),
       temperature,
       status:String(r.data.status||'new'),
+      triage:leadTriage(r.data),
       viewed:!!r.data.viewed,
       groupId:String(r.data.groupId||''),
                       draft:!!r.data.draft||!!r.data.conversationOpen,
@@ -3370,18 +3468,16 @@ function WorkspaceHome(){
                       ))}
                     </SelectContent>
                   </Select>
-                  <Tabs value={filter} onValueChange={(v)=>setFilter(v)}>
-                    <TabsList>
-                      <TabsTrigger value="all">Все</TabsTrigger>
-                      <TabsTrigger value="hot">Горячие</TabsTrigger>
-                      <TabsTrigger value="warm">Тёплые</TabsTrigger>
-                      <TabsTrigger value="cold">Холодные</TabsTrigger>
-                      <TabsTrigger value="new">Новые</TabsTrigger>
-                      <TabsTrigger value="working">В работе</TabsTrigger>
-                      <TabsTrigger value="viewed">Просмотренные{viewedLeads.length?` (${viewedLeads.length})`:''}</TabsTrigger>
-                      <TabsTrigger value="archived">Архив</TabsTrigger>
-                    </TabsList>
-                  </Tabs>
+                  <Select value={leadTemp} onValueChange={v=>setLeadTemp(v as LeadTemperatureFilter)}>
+                    <SelectTrigger className="w-[200px]" aria-label="Температура"><SelectValue placeholder="Температура"/></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Любая температура</SelectItem>
+                      <SelectItem value="hot">Горячие</SelectItem>
+                      <SelectItem value="warm">Тёплые</SelectItem>
+                      <SelectItem value="cold">Холодные</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <LeadTriageTabs value={leadTab} counts={leadTabCounts} onChange={t=>{setLeadTab(t);setLeadSelected([])}}/>
                 </div>
               ):currentKind==='proxy'?(
                 <div className="flex flex-wrap gap-2">
@@ -4362,8 +4458,8 @@ function WorkspaceHome(){
                     <SelectTrigger className="w-full"><SelectValue/></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="new">Новый</SelectItem>
-                      <SelectItem value="working">В работе</SelectItem>
-                      <SelectItem value="archived">Архив</SelectItem>
+                      <SelectItem value="working">Лид (в лидах)</SelectItem>
+                      <SelectItem value="archived">Не подходит (отклонён)</SelectItem>
                     </SelectContent>
                   </Select>
                 </label>
@@ -4987,6 +5083,12 @@ function WorkspaceHome(){
               {detail?.data.name}
               {detail&&tempBadge(detail.data.temperature)}
             </DialogTitle>
+            {detail?.kind==='lead'&&(
+              <div className="flex flex-wrap items-center gap-2 pt-1" data-testid="lead-card-triage">
+                <span className="small-note">Сейчас: «{LEAD_TRIAGE_TAB_LABELS[leadTriage(detail.data)]}»</span>
+                <LeadTriageActions current={leadTriage(detail.data)} name={String(detail.data.name||'лид')} disabled={!canEditLeads} onMove={to=>void moveLeads([detail.id],to)}/>
+              </div>
+            )}
             <DialogDescription>
               {detail?.data.source}
               {detail?.data.senderUsername?` · @${detail.data.senderUsername}`:''}
