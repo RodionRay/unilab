@@ -12,7 +12,7 @@ import {
 import { botIdFromToken } from "@/lib/tma/init-data";
 import { miniAppUrl } from "@/lib/tma/link-api";
 import { findActiveLink, listDmRecipients, redeemLinkCode, setDmError } from "@/lib/tma/links";
-import { ensureTmaTables, getOrCreateWorkspaceKey } from "@/lib/tma/workspace";
+import { ensureTmaTables, getOrCreateWorkspaceKey, readWorkspaceBot } from "@/lib/tma/workspace";
 
 /**
  * Bot side of the mini app: private-chat linking (REQ-L2/L5), member chatter, and private notices
@@ -146,9 +146,10 @@ async function eachLimited<T>(items: readonly T[], limit: number, fn: (item: T) 
 
 /**
  * REQ-N1/N2: private copies of notices to opted-in linked members who can see leads, each with one
- * web_app «Открыть» button to `/tma/<wsKey>?lead=<id>` (the hash belongs to Telegram). Skipped unless
- * APP_URL is public https. Bounded concurrency and time; a blocked chat turns that member's opt-in
- * off. Never throws: callers send the group notice first and must not be failed by this.
+ * web_app «Открыть» button to `/tma/<wsKey>?lead=<id>` (the hash belongs to Telegram); a member whose
+ * private chat is the notices chat is skipped (no duplicate). Skipped unless APP_URL is public https.
+ * Bounded concurrency and time; a blocked chat turns that member's opt-in off. Never throws: callers
+ * send the group notice first and must not be failed by this.
  */
 export async function sendDmNotices(
   db: D1LikeDatabase,
@@ -163,7 +164,9 @@ export async function sendDmNotices(
       warnedNoHttps = true;
       return;
     }
-    const recipients = (await listDmRecipients(db, owner)).filter((r) => r.canSeeLeads);
+    // The notices chat may itself be a member's private chat: that member already got the group notice.
+    const { notifyChatId } = await readWorkspaceBot(db, owner);
+    const recipients = (await listDmRecipients(db, owner)).filter((r) => r.canSeeLeads && String(r.tgUserId) !== notifyChatId);
     if (!recipients.length) return;
     const base = await publicMiniAppUrl(db, owner);
     const built: DmBuilt[] = notices.map((n) => ({

@@ -99,23 +99,25 @@ export async function rememberBotIdentity(db: D1LikeDatabase, owner: string, bot
     .run();
 }
 
-export type WorkspaceBot = { token: string; botId: string; workspaceName: string; noticesOn: boolean };
+export type WorkspaceBot = { token: string; botId: string; workspaceName: string; noticesOn: boolean; notifyChatId: string };
 
 /** Current bot token of the workspace (settings.notifyBotToken). Server-side only — never return it. */
 export async function readWorkspaceBot(db: D1LikeDatabase, owner: string): Promise<WorkspaceBot> {
   const row = await db
     .prepare(
       `SELECT json_extract(data,'$.notifyBotToken') AS token, json_extract(data,'$.name') AS name,
-        json_extract(data,'$.profileName') AS profile_name, json_extract(data,'$.notifyEnabled') AS notify_enabled
+        json_extract(data,'$.profileName') AS profile_name, json_extract(data,'$.notifyEnabled') AS notify_enabled,
+        json_extract(data,'$.notifyChatId') AS notify_chat_id
        FROM records WHERE owner=? AND kind='settings' LIMIT 1`,
     )
     .bind(owner)
-    .first<{ token: unknown; name: unknown; profile_name: unknown; notify_enabled: unknown }>();
+    .first<{ token: unknown; name: unknown; profile_name: unknown; notify_enabled: unknown; notify_chat_id: unknown }>();
   const token = typeof row?.token === "string" ? row.token.trim() : "";
   const workspaceName = String(row?.name || row?.profile_name || "").slice(0, 200);
   // settings.notifyEnabled is a zod boolean; json_extract returns 1/0.
   const noticesOn = Boolean(row?.notify_enabled);
-  return { token, botId: botIdFromToken(token), workspaceName, noticesOn };
+  const notifyChatId = String(row?.notify_chat_id ?? "").trim();
+  return { token, botId: botIdFromToken(token), workspaceName, noticesOn, notifyChatId };
 }
 
 /** `https://t.me/<bot>` when the cached username belongs to the current bot, else undefined. */

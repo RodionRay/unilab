@@ -113,6 +113,17 @@ describe('личные уведомления о переписке (REQ-N1)',()
   expect(toChat(w.sent(),42)).toHaveLength(1);
  });
 
+ it('чат уведомлений = личка участника → там одно уведомление (группа), без дубля в ЛС',async()=>{
+  await optIn(OWNER,42);
+  const w=stubWorkerAndBot(worker);
+
+  await pollDms();
+
+  const chat=toChat(w.sent(),42);
+  expect(chat).toHaveLength(1);
+  expect(buttonsOf(chat[0]).some(b=>b.callback_data===`r:${CHAT_LEAD}`)).toBe(true);
+ });
+
  it('REQ-N2: 403 «bot was blocked» → ЛС выключены, ошибка сохранена; уведомление в группу ушло',async()=>{
   await optIn(OWNER,TG);
   const w=stubWorkerAndBot(worker,(call)=>{
