@@ -95,9 +95,15 @@ core + AI pipeline as Telegram, in the same Leads view and Telegram notification
 - REQ-13 Existing Telegram leads/scan behaviour SHALL be unchanged: the full existing vitest + Python suites stay green.
 
 ## Contracts
-- `vk_account.data`: `{ vkUserId, name, proxyId, status: 'active'|'error'|'cooldown'|'no_proxy', error?, cooldownUntil?, counters:{day, calls, searchCalls} }`; `secret`: sealed token.
+- `vk_account.data`: `{ vkUserId, name, proxyId, status: 'active'|'error'|'cooldown'|'no_proxy', error?, cooldownUntil?,
+  counters:{day, calls, searchCalls}, searchBlockedUntil?: Record<method, iso>, leaseId?, leaseUntil?, tokenFp, expiresIn }`;
+  `secret`: sealed token. `tokenFp` (8-byte SHA-256 of owner+token) and `leaseId` are server-internal and stripped
+  from the GET projection (`lib/security/workspace-authz.ts::VK_ACCOUNT_INTERNAL_FIELDS`); `expiresIn` 0 = offline token.
 - Worker `POST /vk-call` (Bearer `TG_WORKER_TOKEN`): `{ token, proxy, calls:[{method, params}] }` → `{ results:[{ok, response?, error:{code,msg}?}] }`; ≤25 calls per request, 3 rps pacing inside.
-- `vk_source.data`: `{ type, title, vkGroupId?, screenName?, cursor:{ searchStartTime?, wallMaxPostId?, boardSince? }, lastScanAt, scanLockUntil, error?, aiRejected[], leadTombstones[] }`.
+- `vk_source.data`: `{ type, title, vkGroupId?, screenName?, cursor:{ searchStartTime?, searchPaging?:{endTime, next:{keyword: next_from}},
+  wallMaxPostId?, boardSince? }, lastScanAt, scanLockUntil, error?, aiRejected[], leadTombstones[] }`.
+- `vk_tombstones` (one server-only row per owner, never listed to the client): `{ leadTombstones[] }` — keys of deleted
+  VK leads whose source is gone; deleting a source moves its tombstones here (AM-2).
 - `lead.data` additions: `platform`, `msgKey` (D4), `url`, `vkSourceId`; Telegram leads keep `tgMsgId`.
 - `R` actions: `vk_accounts_import`, `vk_account_delete`, `vk_account_set_proxy`, `vk_source_add`, `vk_source_delete`, `scan_vk_source`,
   `vk_source_ensure_search` (idempotent, access as `vk_source_add`: `{}` → `{ok, id, created, source}` where `source` = `vk_source.data`);
@@ -105,7 +111,8 @@ core + AI pipeline as Telegram, in the same Leads view and Telegram notification
 
 ## NFRs
 - VK API version pinned (`v=5.199`), timeout 15 s per call, retries only on network/5xx (max 2).
-- A scan of one source ≤ 60 s or yields `more:true`; no unbounded loops (page cap per run).
+- A scan of one source = ≤45 s of VK calls + ≤60 items to AI, inside the cron's 150 s per-scan timeout, or yields
+  `more:true`; no unbounded loops (page cap per run).
 - Token never logged; errors logged with VK error code only.
 
 ## Assumptions
@@ -194,6 +201,13 @@ Live VK (real token, ≥1 real lead from search and from a group) → stand, evi
   Board topics: read oldest-updated first, ≤5 per run, page 100, `boardSince` = newest topic actually read (>100 topics
   updated between two runs, or >5 sharing one `updated` second, are a known gap).
 
+- 2026-10-02 review fixes (supersede AM-12's 60 s / 70 s): cron VK scan timeout = Telegram `SCAN_TIMEOUT_MS` 150 s,
+  started only with ≥120 s of tick left; a VK timeout stops the remaining VK sources of that tick, Telegram groups go on.
+  ≤60 items go to AI per run (`lib/processes/vk-scan.ts::VK_AI_ITEMS_PER_RUN`), the rest stay undecided and the cursor is
+  kept so the next run meets them again (`more:true`). A search source without strong keywords gets `lastScanAt` +
+  error «Нет ключевых слов» before any account lease and is not due until keywords exist. Tombstones of a deleted source
+  (or of a lead whose source is gone) go to the owner-level `vk_tombstones` row instead of another source.
+
 REQ → tests (T3): REQ-1/1a/AM-10/11 `tests/vk-accounts-route.test.ts` «REQ-1 bulk import»; REQ-4 «REQ-4 group sources»;
 REQ-3/5/6/7/14/15, REQ-2/9/AM-8, REQ-1b/10/AM-9 `tests/vk-scan-route.test.ts`; REQ-8 `tests/vk-cron.test.ts` + «REQ-8 rescan_groups».
 
@@ -203,3 +217,10 @@ REQ-3/5/6/7/14/15, REQ-2/9/AM-8, REQ-1b/10/AM-9 `tests/vk-scan-route.test.ts`; R
 ## Progress
 - 2026-10-01 spec clarified; worktree `~/worktrees/wt-unilab-vk-lead-source`.
 - 2026-10-01 wave 1 merged locally (gh not authenticated → no subtask PRs): T1 0a4c414, T2 7b3b0a6; vitest 769/769, lint 258 / tsc 45 unchanged vs base.
+- 2026-10-01 T3 (scan, storage, cron) on the integration branch 451e13c..723a8f3; vitest 817/817.
+- 2026-10-01 security review fixes merged 3d5560f (server-owned lead fields, json_set key allowlist, read-only VK methods
+  in /vk-call, tokenFp/leaseId hidden from GET).
+- 2026-10-02 T4 UI merged 4e1f4c7 (Accounts VK section, Groups VK sources, Leads badge/filter/«Открыть в VK»).
+- 2026-10-02 code-review fixes on `task/vk-lead-source-2026-10-01-fixsrv` (worktree `~/worktrees/wt-unilab-vk-fixsrv`):
+  AI cap + 150 s cron timeout, board cursor, no-keywords source, search paging, tombstone holder, `vk_source_ensure_search`,
+  `artifacts/` untracked; vitest 886/886, lint 258 / tsc 45 unchanged, build ok, Python 82/82. Live VK NOT verified.

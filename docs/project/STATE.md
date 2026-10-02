@@ -1,8 +1,10 @@
 # STATE (partial — task note only; regenerate via /project-sync)
 
 ## Now
-- task/vk-lead-source-2026-10-01 @723a8f3 (worktree ~/worktrees/wt-unilab-vk-lead-source): VK lead source M1,
-  server done (vitest 817/817), security review + UI (T4) in flight; live VK NOT verified. Handoff: docs/project/tasks/handoff-2026-10-01-71f6c53c.md
+- task/vk-lead-source-2026-10-01 @4e1f4c7 (worktree ~/worktrees/wt-unilab-vk-lead-source): VK lead source M1, T1–T4 +
+  security fixes merged. Server review fixes on task/vk-lead-source-2026-10-01-fixsrv @22a61af (worktree
+  ~/worktrees/wt-unilab-vk-fixsrv), pushed, not merged yet: vitest 886/886, lint 258 / tsc 45, build ok, Python 82/82.
+  Live VK NOT verified. Handoff: docs/project/tasks/handoff-2026-10-01-71f6c53c.md
 - task/remove-lead-ignore-stopwords-2026-10-01 (worktree ~/worktrees/wt-unilab-remove-lead-ignore-stopwords), commit 260664e pushed.
   Removes lead ignore / stop-word learning. Gate: vitest 670/670, tsc 0 new, build ok; UI NOT verified visually.
   Handoff: docs/project/tasks/handoff-2026-10-01-9cb70af9.md
