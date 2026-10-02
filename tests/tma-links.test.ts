@@ -139,15 +139,15 @@ describe('REQ-L1/L2/L5 · код привязки',()=>{
   expect(await redeemLinkCode(db,OWNER,`link_${code}`,TG,BOT)).toMatchObject({ok:true,userId:'manager-1'});
  });
 
- it('REQ-A8: 60 неудачных правильных по формату кодов от разных tg блокируют кабинет',async()=>{
+ it('REQ-A8: неудачные коды от сотни разных tg не блокируют годный код сотрудника (лимита на кабинет нет)',async()=>{
   const {db}=testDb();
-  for(let i=0;i<60;i++)await redeemLinkCode(db,OWNER,'C'.repeat(32),{id:5000+i,username:''},BOT);
+  for(let i=0;i<100;i++)await redeemLinkCode(db,OWNER,'C'.repeat(32),{id:5000+i,username:''},BOT);
   const {code}=await createLinkCode(db,OWNER,'manager-1');
 
-  expect(await redeemLinkCode(db,OWNER,code,TG,BOT)).toEqual({ok:false,reason:'rate_limited'});
+  expect(await redeemLinkCode(db,OWNER,code,TG,BOT)).toMatchObject({ok:true,userId:'manager-1'});
  });
 
- it('REQ-A8: удачные погашения не тратят лимит кабинета',async()=>{
+ it('REQ-A8: удачные погашения подряд не упираются в лимит',async()=>{
   const {db}=testDb();
   for(let i=0;i<60;i++){
    const {code}=await createLinkCode(db,OWNER,'manager-1');

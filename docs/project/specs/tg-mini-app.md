@@ -89,11 +89,11 @@ Source: read-only scout of origin/dev @671338d + Telegram docs (core.telegram.or
   it exactly as `AZ::authorizeWorkspaceAction` does for the web.
 - REQ-A7 The system shall never return `notifyBotToken`, sealed secrets, session strings or proxy credentials to a
   tma actor, and shall never log initData or bearer tokens.
-- REQ-A8 `POST /api/tma/session` and link-code redemption shall be rate-limited per IP and per wsKey
-  (`lib/security/rate-limit.ts`). Per wsKey/workspace only failed attempts count (session: failures behind a valid
-  HMAC — `not_linked`, `init_data_expired` — `lib/tma/exchange.ts::exchangeWithinWsKeyLimit`; junk/forged initData
-  counts per IP only; redemption: well-formed failed claims after the per-tg-user limit,
-  `lib/tma/links.ts::redeemLinkCode`), so members' own launches and one stranger's junk lock nobody out.
+- REQ-A8 `POST /api/tma/session` shall be rate-limited per IP and per wsKey (`lib/security/rate-limit.ts`); per wsKey
+  only failures behind a valid HMAC count (`not_linked`, `init_data_expired`;
+  `lib/tma/exchange.ts::exchangeWithinWsKeyLimit`), junk/forged initData counts per IP only. Link-code redemption
+  (bot updates carry no IP) shall be rate-limited per (workspace, tg user) only (`lib/tma/links.ts::redeemLinkCode`;
+  no per-workspace cap — 192-bit single-use codes), so members' own launches and a stranger's junk lock nobody out.
 - REQ-A9 Data of workspace A shall never be returned to a session minted for workspace B, including when two
   workspaces share one bot token (link lookup keyed by (ownerId, tgUserId)).
 

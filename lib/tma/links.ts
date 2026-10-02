@@ -1,5 +1,5 @@
 import type { D1LikeDatabase } from "@/lib/db";
-import { consumeRateLimit, peekRateLimit, type RateLimitRule } from "@/lib/security/rate-limit";
+import { consumeRateLimit, type RateLimitRule } from "@/lib/security/rate-limit";
 import { ensureStaffTables, resolveWorkspaceContext } from "@/lib/staff";
 import { parseAccess, STAFF_ROLES, type StaffRole } from "@/lib/staff-types";
 import { ensureUserTables } from "@/lib/users";
@@ -18,8 +18,10 @@ const CODE_RE = /^[A-Za-z0-9_-]{32,64}$/;
 export const TMA_LINK_RATE_LIMITS = {
   /** create_code per member. */
   codePerUser: { name: "tma-code-user", limit: 10, windowSec: 3600 },
-  /** Redemption attempts per Telegram user in a workspace; per workspace only well-formed failed claims (REQ-A8). */
-  redeemPerOwner: { name: "tma-redeem-owner", limit: 60, windowSec: 900 },
+  /**
+   * Redemption attempts per Telegram user in a workspace (REQ-A8). No per-workspace cap: any stranger could
+   * fill it and lock members out, while 192-bit single-use codes make guessing hopeless anyway.
+   */
   redeemPerTgUser: { name: "tma-redeem-tg", limit: 10, windowSec: 900 },
 } as const satisfies Record<string, RateLimitRule>;
 
@@ -159,18 +161,12 @@ export async function redeemLinkCode(
   }
   const clean = code.startsWith(LINK_START_PREFIX) ? code.slice(LINK_START_PREFIX.length) : code;
   if (!CODE_RE.test(clean) || !Number.isSafeInteger(tg.id) || tg.id <= 0) return { ok: false, reason: "invalid" };
-  // Per workspace only well-formed failed claims count: one stranger's junk or members' own successful
-  // redemptions must not lock everyone else out.
-  if (!(await peekRateLimit(TMA_LINK_RATE_LIMITS.redeemPerOwner, owner, nowMs)).allowed) return { ok: false, reason: "rate_limited" };
   const codeHash = await sha256Hex(clean);
   const claim = await db
     .prepare("UPDATE tma_link_codes SET used_at=? WHERE code_hash=? AND owner=? AND used_at IS NULL AND expires_at>?")
     .bind(nowMs, codeHash, owner, nowMs)
     .run();
-  if (!claim.meta.changes) {
-    await consumeRateLimit(TMA_LINK_RATE_LIMITS.redeemPerOwner, owner, nowMs);
-    return { ok: false, reason: await classifyUnclaimed(db, owner, codeHash, nowMs) };
-  }
+  if (!claim.meta.changes) return { ok: false, reason: await classifyUnclaimed(db, owner, codeHash, nowMs) };
   const row = await db.prepare("SELECT user_id FROM tma_link_codes WHERE code_hash=?").bind(codeHash).first<{ user_id: string }>();
   const userId = String(row?.user_id || "");
   // The member may have left the workspace between minting and redeeming.
