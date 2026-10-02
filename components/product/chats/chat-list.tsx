@@ -32,6 +32,8 @@ export type ChatListProps = {
   onQueryChange: (query: string) => void;
   onOpen: (lead: ChatLead) => void;
   onAddLead: () => void;
+  /** Chat whose message is being sent right now: its row shows the clock, not the failed mark. */
+  sendingId?: string | null;
 };
 
 const FOLDERS: readonly { value: ChatFolder; label: string }[] = [
@@ -124,10 +126,10 @@ function LoadError({ message, onReload }: { message: string; onReload: () => Pro
   );
 }
 
-type RowProps = { lead: ChatLead; active: boolean; badge: ReactNode; onOpen: (lead: ChatLead) => void };
+type RowProps = { lead: ChatLead; active: boolean; sending: boolean; badge: ReactNode; onOpen: (lead: ChatLead) => void };
 
 /** Memoised: typing in the composer or polling other leads does not re-render unchanged rows. */
-const ChatListRow = memo(function ChatListRow({ lead, active, badge, onOpen }: RowProps) {
+const ChatListRow = memo(function ChatListRow({ lead, active, sending, badge, onOpen }: RowProps) {
   const name = String(lead.data.name || "Без имени");
   const row = useMemo(() => chatListItem(lead), [lead]);
   return (
@@ -147,7 +149,11 @@ const ChatListRow = memo(function ChatListRow({ lead, active, badge, onOpen }: R
             <span className="chat-item-name">{name}</span>
             {badge ? <span className="chat-item-badge">{badge}</span> : null}
             <span className="chat-item-time">
-              {row.lastTick && row.lastTick !== "failed" ? <ChatTick state={row.lastTick} size={14} /> : null}
+              {sending ? (
+                <ChatTick state="pending" size={14} />
+              ) : row.lastTick && row.lastTick !== "failed" ? (
+                <ChatTick state={row.lastTick} size={14} />
+              ) : null}
               {row.timeLabel}
             </span>
           </span>
@@ -156,7 +162,7 @@ const ChatListRow = memo(function ChatListRow({ lead, active, badge, onOpen }: R
               {row.prefix ? <span className="chat-item-prefix" data-prefix={row.prefix === "Вы: " ? "you" : "draft"}>{row.prefix}</span> : null}
               {row.preview}
             </span>
-            {row.failed ? (
+            {row.failed && !sending ? (
               <span className="chat-item-failed" title="Последнее сообщение не отправлено">
                 <CircleAlert size={18} aria-hidden />
                 <span className="sr-only">Последнее сообщение не отправлено</span>
@@ -258,6 +264,7 @@ function ChatListView(props: ChatListProps) {
                   key={lead.id}
                   lead={lead}
                   active={lead.id === activeId}
+                  sending={!!props.sendingId && lead.id === props.sendingId}
                   badge={renderRowBadge ? renderRowBadge(lead) : null}
                   onOpen={onOpen}
                 />

@@ -33,7 +33,7 @@ import { ChatHeader } from "./chat-header";
 import { ChatList, type ChatFolder } from "./chat-list";
 import { useChatTheme } from "./chat-theme";
 import { ChatThreadView } from "./chat-thread";
-import { useFullScreenChat, useNarrowPanel } from "./use-chat-layout";
+import { useFullScreenChat, useNarrowPanel, usePaneToastAnchor } from "./use-chat-layout";
 
 export type ChatGroupRef = { name: string; url: string };
 
@@ -190,6 +190,7 @@ export function ChatsPanel(props: ChatsPanelProps) {
 
   // Phones: the chat covers the app chrome, so the chrome must leave the tab order.
   useFullScreenChat(paneRef, narrow && activeId !== null);
+  usePaneToastAnchor(paneRef, activeId !== null);
 
   const onPaneKey = (e: KeyboardEvent<HTMLElement>) => {
     if (e.key !== "Escape" || !narrow || !activeLead) return;
@@ -233,6 +234,7 @@ export function ChatsPanel(props: ChatsPanelProps) {
           onQueryChange={props.onQueryChange}
           onOpen={open}
           onAddLead={props.onAddLead}
+          sendingId={outbox?.leadId ?? null}
         />
         <section
           ref={paneRef}

@@ -46,3 +46,31 @@ export function useFullScreenChat(paneRef: RefObject<HTMLElement | null>, active
     return () => marked.forEach((el) => (el.inert = false));
   }, [paneRef, active]);
 }
+
+/**
+ * While a chat is open, toasts sit at the top of the thread pane (under its header, centred), never over the newest
+ * messages or the composer. Publishes the anchor as CSS vars on <html>; app/globals.css positions Sonner with them.
+ */
+export function usePaneToastAnchor(paneRef: RefObject<HTMLElement | null>, active: boolean): void {
+  useEffect(() => {
+    const pane = paneRef.current;
+    if (!active || !pane) return;
+    const root = document.documentElement;
+    const place = () => {
+      const rect = pane.getBoundingClientRect();
+      const header = pane.querySelector(".chat-header")?.getBoundingClientRect();
+      root.style.setProperty("--chat-toast-x", `${Math.round(rect.left + rect.width / 2)}px`);
+      root.style.setProperty("--chat-toast-top", `${Math.round((header?.bottom ?? rect.top) + 12)}px`);
+    };
+    place();
+    const ro = new ResizeObserver(place);
+    ro.observe(pane);
+    window.addEventListener("resize", place);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", place);
+      root.style.removeProperty("--chat-toast-x");
+      root.style.removeProperty("--chat-toast-top");
+    };
+  }, [paneRef, active]);
+}

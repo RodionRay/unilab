@@ -6092,13 +6092,40 @@ body:has(.chats-panel[data-chat-open="true"]) .assistant-root {
   }
 }
 
-/* toasts never cover the composer: with a chat open they stack above it */
-body:has(.chats-panel[data-chat-open="true"]) [data-sonner-toaster][data-y-position="bottom"] {
-  bottom: 124px !important;
+/* toasts with a chat open: top of the thread pane, centred under its header (anchor from usePaneToastAnchor);
+   never over the newest messages or the composer */
+body:has(.chats-panel[data-chat-open="true"]) [data-sonner-toaster][data-y-position="top"] {
+  top: var(--chat-toast-top, 142px) !important;
+  left: var(--chat-toast-x, 50%) !important;
+  right: auto !important;
+  transform: translateX(-50%) !important;
 }
+@media (max-width: 600px) {
+  body:has(.chats-panel[data-chat-open="true"]) [data-sonner-toaster][data-y-position="top"] {
+    width: calc(100vw - 32px) !important;
+  }
+}
+.chat-item-time .chat-tick[data-tick="pending"] {
+  color: var(--chat-muted);
+}
+
+/* confirm dialogs on this view: the scrim covers everything, sidebar and top bar included */
+body:has([data-chats-panel]) [data-slot="alert-dialog-overlay"] {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 60 !important;
+}
+body:has([data-chats-panel]) [data-slot="alert-dialog-content"] {
+  z-index: 61 !important;
+}
+
+/* phones: the header's second line is the client handle only (source and account via ⋮ → Правки) */
 @media (max-width: 767px) {
-  body:has(.chats-panel[data-chat-open="true"]) [data-sonner-toaster][data-y-position="bottom"] {
-    bottom: calc(110px + env(safe-area-inset-bottom)) !important;
+  .chat-header-sub:has(.is-username) :is(.is-account, .is-group) {
+    display: none;
+  }
+  .chat-header-sub .chat-header-seg.is-username {
+    max-width: 100%;
   }
 }
 
@@ -6126,13 +6153,13 @@ body:has(.chats-panel[data-chat-open="true"]) [data-sonner-toaster][data-y-posit
   outline-offset: 2px !important;
 }
 
-/* destructive confirm: the kit's coral fill with white ink is ~2.3:1; use a deep red (6.4:1) */
-[data-slot="alert-dialog-content"] button[data-variant="destructive"] {
+/* destructive confirm on this view: the kit's coral fill with white ink is ~2.3:1; use a deep red (6.4:1) */
+body:has([data-chats-panel]) [data-slot="alert-dialog-content"] button[data-variant="destructive"] {
   background: #b42318 !important;
   color: #ffffff !important;
   border-color: #b42318 !important;
 }
-[data-slot="alert-dialog-content"] button[data-variant="destructive"]:hover:not(:disabled) {
+body:has([data-chats-panel]) [data-slot="alert-dialog-content"] button[data-variant="destructive"]:hover:not(:disabled) {
   background: #9a1d13 !important;
 }
 

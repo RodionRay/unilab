@@ -3037,7 +3037,7 @@ function WorkspaceHome(){
 
   return (
     <SidebarProvider className="spike-shell" style={{'--sidebar-width':'270px'} as React.CSSProperties}>
-      <Toaster position="bottom-right" richColors/>
+      <Toaster position={view==='Переписки'&&detail?'top-center':'bottom-right'} richColors/>
       <Sidebar>
         <SidebarHeader className="p-5">
           <div className="spike-brand">
