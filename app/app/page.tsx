@@ -5084,12 +5084,12 @@ function WorkspaceHome(){
               <div className="chat-composer px-6 py-4 border-t border-[var(--spike-border)] space-y-3">
                 <div className="vk-lead-actions">
                   {vkHref&&(
-                    <Button asChild className="vk-open-btn">
+                    <Button asChild size="sm" className="vk-open-btn">
                       <a href={vkHref} target="_blank" rel="noopener noreferrer">Открыть в VK<ExternalLink size={15}/><span className="sr-only"> (откроется в новой вкладке)</span></a>
                     </Button>
                   )}
-                  <Button variant="outline" onClick={()=>{open('lead',detail);setDetail(null)}}>Изменить лид</Button>
-                  <Button variant="ghost" size="icon" className="vk-danger-text" aria-label="Удалить лид" title="Удалить лид" onClick={()=>{setDeleting(detail);setDetail(null)}}><Trash2 size={15}/></Button>
+                  <Button variant="outline" size="sm" onClick={()=>{open('lead',detail);setDetail(null)}}>Изменить лид</Button>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Удалить лид" title="Удалить лид" onClick={()=>{setDeleting(detail);setDetail(null)}}><Trash2 size={15}/></Button>
                 </div>
                 <p className="small-note">
                   {vkHref

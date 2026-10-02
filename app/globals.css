@@ -5023,7 +5023,8 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   font-size: 0.8125rem;
   color: var(--spike-error);
 }
-.vk-danger-text {
+/* Beats the global button colour overrides ([data-slot][data-variant] … !important). */
+button[data-slot="button"].vk-danger-text {
   color: var(--spike-error) !important;
 }
 .vk-hint-warn {
@@ -5046,9 +5047,17 @@ button[data-slot="button"][data-variant="ghost"]:hover {
     width: auto;
     min-width: 0;
   }
-  .lead-filter-row > [data-slot="tabs"] {
-    max-width: 100%;
+  .lead-filter-row {
+    flex: 1 1 100%;
     min-width: 0;
+  }
+  /* The status tabs scroll inside the row instead of widening the page. */
+  .lead-filter-row > [data-slot="tabs"] {
+    flex: 1 1 100%;
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
   }
 }
 
@@ -5058,6 +5067,10 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   flex-wrap: nowrap;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+}
+.vk-lead-actions > * {
+  flex-shrink: 0;
 }
 .vk-lead-actions > :last-child {
   margin-left: auto;
@@ -5096,6 +5109,7 @@ button[data-slot="button"][data-variant="ghost"]:hover {
 }
 .vk-import-formats,
 .vk-import-results {
+  align-self: start;
   min-width: 0;
   padding: 16px;
   border-radius: 14px;
@@ -5356,8 +5370,10 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   min-width: 150px;
   max-width: 220px;
 }
-.vk-danger-action {
+button[data-slot="alert-dialog-action"].vk-danger-action,
+[data-slot="button"].vk-danger-action {
   background: var(--spike-error) !important;
+  border-color: var(--spike-error) !important;
   color: #fff !important;
 }
 .vk-cell-actions {
@@ -5450,8 +5466,7 @@ button[data-slot="button"][data-variant="ghost"]:hover {
     grid-template-columns: 28px minmax(0, 1fr) auto;
     grid-template-areas:
       "check main actions"
-      "check status status"
-      "check usage usage"
+      "check status usage"
       "check proxy proxy";
     gap: 8px 10px;
     padding: 12px;
@@ -5460,7 +5475,7 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   .vk-row > .vk-cell-main { grid-area: main; }
   .vk-row > .vk-cell-proxy { grid-area: proxy; }
   .vk-row > .vk-cell-status { grid-area: status; }
-  .vk-row > .vk-cell-usage { grid-area: usage; }
+  .vk-row > .vk-cell-usage { grid-area: usage; align-self: start; padding-top: 3px; }
   .vk-import-formats ul { display: none; }
   .vk-import-formats { padding: 12px 14px; }
   .vk-row > .vk-cell-actions { grid-area: actions; }
@@ -5495,6 +5510,15 @@ button[data-slot="button"][data-variant="ghost"]:hover {
 }
 
 @media (max-width: 600px) {
+  .vk-row {
+    grid-template-areas:
+      "check main actions"
+      "check status status"
+      "check usage usage"
+      "check proxy proxy";
+  }
+  .vk-row > .vk-cell-usage { padding-top: 0; }
+  .vk-import-lines { max-height: 420px; }
   .vk-import-line {
     grid-template-columns: 64px minmax(0, 1fr);
     grid-template-areas:

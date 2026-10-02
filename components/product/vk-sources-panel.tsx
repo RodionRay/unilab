@@ -198,7 +198,7 @@ export function VkSourcesPanel({ sources, canScan, hasAccounts, loading, run, on
               <div className="vk-src-row vk-src-enable">
                 <div className="vk-cell-main min-w-0">
                   <strong className="vk-name">Поиск VK по ключевым словам</strong>
-                  <span className="vk-sub">Выключен — ключевые слова из настроек AI не ищутся по VK</span>
+                  <span className="vk-sub">Ищет ключевые слова из настроек AI</span>
                 </div>
                 <div className="vk-src-status"><span className="badge neutral">Выключен</span></div>
                 <div className="vk-cell-actions">
@@ -261,7 +261,7 @@ export function VkSourcesPanel({ sources, canScan, hasAccounts, loading, run, on
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Оставить</AlertDialogCancel>
-            <AlertDialogAction onClick={() => { if (confirm) void remove(confirm); }}>Удалить</AlertDialogAction>
+            <AlertDialogAction variant="destructive" className="vk-danger-action" onClick={() => { if (confirm) void remove(confirm); }}>Удалить</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

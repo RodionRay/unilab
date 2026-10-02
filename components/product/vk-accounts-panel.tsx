@@ -436,7 +436,7 @@ export function VkAccountsPanel({ accounts, proxies, searchCap, perProxyCap, loa
                     </span>
                   </div>
                   <div className="vk-cell-actions">
-                    <Button variant="ghost" size="icon" className="vk-danger-text" disabled={busy} aria-label={`Удалить ${name}`} onClick={() => setConfirmIds([id])}>
+                    <Button variant="ghost" size="icon" disabled={busy} aria-label={`Удалить ${name}`} onClick={() => setConfirmIds([id])}>
                       <Trash2 size={15} />
                     </Button>
                   </div>
@@ -459,7 +459,7 @@ export function VkAccountsPanel({ accounts, proxies, searchCap, perProxyCap, loa
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Оставить</AlertDialogCancel>
-            <AlertDialogAction className="vk-danger-action" onClick={() => { if (confirmIds) void deleteAccounts(confirmIds); }}>
+            <AlertDialogAction variant="destructive" className="vk-danger-action" onClick={() => { if (confirmIds) void deleteAccounts(confirmIds); }}>
               {confirmIds && confirmIds.length > 1 ? `Удалить ${confirmIds.length}` : 'Удалить'}
             </AlertDialogAction>
           </AlertDialogFooter>
