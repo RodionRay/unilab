@@ -198,7 +198,7 @@ Spec: `docs/project/specs/groups-filters-bulk-assign.md`. Bulk = assignment only
 | URL param | Values (anything else → default) | Rule |
 |---|---|---|
 | `g_q` | text, ≤ 200 chars (`GROUP_SEARCH_MAX`) | case-insensitive substring of `name`, `username`, `url` or a `joinRelevance.reasons` entry (`matchesSearch`), not the whole JSON |
-| `g_band` | `all` · `auto` (Рекомендуем) · `review` (На подтверждение) · `skip` (Не вступать) | `joinRelevance.band`, else derived from `score` (`RELEVANCE_AUTO_MIN` / `RELEVANCE_REVIEW_MIN`, §1); unscored groups match only `all` |
+| `g_band` | `all` · `auto` (Оценка «Высокая») · `review` («Средняя») · `skip` («Низкая»); labels show the thresholds from the same constants | `joinRelevance.band`, else derived from `score` (`RELEVANCE_AUTO_MIN` / `RELEVANCE_REVIEW_MIN`, §1); unscored groups match only `all` |
 | `g_min` | integer 0–100 (`^\d{1,3}$`, ≤ 100) | score ≥ min; with min > 0 unscored groups are hidden |
 | `g_sort` | `default` · `score_desc` · `score_asc` | `sortGroups`: stable by score, unscored last in both directions |
 | `g_tab` | `all` · `need` · `review` · `skip` · `joined` · `pending` · `error` | the tab of §6 (`groupInTab`), applied after the filters |
@@ -209,7 +209,10 @@ Spec: `docs/project/specs/groups-filters-bulk-assign.md`. Bulk = assignment only
   the `g_*` params.
 - `groupMatchesFilters` = search + band + min; the list is `groupMatchesFilters && groupInTab`, then
   `sortGroups`. Tab chip counts use the same `groupMatchesFilters`, so they follow search and filters.
-- The groups view has its own search in the filter bar; the global toolbar search is hidden there and keeps
+- Under a 640px list width (container query on `.groups-page`) only the search and «Фильтры · N» stay in the
+  bar (N = active оценка / балл / сортировка); the button reveals the rest.
+- The groups view has its own search in the filter bar; the global toolbar (search + worker badge) is not
+  rendered there — the worker badge sits at the end of the groups action row — and the toolbar search keeps
   its `JSON.stringify` match on other views.
 - `groupFiltersActive` (search, band, min, sort — not the tab) shows «Сбросить фильтры» in the bar; it resets
   those four and keeps the tab. An empty filtered list names the active filters and offers the reset.
@@ -218,7 +221,7 @@ Spec: `docs/project/specs/groups-filters-bulk-assign.md`. Bulk = assignment only
 
 Button «Распределить по лимитам» in the groups actionbar: targets the selected groups (in the visible order),
 or — nothing selected — every group of the current filtered list, at most 500 per request (zod cap; the page
-sends the first 500, `BY_LIMIT_MAX_GROUPS`). Disabled with «Нет активных аккаунтов» when the join farm is empty.
+sends the first 500, `BY_LIMIT_MAX_GROUPS`). Disabled (opacity .5) with the link «Нет активных аккаунтов» → view «Аккаунты» when the join farm is empty.
 The confirm dialog previews the plan with the same helpers the server uses (`page.tsx::byLimitPreview`).
 
 - Pool: `route.ts::listJoinFarmCandidates` (`isJoinFarmCandidate`: ready or only paced); optional `accountIds`
@@ -227,16 +230,29 @@ The confirm dialog previews the plan with the same helpers the server uses (`pag
   warm-up, §2 — `, invite quota left)` minus open assignments, never below 0. Invite quota left =
   `limits.invite` (default `DEFAULT_ACCOUNT_LIMITS.invite`, the `hasInviteQuota` limit) − `joinsToday`; a
   limit ≤ 0 means no own ceiling.
-- Open assignments (`countOpenAssignments`): groups with this `accountId` that are not members and have no
-  join error (`groupIsMember`, `groupHasJoinError`), excluding the groups being planned — so a re-run on the
-  same set never exceeds any account's capacity (idempotent).
-- Plan (`planAssignmentByLimit`): groups in the given order; members/requests are skipped (no capacity used);
-  the rest go round-robin over accounts, most capacity first (ties by id); each account gets at most its
-  capacity. Groups beyond the total stay **unassigned** — their current account is left untouched.
-- Write (`route.ts::assignGroupsByLimit`): only owner-scoped existing ids (unknown/foreign → `rejected`);
-  an unchanged account is not rewritten; a different account clears `error` and the account-side error of §5.
-- Response: `{mode:'by_limit', updated, assignments, unassigned, skipped, capacity, rejected, message}`;
-  `byLimitMessage`: «Назначено N (ёмкость K)», with overflow «Назначено N, без аккаунта M — лимит на сегодня
-  исчерпан (ёмкость K)», with total capacity 0 nothing is written and «Лимит на сегодня исчерпан у всех
-  аккаунтов — ничего не назначено (ёмкость 0)»; skipped members add «· вступившие и заявки пропущены: S».
+- Joinable (`groupJoinableByFarm`): the «Ждут» rule of §6 (`groupTab` = `need`): not a member or request, no
+  join error, relevance gate open (§1), a real link (not a catalog placeholder). Only these are planned; the
+  rest are `skipped` and use no capacity.
+- Open assignments (`countOpenAssignments`): joinable groups with this `accountId`, excluding the groups being
+  planned. Groups the farm will not join (low/medium score, errors, no link) never hold a slot.
+- Plan (`planAssignmentByLimit`): first pass in the given order — a group already on a farm account keeps it
+  and spends that account's capacity (`kept`); if that account is out of capacity the group stays as is and
+  counts as unassigned. Second pass — groups without an account or with a non-farm account go round-robin over
+  accounts, most capacity first (ties by id); each account gets at most its capacity; a non-farm account being
+  replaced counts in `replaced`. Groups beyond the total stay **unassigned** — their current account is left
+  untouched. A re-run on the written set keeps every group and writes nothing (idempotent).
+- Target order (`lib/group-filters.ts::byLimitTargetOrder`, `page.tsx::byLimitTargetIds`): the visible order;
+  rows equal under it (with no explicit sort — all rows) go higher score first, unscored last.
+- Write (`route.ts::writeByLimitAssignment`): one `UPDATE … json_set` per row on `accountId`, `error`,
+  `joinAccountError`, `joinAccountErrorId` only, guarded by the planned `accountId` and by membership/status — a
+  join tick that landed between the plan and the write is never overwritten (the row is skipped). Only
+  owner-scoped existing ids (unknown/foreign → `rejected`).
+- Response: `{mode:'by_limit', updated, assignments, kept, replaced, unassigned, skipped, capacity, rejected,
+  message}`; `updated` = rows actually written. `byLimitMessage` (N = written + kept): «Назначено N (ёмкость K)»,
+  with overflow «Назначено N, не назначено M — лимит на сегодня исчерпан (ёмкость K)», with total capacity 0
+  nothing is written and «Лимит на сегодня исчерпан у всех аккаунтов — ничего не назначено (ёмкость 0)»;
+  skipped groups add «· пропущено S — не для вступления».
+- Confirm dialog: «Назначим» (written + kept) / «Не назначено» / «Ёмкость сегодня», per-account bars, «Исчерпан
+  лимит у N аккаунтов», «Сменим аккаунт: N», «Пропущено K — не для вступления»; «Распределить» is disabled when
+  nothing would be written. Esc/«Отмена» return focus to «Распределить по лимитам».
   The page shows it as a dismissible line under the actionbar (warning tone on overflow or capacity 0).
