@@ -9,3 +9,4 @@
 - D-7 2026-10-02 Mini app has no «Отправить всё равно» after a send with unknown outcome (504): it shows «Статус неизвестен — проверьте в Telegram» and the 15-min hold; force-resend (client `force` + 409 flags) → v1.1.
 - D-8 2026-10-02 Admin «Отключить» for another member is server-only in v1 (`/api/tma/link` unlink with userId, tested); the button in «Сотрудники» → v1.1. Removing the member already cuts mini app access on the next request (REQ-A5).
 - D-9 2026-10-02 A link code opened by a Telegram user already linked to another member of the workspace is refused (bot asks to «Отключить» first) instead of silently moving the link: closes account-binding CSRF via a forwarded code link (security L3).
+- D-10 2026-10-02 `telegram-web-app.js` is loaded from telegram.org unpinned and without SRI (official SDK, changes without versioning): accepted risk (security L6). Recommended: a dedicated bot per workspace, so any compromise stays within one workspace.
