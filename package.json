@@ -20,6 +20,7 @@
     "check:lead-core": "tsx scripts/check-lead-core.ts",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "playwright test",
     "seed:tgstat-catalog": "tsx scripts/seed-tgstat-catalog-groups.ts",
     "heal:joinstate": "node scripts/heal-joinstate-error.mjs"
   },
