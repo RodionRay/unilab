@@ -51,7 +51,7 @@ export type BuildThreadOptions = {
    */
   unread?: boolean;
   /** An optimistic message being sent right now (shown with the clock tick). */
-  pending?: { text: string; mode: "dm" | "chat"; at: string } | null;
+  pending?: { text: string; mode: "dm" | "chat"; at: string; retry?: boolean } | null;
 };
 
 export type ChatThread = { items: ThreadItem[]; unreadIndex: number };
@@ -225,8 +225,14 @@ export function buildThread(lead: ChatLead, opts: BuildThreadOptions = {}): Chat
 
   const messages: ThreadMessage[] = [sourceMessage(lead, str(replies[0]?.at))];
   replies.forEach((entry, i) => messages.push(replyMessage(entry, i, replies, quote)));
-  if (opts.pending?.text) {
-    const p = opts.pending;
+  const p = opts.pending;
+  // a retry turns the failed bubble itself into «sending» instead of adding a second copy
+  const retried = p?.retry
+    ? messages.findLastIndex((m) => m.side === "out" && m.tick === "failed" && m.mode === p.mode && sameText(m.text, p.text))
+    : -1;
+  if (p && retried >= 0) {
+    messages[retried] = { ...messages[retried]!, tick: "pending", error: "" };
+  } else if (p?.text) {
     messages.push({
       ...replyMessage(
         { text: p.text, mode: p.mode, at: p.at, ok: false, status: "pending", error: "", messageId: "", link: "", chatId: "", from: "us" },
@@ -378,20 +384,30 @@ export type Outbox = {
   at: string;
   /** How many of our replies with this text existed when it was sent (server clocks may differ from ours). */
   known: number;
+  /** Resend of a failed message: shown in place of that bubble until the request settles. */
+  retry: boolean;
 };
 
 function ourCopies(data: LeadData, text: string): number {
   return leadReplies(data).filter((r) => r.from === "us" && sameText(str(r.text), text)).length;
 }
 
-export function makeOutbox(lead: ChatLead, text: string, mode: "dm" | "chat", now: Date = new Date()): Outbox {
+export function makeOutbox(
+  lead: ChatLead,
+  text: string,
+  mode: "dm" | "chat",
+  opts: { now?: Date; retry?: boolean } = {},
+): Outbox {
   const clean = text.trim();
-  return { leadId: lead.id, text: clean, mode, at: now.toISOString(), known: ourCopies(lead.data, clean) };
+  const at = (opts.now ?? new Date()).toISOString();
+  return { leadId: lead.id, text: clean, mode, at, known: ourCopies(lead.data, clean), retry: !!opts.retry };
 }
 
 /** The outbox still needs its own bubble: same chat and the server has not stored a new copy of the text yet. */
 export function pendingFor(outbox: Outbox | null, lead: ChatLead | null): BuildThreadOptions["pending"] {
   if (!outbox || !lead || outbox.leadId !== lead.id) return null;
+  // a retry replaces the failed entry server-side (copy count unchanged): it ends when the request settles
+  if (outbox.retry) return { text: outbox.text, mode: outbox.mode, at: outbox.at, retry: true };
   if (ourCopies(lead.data, outbox.text) > outbox.known) return null;
   return { text: outbox.text, mode: outbox.mode, at: outbox.at };
 }

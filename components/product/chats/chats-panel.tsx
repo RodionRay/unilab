@@ -153,7 +153,7 @@ export function ChatsPanel(props: ChatsPanelProps) {
 
   const send = async (text: string, mode: ChatMode, retry: boolean) => {
     if (!activeLead || outbox) return;
-    const box = makeOutbox(activeLead, text, mode);
+    const box = makeOutbox(activeLead, text, mode, { retry });
     setOutbox(box);
     try {
       await (retry ? props.onRetry(box.text, mode) : props.onSend(text, mode));

@@ -176,7 +176,7 @@ describe('chat-view · panel state',()=>{
 
   it('pending bubble shows until the server stores a new copy of the text, then disappears',()=>{
     const before=withReplies([us('Привет',at(2,9))]);
-    const box=makeOutbox(before,'  Привет  ','dm',NOW);
+    const box=makeOutbox(before,'  Привет  ','dm',{now:NOW});
 
     expect(pendingFor(box,before)).toEqual({text:'Привет',mode:'dm',at:NOW.toISOString()});
     // server clock earlier than ours: still recognised by the copy count, not by time
@@ -187,7 +187,7 @@ describe('chat-view · panel state',()=>{
 
   it('pending bubble belongs to its chat only; no outbox = nothing',()=>{
     const a=withReplies([],'a');
-    const box=makeOutbox(a,'x','chat',NOW);
+    const box=makeOutbox(a,'x','chat',{now:NOW});
 
     expect(pendingFor(box,withReplies([],'b'))).toBeNull();
     expect(pendingFor(null,a)).toBeNull();
@@ -257,5 +257,16 @@ describe('chat-view · retry',()=>{
     expect(afterRetry?.retryable).toBe(false);
     expect(inFlight?.retryable).toBe(false);
     expect(otherMode?.retryable).toBe(true);
+  });
+
+  it('retry in place: the failed bubble itself shows the clock, no second copy',()=>{
+    const failed=us('Привет',at(2,9),{ok:false,status:'failed',error:'PEER_FLOOD'});
+    const l=lead({replies:[failed]});
+    const box=makeOutbox(l,'Привет','dm',{now:NOW,retry:true});
+    const out=messages(buildThread(l,{now:NOW,pending:pendingFor(box,l)}).items).filter(m=>m.side==='out');
+
+    expect(out.map(m=>[m.text,m.tick,m.error,m.retryable])).toEqual([['Привет','pending','',false]]);
+    // a retry stays «sending» until the request settles even though the server keeps one entry
+    expect(pendingFor(box,lead({replies:[us('Привет',at(2,9,1))]}))).toMatchObject({retry:true});
   });
 });

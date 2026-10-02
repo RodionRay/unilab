@@ -81,4 +81,14 @@ describe('lead-conversation · повтор неудачной отправки'
 
     expect((done.replies as ReplyEntry[]).map(x=>x.status)).toEqual(['failed','sent']);
   });
+
+  it('по тексту и режиму не находит failed, если позже то же сообщение доставлено или в пути',()=>{
+    const delivered={replies:[ours({text:'A',status:'failed',sendKey:'k1'}),ours({text:'A',ok:true,status:'sent',sendKey:'k2'})]};
+    const inFlight={replies:[ours({text:'A',status:'failed',sendKey:'k1'}),ours({text:'A',status:'pending',sendKey:'k2'})]};
+
+    expect(failedAttemptIndex(delivered,{clientMsgId:'new',text:'A',mode:'dm'})).toBe(-1);
+    expect(failedAttemptIndex(inFlight,{clientMsgId:'new',text:'A',mode:'dm'})).toBe(-1);
+    // the same client key still finds its own failed attempt
+    expect(failedAttemptIndex(delivered,{clientMsgId:'k1',text:'A',mode:'dm'})).toBe(0);
+  });
 });

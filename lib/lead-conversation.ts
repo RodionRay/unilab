@@ -88,9 +88,11 @@ export function failedAttemptIndex(lead: LeadData, req: { clientMsgId: string; t
     const x = replies[i];
     if (failed(x) && req.clientMsgId && x.sendKey === req.clientMsgId) return i;
   }
+  // by text+mode: the newest same message decides — if it was delivered / is in flight, this is a new message
   for (let i = replies.length - 1; i >= 0; i--) {
     const x = replies[i];
-    if (failed(x) && x.text === req.text && x.mode === req.mode) return i;
+    if (x.from !== "us" || x.text !== req.text || x.mode !== req.mode) continue;
+    return failed(x) ? i : -1;
   }
   return -1;
 }
