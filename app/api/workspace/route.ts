@@ -60,6 +60,8 @@ import {handlePrivateCommand,hasPrivateBotWork,isPrivateCommand,sendDmNotices} f
 import {botIdFromToken} from '@/lib/tma/init-data';
 import {ALL_CRM_ACCESS} from '@/lib/staff-types';
 import {BOT_UPDATES_LIMIT,buildConversationNotice,buildPrivateConversationNotice,buildPrivateLeadNotice,callBotApi,escapeHtml,explainBotError,parseBotUpdate,sendBotMessage,type BotCommand,type ReplyMarkup} from '@/lib/telegram-bot';
+import {accountEventCounts,accountEventFor,listAccountEvents,recordAccountEventSafe,ACCOUNT_EVENTS_LIST_DEFAULT,type AccountEventContext} from '@/lib/account-events';
+import {applySendToBlockSignal,LEAD_BLOCK_ACTIVE_MS,LEAD_BLOCK_BATCH,LEAD_BLOCK_RECHECK_MS,markChecked,observeIncoming,observePeer,observeSendError,observeSendOk,parsePeerSnapshot,peerSendErrorCode,sameSignal} from '@/lib/lead-block';
 import {INBOX_CURSOR_MARGIN_SEC,applySendOutcome,findSendBlock,leadReplies,markLeadOpened,mergeIncomingDm,nextInboxCursor,withPendingSend,type LeadData,type ReplyEntry,type SendOutcome} from '@/lib/lead-conversation';
 import {LEAD_TRIAGES,LEAD_TRIAGE_STATUS,MAX_TRIAGE_IDS,TRIAGE_SQL_CHUNK,type LeadTriage} from '@/lib/lead-triage';
 import type {D1LikeDatabase} from '@/lib/db';
@@ -605,6 +607,11 @@ function keepLiveLock(data:TaskData):Pick<TaskData,'tickLockUntil'|'tickLockId'>
   :{tickLockUntil:'',tickLockId:''};
 }
 
+/** Penalty journal (lib/account-events.ts): never throws, no-op for non-penalty answers. */
+function journalPenalty(owner:string,accountId:string,context:AccountEventContext,result:unknown,subject=''){
+ return recordAccountEventSafe(database(),owner,accountEventFor(String(accountId||''),result as Record<string,unknown>|null,context,subject));
+}
+
 async function workerPost(path:string,body:unknown,timeoutMs=120_000){
  const headers:Record<string,string>={'Content-Type':'application/json'};
  const token=workerToken();
@@ -841,6 +848,8 @@ async function runAccountCheck(owner:string,id:string,opts?:{
    }
 
    if(status==='frozen'||status==='spamblock'){
+    // Повторная проверка уже ограниченного аккаунта — не новый штраф (счётчики не раздуваем)
+    if(String(data.status||'')!==status)await journalPenalty(owner,id,'check',{...workerResult,ok:false,status});
     // Подтверждённый проверкой спамблок без таймера: старый истёкший cooldownUntil не должен «снять» его (REQ-M8)
     await db.prepare('UPDATE records SET data=? WHERE owner=? AND id=? AND kind=?').bind(JSON.stringify({...next,cooldownUntil:'',cooldownReason:status}),owner,id,'account').run();
     return {id,ok:false,status:next.status,error:next.error,profile,proxyRotated:proxyRotated||undefined};
@@ -1650,7 +1659,7 @@ async function recordMailingOutreach(owner:string,taskId:string,cand:MailingOutr
    const hadContact=leadReplies(L).some(x=>x.from==='us'&&x.ok);
    const replies=[...(Array.isArray(L.replies)?L.replies:[]),outbound].slice(-40);
    const updated={
-    ...L,
+    ...applySendToBlockSignal(L,result,accountId,outbound.at),
     replies,
     // Первый контакт сразу в «Переписках» (REQ-1)
     conversationOpen:true,
@@ -1693,7 +1702,7 @@ async function recordMailingOutreach(owner:string,taskId:string,cand:MailingOutr
    accountId,
   };
   const newLeadId=crypto.randomUUID();
-  await db.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)').bind(newLeadId,owner,'lead',JSON.stringify(leadData),null,nowIso).run();
+  await db.prepare('INSERT INTO records(id,owner,kind,data,secret,created) VALUES(?,?,?,?,?,?)').bind(newLeadId,owner,'lead',JSON.stringify(applySendToBlockSignal(leadData,result,accountId,outbound.at)),null,nowIso).run();
   await notifyConversation(db,owner,ctx,{event:'first_contact',leadId:newLeadId,lead:leadData,text,accountId});
   // Обновим hash у audience_user — пригодится на повторной рассылке
   if(!cand.recordId||!freshHash)return;
@@ -1735,6 +1744,8 @@ class LeadUpdateConflictError extends Error{}
 const SEND_MESSAGE_TIMEOUT_MS=185_000;
 /** /inbox-dms: 120 s worker job + queue margin. */
 const INBOX_DMS_TIMEOUT_MS=150_000;
+// One GetPeerDialogs call; below the cron's 75 s budget for check_lead_blocks
+const PEER_STATUS_TIMEOUT_MS=60_000;
 /** One poll_dm_replies per owner; covers the worst case of up to 4 accounts × INBOX_DMS_TIMEOUT_MS. */
 const DM_POLL_LEASE_MS=11*60_000;
 
@@ -1818,7 +1829,9 @@ async function recordIncomingDm(db:D1LikeDatabase,owner:string,accountId:string,
  if(leadRow){
   const ctx={accountId,taskId:outreach.taskId,userId:String(msg.userId||''),username:String(msg.username||''),nowIso};
   const done=await mutateLead(db,owner,leadRow.id,cur=>{
-   const next=mergeIncomingDm(cur,incoming,ctx);
+   const merged=mergeIncomingDm(cur,incoming,ctx);
+   // Клиент написал сам — «вероятно заблокировал» опровергнуто (lib/lead-block.ts)
+   const next=merged?{...merged,blockSignal:observeIncoming(merged.blockSignal,accountId)}:null;
    return {next:next??undefined,result:!!next};
   });
   if(!done)return null;
@@ -1889,7 +1902,7 @@ async function pollDmReplies(db:D1LikeDatabase,owner:string,live:LiveAccount[],c
   }catch{
    continue;
   }
-  if(!result?.ok)continue;
+  if(!result?.ok){await journalPenalty(owner,acc.id,'inbox',result);continue}
   const msgs:InboxMessage[]=Array.isArray(result.messages)?result.messages:[];
   let persisted=true;
   let maxTs=0;
@@ -1918,6 +1931,80 @@ async function pollDmReplies(db:D1LikeDatabase,owner:string,live:LiveAccount[],c
  // Не fire-and-forget: workerd обрывает незавершённый fetch после ответа — уведомление терялось молча
  await notifyConversations(db,owner,ctx,events);
  return {ok:true,opened,names:names.slice(0,12),nextCursor};
+}
+
+/**
+ * «Вероятно, заблокировал»: one batched /peer-status (≤LEAD_BLOCK_BATCH peers) for the account whose DM
+ * conversations are most overdue (re-check every LEAD_BLOCK_RECHECK_MS, only conversations with our DM in the last
+ * LEAD_BLOCK_ACTIVE_MS). One Telegram request per call — no per-lead polling; FloodWait goes to the journal.
+ */
+async function checkLeadBlocks(db:D1LikeDatabase,owner:string){
+ const nowMs=Date.now();
+ const nowIso=new Date(nowMs).toISOString();
+ const rows=await db.prepare(`SELECT id,data FROM records WHERE owner=? AND kind='lead'
+  AND COALESCE(json_extract(data,'$.accountId'),'')!='' AND COALESCE(json_extract(data,'$.senderId'),'')!=''
+  AND COALESCE(json_extract(data,'$.senderAccessHash'),'')!=''
+  AND COALESCE(json_extract(data,'$.blockSignal.checkedAt'),'')<?
+  AND EXISTS(SELECT 1 FROM json_each(records.data,'$.replies') r WHERE json_extract(r.value,'$.from')='us'
+   AND json_extract(r.value,'$.ok')=1 AND COALESCE(json_extract(r.value,'$.mode'),'dm')!='chat' AND json_extract(r.value,'$.at')>=?)
+  ORDER BY COALESCE(json_extract(data,'$.blockSignal.checkedAt'),'') LIMIT 200`)
+  .bind(owner,new Date(nowMs-LEAD_BLOCK_RECHECK_MS).toISOString(),new Date(nowMs-LEAD_BLOCK_ACTIVE_MS).toISOString()).all();
+ const due=rows.results.map(r=>({id:String(r.id),data:JSON.parse(String(r.data)) as LeadData}));
+ if(!due.length)return {ok:true,checked:0,changed:0,accountId:''};
+ const accRows=await db.prepare("SELECT id,data FROM records WHERE owner=? AND kind='account'").bind(owner).all();
+ const accounts=new Map(accRows.results.map(r=>[String(r.id),JSON.parse(String(r.data))]));
+ // Под FloodWait диалоги аккаунта ждут; дневная отлёжка (лимит отправки) чтению не мешает
+ const usable=(id:string)=>{const a=accounts.get(id);return canPollDmInbox(a)&&!isAccountFlooded(a,nowMs)};
+ const dead=(id:string)=>!canPollDmInbox(accounts.get(id));
+ const stamp=async(leadId:string,accountId:string,snap?:ReturnType<typeof parsePeerSnapshot>)=>{
+  const done=await mutateLead(db,owner,leadId,cur=>{
+   if(String(cur.accountId||'')!==accountId)return {result:false};
+   const observed=snap?observePeer(cur.blockSignal,snap,accountId,nowIso):cur.blockSignal;
+   return {next:{...cur,blockSignal:markChecked(observed,accountId,nowIso)},result:!sameSignal(cur.blockSignal,observed)};
+  }).catch(()=>null);
+  return !!done?.result;
+ };
+ // Leads of a dead/missing account leave the queue until the next window instead of starving it
+ for(const L of due)if(dead(String(L.data.accountId)))await stamp(L.id,String(L.data.accountId));
+ const accountId=String(due.find(L=>usable(String(L.data.accountId)))?.data.accountId||'');
+ if(!accountId)return {ok:true,checked:0,changed:0,accountId:''};
+ const batch=due.filter(L=>String(L.data.accountId)===accountId).slice(0,LEAD_BLOCK_BATCH);
+ const peers=batch.map(L=>({userId:String(L.data.senderId).replace(/^-/,''),accessHash:String(L.data.senderAccessHash)}));
+ // Штамп ДО вызова: параллельный cron/вкладка не отправит тот же батч повторно
+ for(const L of batch)await stamp(L.id,accountId);
+ let result:Record<string,unknown>;
+ try{
+  const {payload}=await loadAccountSessionPayload(owner,accountId);
+  result=await workerPost('/peer-status',{...payload,peers},PEER_STATUS_TIMEOUT_MS);
+ }catch(e){
+  return {ok:false,busy:e instanceof WorkerBusyError,checked:0,changed:0,accountId};
+ }
+ await journalPenalty(owner,accountId,'peer_check',result);
+ if(result.status==='flood'){
+  // Как в рассылке: аккаунт на паузу floodUntil, статус не трогаем
+  const until=new Date(nowMs+Math.max(60,Number(result.waitSec)||900)*1000).toISOString();
+  await db.prepare("UPDATE records SET data=json_set(data,'$.floodUntil',?) WHERE owner=? AND id=? AND kind='account'").bind(until,owner,accountId).run();
+  return {ok:false,flood:true,checked:0,changed:0,accountId};
+ }
+ // Битый/чужой access_hash: убираем его у лида — следующая отправка сохранит свежий (send без hash — по username)
+ const stale=new Set((Array.isArray(result.failed)?result.failed:[])
+  .filter((f:{error?:unknown})=>/PEER_ID_INVALID|USER_ID_INVALID|invalid/i.test(String(f?.error||'')))
+  .map((f:{userId?:unknown})=>String(f?.userId||'')));
+ for(const L of batch){
+  if(!stale.has(String(L.data.senderId).replace(/^-/,'')))continue;
+  await mutateLead(db,owner,L.id,cur=>({next:String(cur.accountId||'')===accountId?{...cur,senderAccessHash:''}:undefined,result:null})).catch(()=>null);
+ }
+ const byPeer=new Map<string,ReturnType<typeof parsePeerSnapshot>>();
+ for(const raw of Array.isArray(result.peers)?result.peers:[]){
+  const snap=parsePeerSnapshot(raw);
+  if(snap)byPeer.set(String((raw as {userId?:unknown}).userId||''),snap);
+ }
+ let changed=0;
+ for(const L of batch){
+  const snap=result.ok?byPeer.get(String(L.data.senderId).replace(/^-/,'')):undefined;
+  if(await stamp(L.id,accountId,snap||undefined))changed++;
+ }
+ return {ok:!!result.ok,checked:batch.length,changed,accountId,error:result.ok?'':String(result.error||'').slice(0,200)};
 }
 
 /** A thrown send: busy worker = not sent (retry allowed); our timeout/abort = maybe sent (retry blocked). */
@@ -2097,10 +2184,12 @@ async function sendLeadMessage(db:D1LikeDatabase,owner:string,ctx:NotifyCtx,inpu
  }catch(e){
   ({outcome,httpStatus:failStatus}=sendFailureOutcome(e));
  }
- const saved=await mutateLead(db,owner,id,cur=>({
-  next:applySendOutcome(cur,{sendKey,mode,accountId:sendAccountId,peerId:senderId,accessHash:usedHash,nowIso:new Date().toISOString()},outcome),
-  result:null,
- }));
+ await journalPenalty(owner,sendAccountId,mode==='dm'?'dm':'chat',finalResult,mode==='dm'?senderId:'');
+ const sentAt=new Date().toISOString();
+ const saved=await mutateLead(db,owner,id,cur=>{
+  const applied=applySendOutcome(cur,{sendKey,mode,accountId:sendAccountId,peerId:senderId,accessHash:usedHash,nowIso:sentAt},outcome);
+  return {next:mode==='dm'?applySendToBlockSignal(applied,finalResult,sendAccountId,sentAt):applied,result:null};
+ });
  const next=saved?.lead||lead;
  if(outcome.status==='unknown')return sendReply({ok:false,unknown:true,error:outcome.error,lead:next,rotatedAccount},504);
  if(finalResult.flood||finalResult.status==='flood'){
@@ -2285,6 +2374,11 @@ export async function GET(){const session=await getSessionUser();if(!session?.us
  const result=await database().prepare("SELECT id,kind,data,created,secret IS NOT NULL AS hasSecret FROM records WHERE owner=? AND kind!='ai_guard' AND kind!='audience_user' AND kind!='mailing_recipient' ORDER BY created DESC").bind(owner).all();
  let telegramConnected=false;
  try{const h=await fetch(workerUrl()+'/health',{signal:AbortSignal.timeout(1500)});telegramConnected=h.ok}catch{telegramConnected=false}
+ // Счётчики журнала штрафов (24ч/7д/всё) — один GROUP BY; только тем, кто видит аккаунты
+ let accountPenalties={};
+ if(authorizeWorkspaceAction(actor,'account_events',undefined).ok){
+  try{accountPenalties=await accountEventCounts(database(),owner)}catch(e){internalError('GET accountPenalties',e,'')}
+ }
  const envKey=!!envAiApiKey();
  return reply({
   records:visibleRecordsFor(actor,result.results.map((r:any)=>({
@@ -2293,6 +2387,7 @@ export async function GET(){const session=await getSessionUser();if(!session?.us
    hasSecret:r.kind==='settings'?!!(r.hasSecret||envKey):!!r.hasSecret,
   }))),
   telegramConnected,
+  accountPenalties,
   ai:{provider:process.env.AI_PROVIDER||'deepseek',hasEnvKey:envKey},
   workspace,
   me:{userId:session.userId,email:session.email,name:session.displayName},
@@ -2474,7 +2569,10 @@ export async function POST(req:Request){const actor=await readActor(req);if(!act
        next.lastName=wr.profile.lastName??next.lastName;
        if(about!=null)next.about=about;
       }
-      if(wr.status==='frozen')next.status='frozen';
+      if(wr.status==='frozen'){
+       if(String(next.status||'')!=='frozen')await journalPenalty(owner,id,'profile',{...wr,ok:false});
+       next.status='frozen';
+      }
      }catch(e){
       tgOk=false;
       tgError=internalError('apply_account_profiles',e,'Не удалось обновить профиль в Telegram');
@@ -2499,6 +2597,7 @@ export async function POST(req:Request){const actor=await readActor(req);if(!act
    try{
     const {payload}=await loadAccountSessionPayload(owner,id);
     const wr=await workerPost('/upload-photo',{...payload,photoBase64});
+    if(wr.status==='frozen'&&String(data.status||'')!=='frozen')await journalPenalty(owner,id,'profile',{...wr,ok:false});
     if(wr.ok){
      const next={...data,hasPhoto:true};
      if(wr.status==='frozen')next.status='frozen';
@@ -2613,6 +2712,7 @@ export async function POST(req:Request){const actor=await readActor(req);if(!act
   try{
    const {payload}=await loadAccountSessionPayload(owner,gdata.accountId);
    const result=await workerPost('/join-group',{...payload,url:gdata.url});
+   await journalPenalty(owner,gdata.accountId,'join',result);
    const frozen=result.status==='frozen'||result.join==='frozen'||/FROZEN|заморожен/i.test(String(result.error||''));
    const flood=result.join==='flood'||/FloodWait/i.test(String(result.error||''));
    // Слеп аккаунт, а не группа — попытку группе не засчитываем (иначе живые группы уходят в отказ)
@@ -2801,6 +2901,7 @@ export async function POST(req:Request){const actor=await readActor(req);if(!act
   try{
    const {payload}=await loadAccountSessionPayload(owner,gdata.accountId);
    const result=await workerPost('/scan-group',{...payload,url:gdata.url,keywords,minusKeywords,limit:scanLimit,days:scanDepthDays,minId:String(gdata.scanCursor||'')});
+   await journalPenalty(owner,gdata.accountId,'scan',result);
     if(!result.ok){
     if(workerLooksDeadAccount(result)){
      const frozen=workerLooksFrozen(result);
@@ -3255,6 +3356,14 @@ export async function POST(req:Request){const actor=await readActor(req);if(!act
   const silent=b.silent===true;
   const out=await sendLeadMessage(db,owner,notifyCtx,{id,mode,text,clientMsgId,force,silent});
   return reply(out.body,out.status);
+ }
+ if(b.action==='account_events'){
+  const accountId=z.string().trim().min(1).max(80).parse(b.accountId);
+  const events=await listAccountEvents(db,owner,accountId,Number(b.limit)||ACCOUNT_EVENTS_LIST_DEFAULT);
+  return reply({ok:true,events});
+ }
+ if(b.action==='check_lead_blocks'){
+  return reply(await checkLeadBlocks(db,owner));
  }
  if(b.action==='rescan_groups'){
   const force=b.force===true;
@@ -3722,6 +3831,7 @@ export async function POST(req:Request){const actor=await readActor(req);if(!act
    if(result?.ok||result?.join==='need_join')break;
    const errMsg=String(result?.error||'Сбор не удался').slice(0,500);
    const failure=classifyCollectFailure(result||{});
+   await journalPenalty(owner,accountId,'collect',result);
    if(failure.kind==='source')break;
    if(failure.kind==='timeout')return retryAudienceTick(new Error(errMsg));
    sessionErrors.push(errMsg);
@@ -3784,6 +3894,7 @@ export async function POST(req:Request){const actor=await readActor(req);if(!act
    const rotate={accountRotateAt:(Number(data.accountRotateAt)||0)+1};
    if(!gate.ok)return waitTick(gate.waitSec,`Слот ${slotName(accountId)}: ${gate.message} — вступим позже`,rotate);
    const joinRes=await post('/join-group',{...payload,url:data.url},workerAppTimeoutMs('join'));
+   await journalPenalty(owner,accountId,'join',joinRes);
    const step=interpretAudienceJoin(joinRes,account,accountId);
    if(step.kind==='flood'){
     await saveAccount(accountId,step.account);
@@ -4156,6 +4267,7 @@ export async function POST(req:Request){const actor=await readActor(req);if(!act
   try{
    const {payload,account}=await loadAccountSessionPayload(owner,accountId);
    const joinRes=await post('/join-group',{...payload,url:data.targetUrl},workerAppTimeoutMs('join'));
+   await journalPenalty(owner,accountId,'join',joinRes);
    if(!joinRes.ok&&joinRes.join!=='already'&&!/уже|already/i.test(String(joinRes.error||''))){
     const pause=randomPauseSec(data.pauseFromSec,data.pauseToSec);
     if(isAccountBlindResult(joinRes)){
@@ -4183,7 +4295,7 @@ export async function POST(req:Request){const actor=await readActor(req);if(!act
    data={...data,targetMissStreak:0};
    // Источник опционален: не тратим на него стену тика, если вступление уже не влезает
    if(sourceUrl&&tickRun.budget.fits(workerAppTimeoutMs('join'))){
-    try{await post('/join-group',{...payload,url:sourceUrl},workerAppTimeoutMs('join'))}catch{/* источник опционален */}
+    try{await journalPenalty(owner,accountId,'join',await post('/join-group',{...payload,url:sourceUrl},workerAppTimeoutMs('join')))}catch{/* источник опционален */}
    }
    const result=await post('/invite-users',{
     ...payload,
@@ -4202,6 +4314,7 @@ export async function POST(req:Request){const actor=await readActor(req);if(!act
    const accRow:any=await db.prepare('SELECT data FROM records WHERE owner=? AND id=? AND kind=?').bind(owner,accountId,'account').first();
    const accBefore=accRow?JSON.parse(accRow.data):(accMap.get(accountId)||{});
    const outcome=interpretInviteWorkerResult(result,accBefore);
+   await journalPenalty(owner,accountId,'invite',result);
    if(outcome.accountPatch){
     const accountPatch=outcome.kind==='account_blind'?{...outcome.accountPatch,...accountBlindPatch()}:outcome.accountPatch;
     await updateInviteAccount(accountId,accountPatch);
@@ -4977,6 +5090,7 @@ export async function POST(req:Request){const actor=await readActor(req);if(!act
     const errRaw=String(result.error||'');
     const fresh=await readAccount(activeAccountId)||accMap.get(activeAccountId)||{};
     const outcome=interpretMailingSendResult(result,fresh,deliveryMode);
+    await journalPenalty(owner,activeAccountId,'mailing',result,String(cand.userId||cand.username||''));
 
     if(outcome.kind==='rate_limit'){
      // FloodWait — аккаунт на паузу (floodUntil), статус не трогаем; получатель свободен для другого слота (REQ-M4)

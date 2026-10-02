@@ -38,6 +38,7 @@ export const ROUTES = Object.freeze({
   "/invite-users": "invite",
   "/send-message": "send",
   "/inbox-dms": "inbox",
+  "/peer-status": "peer_status",
   "/update-profile": "update_profile",
   "/upload-photo": "upload_photo",
 });

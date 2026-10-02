@@ -34,6 +34,7 @@ if (!records) apply("0000_even_hydra.sql");
 apply("0001_users_oauth.sql");
 // Telegram Mini App tables; CREATE … IF NOT EXISTS, same DDL as lib/tma/workspace.ts::ensureTmaTables.
 apply("0002_tma.sql");
+apply("0002_account_events.sql");
 
 db.close();
 console.log(`SQLite ready: ${path}`);

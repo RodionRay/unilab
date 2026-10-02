@@ -2325,6 +2325,168 @@ async def invite_users(client, payload: dict[str, Any]) -> dict[str, Any]:
         raise
 
 
+# Peer-side send errors the app turns into the lead's «likely blocked» signal (lib/lead-block.ts).
+# Telethon's str() of these errors carries no code name, so the code is resolved from the class or .message.
+PEER_ERROR_CODES = (
+    "USER_IS_BLOCKED",
+    "USER_PRIVACY_RESTRICTED",
+    "PRIVACY_PREMIUM_REQUIRED",
+    "INPUT_USER_DEACTIVATED",
+)
+_PEER_ERROR_CLASSES = {
+    "UserIsBlockedError": "USER_IS_BLOCKED",
+    "UserPrivacyRestrictedError": "USER_PRIVACY_RESTRICTED",
+    "PrivacyPremiumRequiredError": "PRIVACY_PREMIUM_REQUIRED",
+    "InputUserDeactivatedError": "INPUT_USER_DEACTIVATED",
+}
+PEER_ERROR_TEXT = {
+    "USER_IS_BLOCKED": "Клиент заблокировал этот аккаунт (USER_IS_BLOCKED)",
+    "USER_PRIVACY_RESTRICTED": "Пользователь ограничил личные сообщения (USER_PRIVACY_RESTRICTED)",
+    "PRIVACY_PREMIUM_REQUIRED": "Клиент принимает ЛС только от Telegram Premium (PRIVACY_PREMIUM_REQUIRED)",
+    "INPUT_USER_DEACTIVATED": "Аккаунт клиента удалён (INPUT_USER_DEACTIVATED)",
+}
+_PEER_STATUS_NAMES = {
+    "UserStatusOnline": "online",
+    "UserStatusOffline": "offline",
+    "UserStatusRecently": "recently",
+    "UserStatusLastWeek": "last_week",
+    "UserStatusLastMonth": "last_month",
+}
+PEER_STATUS_MAX_PEERS = 50
+# A stale access hash fails GetPeerDialogs for the whole batch: halve up to this many requests to isolate it.
+PEER_STATUS_MAX_CALLS = 14
+PEER_STATUS_SPLIT_PAUSE_SEC = 0.5
+
+
+def peer_error_code(exc: BaseException) -> str:
+    """USER_IS_BLOCKED / USER_PRIVACY_RESTRICTED / PRIVACY_PREMIUM_REQUIRED / INPUT_USER_DEACTIVATED or ''."""
+    by_class = _PEER_ERROR_CLASSES.get(type(exc).__name__)
+    if by_class:
+        return by_class
+    raw = f"{getattr(exc, 'message', '') or ''} {exc}".upper()
+    for code in PEER_ERROR_CODES:
+        if code in raw:
+            return code
+    return ""
+
+
+def peer_snapshot(user: Any, *, now: int | None = None) -> dict[str, Any]:
+    """What this account sees of a user: status bucket ('hidden' = UserStatusEmpty/None), last online, photo."""
+    import time as _time
+
+    st = getattr(user, "status", None)
+    status = _PEER_STATUS_NAMES.get(type(st).__name__, "hidden") if st is not None else "hidden"
+    was_online = 0
+    if status == "online":
+        was_online = int(now if now is not None else _time.time())
+    elif status == "offline":
+        was_online = _unix_ts(getattr(st, "was_online", None))
+    photo = getattr(user, "photo", None)
+    return {
+        "status": status,
+        "wasOnline": was_online,
+        "photo": bool(photo) and type(photo).__name__ != "UserProfilePhotoEmpty",
+        "deleted": bool(getattr(user, "deleted", False)),
+    }
+
+
+def _peer_user_id(peer: Any) -> int | None:
+    uid = getattr(peer, "user_id", None)
+    return int(uid) if uid is not None else None
+
+
+async def peer_status(client: Any, peers: list[dict[str, Any]], *, now: int | None = None) -> dict[str, Any]:
+    """One GetPeerDialogs for up to 50 known peers (id + access_hash of THIS account): status, photo, read state.
+
+    No resolve calls — peers without an access hash are skipped (the app re-checks them after the next send).
+    """
+    import time as _time
+
+    from telethon.errors import FloodWaitError, RPCError
+    from telethon.tl.functions.messages import GetPeerDialogsRequest
+    from telethon.tl.types import InputDialogPeer, InputPeerUser
+
+    started = int(now if now is not None else _time.time())
+    inputs = []
+    for p in (peers or [])[:PEER_STATUS_MAX_PEERS]:
+        try:
+            uid = int(str(p.get("userId") or "").lstrip("-"))
+            ah = int(str(p.get("accessHash") or ""))
+        except (TypeError, ValueError):
+            continue
+        inputs.append(InputDialogPeer(peer=InputPeerUser(user_id=uid, access_hash=ah)))
+    if not inputs:
+        return {"ok": True, "peers": [], "failed": [], "checkedTs": started, "error": ""}
+    calls = {"n": 0}
+
+    async def fetch(chunk: list[Any]) -> tuple[list[Any], list[tuple[Any, str]]]:
+        """One request; a peer-specific error (stale access hash) splits the chunk instead of failing it whole."""
+        if calls["n"]:
+            await asyncio.sleep(PEER_STATUS_SPLIT_PAUSE_SEC)
+        calls["n"] += 1
+        try:
+            return [await client(GetPeerDialogsRequest(peers=chunk))], []
+        except FloodWaitError:
+            raise
+        except RPCError as e:
+            if is_frozen_rpc(e) or len(chunk) == 1 or calls["n"] >= PEER_STATUS_MAX_CALLS:
+                if is_frozen_rpc(e):
+                    raise
+                return [], [(x, str(e)[:200]) for x in chunk]
+            mid = len(chunk) // 2
+            ok_a, bad_a = await fetch(chunk[:mid])
+            ok_b, bad_b = await fetch(chunk[mid:])
+            return ok_a + ok_b, bad_a + bad_b
+
+    try:
+        results, bad = await fetch(inputs)
+    except FloodWaitError as e:
+        return {"ok": False, "status": "flood", "waitSec": int(e.seconds), "error": f"FloodWait {e.seconds}с", "peers": [], "failed": []}
+    except RPCError as e:
+        return {**frozen_action_error("проверка собеседников"), "peers": [], "failed": []} if is_frozen_rpc(e) else {
+            "ok": False, "error": str(e)[:400], "peers": [], "failed": [],
+        }
+    failed = [{"userId": str(x.peer.user_id), "error": err} for x, err in bad]
+    if not results:
+        return {"ok": False, "error": (bad[0][1] if bad else "GetPeerDialogs failed")[:400], "peers": [], "failed": failed}
+    out: list[dict[str, Any]] = []
+    for res in results:
+        out.extend(_peer_dialog_rows(res, started))
+    return {"ok": True, "peers": out, "failed": failed, "checkedTs": started, "error": ""}
+
+
+def _peer_dialog_rows(res: Any, started: int) -> list[dict[str, Any]]:
+    """messages.PeerDialogs → one row per private dialog: snapshot + read state of our top message."""
+    users = {int(u.id): u for u in (getattr(res, "users", None) or []) if getattr(u, "id", None) is not None}
+    top_by_peer: dict[tuple[int, int], Any] = {}
+    for m in getattr(res, "messages", None) or []:
+        uid = _peer_user_id(getattr(m, "peer_id", None))
+        if uid is not None:
+            top_by_peer[(uid, int(getattr(m, "id", 0) or 0))] = m
+    out: list[dict[str, Any]] = []
+    for d in getattr(res, "dialogs", None) or []:
+        uid = _peer_user_id(getattr(d, "peer", None))
+        if uid is None:
+            continue
+        user = users.get(uid)
+        snap = peer_snapshot(user, now=started) if user is not None else {
+            "status": "hidden", "wasOnline": 0, "photo": False, "deleted": False,
+        }
+        top_id = int(getattr(d, "top_message", 0) or 0)
+        read_out = int(getattr(d, "read_outbox_max_id", 0) or 0)
+        top = top_by_peer.get((uid, top_id))
+        top_out = bool(getattr(top, "out", False)) if top is not None else False
+        out.append({
+            **snap,
+            "userId": str(uid),
+            "readOutboxMaxId": read_out,
+            "topMessageId": top_id,
+            "lastOutAt": _unix_ts(getattr(top, "date", None)) if top_out else 0,
+            "outUnread": top_out and top_id > read_out,
+        })
+    return out
+
+
 async def send_message(
     client,
     *,
@@ -2547,10 +2709,15 @@ async def send_message(
                     "ok": False,
                     "error": "Peer оказался каналом/чатом, а не пользователем — для ЛС нужен @username человека",
                 }
+            peer = None
             if isinstance(resolved, User):
                 if getattr(resolved, "bot", False):
                     return {"ok": False, "error": "Это бот — в личку по рассылке не пишем"}
                 entity = resolved
+                peer = peer_snapshot(resolved)
+                if peer["deleted"]:
+                    code = "INPUT_USER_DEACTIVATED"
+                    return {"ok": False, "errorCode": code, "error": PEER_ERROR_TEXT[code], "peer": peer}
             sent = await client.send_message(entity, body, silent=bool(silent))
             msg_id = str(getattr(sent, "id", "") or "")
             uname = (
@@ -2594,6 +2761,7 @@ async def send_message(
                 "link": link,
                 "silent": bool(silent),
                 "deletedDialog": bool(delete_dialog),
+                **({"peer": peer} if peer else {}),
             }
 
         if mode == "chat":
@@ -2648,7 +2816,8 @@ async def send_message(
 
         return {"ok": False, "error": f"Неизвестный режим: {mode}"}
     except UserPrivacyRestrictedError:
-        return {"ok": False, "error": "Пользователь ограничил личные сообщения"}
+        code = "USER_PRIVACY_RESTRICTED"
+        return {"ok": False, "errorCode": code, "error": PEER_ERROR_TEXT[code]}
     except (UserBannedInChannelError, ChatWriteForbiddenError) as e:
         # Часто приходит и на «ЛС», если аккаунт ограничен Telegram / peer = канал
         return {
@@ -2668,6 +2837,9 @@ async def send_message(
     except RPCError as e:
         if is_frozen_rpc(e):
             return frozen_action_error("отправка сообщения")
+        code = peer_error_code(e)
+        if code:
+            return {"ok": False, "errorCode": code, "error": PEER_ERROR_TEXT[code]}
         msg = str(e)
         low = msg.lower()
         if "banned from sending" in low or "chat_write_forbidden" in low or "user_banned_in_channel" in low:
@@ -3199,6 +3371,9 @@ async def run_action(payload: dict[str, Any]) -> dict[str, Any]:
                         or INBOX_MAX_USER_DIALOGS
                     ),
                 )
+            if action == "peer_status":
+                peers = payload.get("peers")
+                return await peer_status(client, peers if isinstance(peers, list) else [])
             if action == "update_profile":
                 return await update_profile(client, payload)
             if action == "upload_photo":
