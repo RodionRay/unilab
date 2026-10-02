@@ -109,6 +109,7 @@ function errorCopy(error: TmaApiError, online: boolean): { title: string; text: 
   }
   if (error.code === "forbidden") return { title: "Нет доступа", text: error.message || "У вашей роли нет доступа к этому разделу." };
   if (error.code === "rate_limited") return { title: "Слишком много запросов", text: "Подождите минуту и повторите." };
+  if (error.code === "unavailable") return { title: "Сервис временно недоступен", text: error.message || "Повторите попытку через минуту." };
   return { title: "Не удалось загрузить", text: error.message };
 }
 

@@ -61,7 +61,8 @@ export type TmaErrorCode =
   | "not_linked" // 403: tg user not linked to a member of this workspace
   | "workspace_unavailable" // 403: unknown wsKey or no bot token
   | "forbidden" // 403: action/view not allowed for this member
-  | "rate_limited"; // 429
+  | "rate_limited" // 429
+  | "unavailable"; // 503: temporary server/storage failure, retry later
 export type TmaError = { error: string; code: TmaErrorCode; botLink?: string };
 
 // ---- GET /api/tma/feed?view=… -----------------------------------------------------------------

@@ -63,6 +63,7 @@ const KNOWN_CODES: ReadonlySet<string> = new Set<TmaErrorCode>([
   "workspace_unavailable",
   "forbidden",
   "rate_limited",
+  "unavailable",
 ]);
 
 function codeForStatus(status: number): TmaClientErrorCode {
@@ -70,6 +71,7 @@ function codeForStatus(status: number): TmaClientErrorCode {
   if (status === 403) return "forbidden";
   if (status === 429) return "rate_limited";
   if (status === 400) return "bad_request";
+  if (status === 503) return "unavailable";
   return "http";
 }
 

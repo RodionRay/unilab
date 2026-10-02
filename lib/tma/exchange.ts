@@ -19,6 +19,7 @@ export const TMA_ERROR_TEXT: Readonly<Record<TmaErrorCode, string>> = {
   workspace_unavailable: "Приложение недоступно. Обратитесь к владельцу кабинета.",
   forbidden: "Нет доступа к этому разделу",
   rate_limited: "Слишком много попыток. Попробуйте позже.",
+  unavailable: "Сервис временно недоступен. Повторите попытку.",
 };
 
 /**

@@ -23,6 +23,6 @@ export async function GET(req: Request): Promise<Response> {
     return tmaJson(result.body);
   } catch (e) {
     console.error("[tma] feed:", String((e as Error)?.message || e).slice(0, 300));
-    return tmaError(503, "bad_request", { error: "Не удалось загрузить данные. Повторите попытку." });
+    return tmaError(503, "unavailable", { error: "Не удалось загрузить данные. Повторите попытку." });
   }
 }

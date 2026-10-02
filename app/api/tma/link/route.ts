@@ -23,6 +23,6 @@ export async function POST(req: Request): Promise<Response> {
     return tmaJson(result.body, result.status, headers);
   } catch (e) {
     console.error("[tma] link:", String((e as Error)?.message || e).slice(0, 300));
-    return tmaError(503, "workspace_unavailable", { error: "Сервис временно недоступен. Повторите попытку." });
+    return tmaError(503, "unavailable");
   }
 }
