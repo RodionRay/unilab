@@ -1,5 +1,5 @@
 ---
-status: building (owner answered Q1–Q5 = defaults 2026-10-01)
+status: built — review + verifier done 2026-10-02; stand smoke + real-phone smoke pending (test bot token)
 size: full
 model: claude-opus-5-5 (effort: session)
 budget: 600M tokens
@@ -69,7 +69,7 @@ Source: read-only scout of origin/dev @671338d + Telegram docs (core.telegram.or
 6. **Headers** — `/tma/*` only: drop `X-Frame-Options`, `frame-ancestors https://web.telegram.org
    https://*.telegram.org`; every other path unchanged.
 7. **Notices** — private-chat notices (to linked members who opt in) carry an inline `web_app` button that deep-opens
-   the lead (`/tma/<wsKey>#lead=<id>`); group notices keep the existing callback «Ответить» (web_app is not allowed in
+   the lead (`/tma/<wsKey>?lead=<id>`; `#lead=` and `start_param lead_<id>` are also accepted); group notices keep the existing callback «Ответить» (web_app is not allowed in
    groups).
 
 ## Requirements (EARS)
@@ -106,7 +106,7 @@ Source: read-only scout of origin/dev @671338d + Telegram docs (core.telegram.or
 - REQ-L3 Where a member already has a Login-Widget `oauth_accounts` telegram row, the system shall accept that tg id
   as linked without a code.
 - REQ-L4 When a member (or an admin for them) presses «Отключить», the system shall revoke the link, reset the chat's
-  menu button and invalidate live tma tokens (REQ-A5).
+  menu button and invalidate live tma tokens (REQ-A5). v1: admin path is server-only (`POST /api/tma/link {action:"unlink",userId}`); the admin button in «Сотрудники» → v1.1 (D-8).
 - REQ-L5 Expired, reused or foreign-workspace codes shall be rejected with a bot reply that leaks no workspace data.
 
 ### Shell
