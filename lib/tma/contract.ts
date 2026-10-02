@@ -179,4 +179,8 @@ export type LinkStatus = {
   expiresAt?: number;
   /** Mini app URL for this workspace (https), empty if APP_URL is not public https. */
   appUrl: string;
+  /** https://t.me/<bot> of the workspace bot (last known username), empty if unknown. The mini app opens from there. */
+  botLink: string;
+  /** Workspace notices are switched off by the owner: private notices are not sent even when dmNotices is on. */
+  noticesOff: boolean;
 };

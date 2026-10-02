@@ -14,7 +14,7 @@ import {
   revokeLink,
   setDmNotices,
 } from "@/lib/tma/links";
-import { getOrCreateWorkspaceKey, readWorkspaceBot, rememberBotIdentity } from "@/lib/tma/workspace";
+import { botLinkFor, findWorkspaceByOwner, getOrCreateWorkspaceKey, readWorkspaceBot, rememberBotIdentity } from "@/lib/tma/workspace";
 
 /** POST /api/tma/link core (web cookie session): link code, status, unlink, DM opt-in. */
 
@@ -39,12 +39,15 @@ export function miniAppUrl(appUrl: string | undefined, wsKey: string): string {
 
 async function linkStatus(db: D1LikeDatabase, owner: string, userId: string, appUrl: string): Promise<LinkStatus> {
   const link = await findActiveLinkForUser(db, owner, userId);
+  const bot = await readWorkspaceBot(db, owner);
   return {
     linked: Boolean(link),
     tgUsername: link?.tgUsername ?? "",
     dmNotices: link?.dmNotices ?? false,
     dmError: link?.dmError ?? "",
     appUrl,
+    botLink: botLinkFor(await findWorkspaceByOwner(db, owner), bot.botId) ?? "",
+    noticesOff: !bot.noticesOn,
   };
 }
 

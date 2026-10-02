@@ -13,8 +13,8 @@ import {
 } from "@/components/product/tma-link-state";
 
 const NOW = Date.UTC(2026, 9, 1, 9, 0, 0);
-const UNLINKED: LinkStatus = { linked: false, tgUsername: "", dmNotices: false, dmError: "", appUrl: "" };
-const LINKED: LinkStatus = { linked: true, tgUsername: "anna_orlova", dmNotices: true, dmError: "", appUrl: "https://x.example/tma/k" };
+const UNLINKED: LinkStatus = { linked: false, tgUsername: "", dmNotices: false, dmError: "", appUrl: "", botLink: "", noticesOff: false };
+const LINKED: LinkStatus = { linked: true, tgUsername: "anna_orlova", dmNotices: true, dmError: "", appUrl: "https://x.example/tma/k", botLink: "", noticesOff: false };
 const CODE: LinkStatus = { ...UNLINKED, startLink: "https://t.me/bot?start=link_abc", expiresAt: NOW / 1000 + 600 };
 
 function pending(): LinkState {
