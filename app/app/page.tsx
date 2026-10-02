@@ -15,7 +15,8 @@ import {TaskLogDialog} from '@/components/product/task-log-dialog';
 import {EmployeesPanel} from '@/components/product/employees-panel';
 import {VkAccountsPanel,type VkAccountRecord} from '@/components/product/vk-accounts-panel';
 import {VkSourcesPanel,type VkSourceRecord} from '@/components/product/vk-sources-panel';
-import {leadPlatform,matchesLeadPlatform,matchesLeadSource,safeVkHref,vkPoolCanScan,type LeadPlatformFilter} from '@/lib/vk/view';
+import {leadPlatform,matchesLeadPlatform,matchesLeadSource,safeVkHref,vkErrorView,vkPoolCanScan,type LeadPlatformFilter} from '@/lib/vk/view';
+import {interleaveScans} from '@/lib/processes/scan-queue';
 import {DEFAULT_DM_SOFT_CLOSE,DEFAULT_MAILING_TASK} from '@/lib/mailing';
 import {canAccessNav,type CrmAccess,type WorkspaceInvite,type WorkspaceMember} from '@/lib/staff-types';
 import {DEFAULT_NAV} from '@/components/product/workspace-nav';
@@ -1577,7 +1578,8 @@ function WorkspaceHome(){
     }finally{setBusy(false)}
   }
 
-  async function rescanAllGroups(opts?:{quiet?:boolean;force?:boolean;limit?:number}){
+  /** `withVk`: «Собрать лиды» also walks the due VK sources, interleaved with Telegram groups (AM-12). */
+  async function rescanAllGroups(opts?:{quiet?:boolean;force?:boolean;limit?:number;withVk?:boolean}){
     const quiet=!!opts?.quiet;
     const pack=await api({action:'rescan_groups',force:!!opts?.force,limit:opts?.limit??40});
     // Автопочинка мёртвых аккаунтов → очередь вступлений
@@ -1589,17 +1591,33 @@ function WorkspaceHome(){
       }
       void startBackgroundJoins(items);
     }
-    const ids:string[]=pack.groupIds||[];
+    const ids:string[]=opts?.withVk&&!telegramConnected?[]:(pack.groupIds||[]);
+    const vkIds:string[]=opts?.withVk&&vkPoolCanScan(vkAccounts)&&Array.isArray(pack.vkSourceIds)?pack.vkSourceIds.map(String):[];
     const minutes=Number(pack.rescanMinutes)||Number(settings?.data.autoRescanMinutes)||30;
-    if(!ids.length){
-      if(!quiet&&!(pack.rejoinItems||[]).length)toast.message(`Нет групп к обходу (лимит: раз в ${minutes} мин)`);
-      return {scanned:0,added:0,skipped:true,due:Number(pack.total)||0,reassigned:Number(pack.reassigned)||0};
+    if(!ids.length&&!vkIds.length){
+      if(!quiet&&!(pack.rejoinItems||[]).length)toast.message(opts?.withVk&&hasVk?`Нет источников к обходу (лимит: раз в ${minutes} мин)`:`Нет групп к обходу (лимит: раз в ${minutes} мин)`);
+      return {scanned:0,vkScanned:0,added:0,skipped:true,due:Number(pack.total)||0,reassigned:Number(pack.reassigned)||0};
     }
-    let added=0,scanned=0;
+    let added=0,scanned=0,vkScanned=0;
     const rejoin: {id:string;name:string}[]=[];
     const scanErrors:string[]=[];
-    for(const id of ids){
+    for(const item of interleaveScans(ids,vkIds)){
       if(!opts?.force&&(busyRef.current||joinRunnerLock.current))break;
+      if(item.kind==='vk'){
+        try{
+          const r=await api({action:'scan_vk_source',id:item.id,force:!!opts?.force});
+          if(r.skipped)continue;
+          vkScanned++;
+          added+=Number(r.added)||0;
+          const msg=r.error?vkErrorView(r.error).text:'';
+          if(msg&&!scanErrors.includes(msg))scanErrors.push(msg);
+        }catch(err){
+          const msg=vkErrorView((err as Error).message||'ошибка').text.slice(0,140);
+          if(msg&&!scanErrors.includes(msg))scanErrors.push(msg);
+        }
+        continue;
+      }
+      const id=item.id;
       try{
         const r=await api({action:'scan_group',id,force:!!opts?.force});
         if(r.skipped)continue;
@@ -1638,8 +1656,8 @@ function WorkspaceHome(){
       const head=scanErrors[0];
       toast.error(scanErrors.length>1?`Скан: ${head} · ещё ${scanErrors.length-1}`:`Скан: ${head}`);
     }
-    if(scanned>0||added>0)await refresh();
-    return {scanned,added,due:Number(pack.total)||ids.length,reassigned:Number(pack.reassigned)||0};
+    if(scanned>0||vkScanned>0||added>0)await refresh();
+    return {scanned,vkScanned,added,due:Number(pack.total)||ids.length,reassigned:Number(pack.reassigned)||0};
   }
 
   async function rebuildProduct(){
@@ -3084,7 +3102,7 @@ function WorkspaceHome(){
         <div className="workspace" key={view}>
           <div className="page-heading">
             <div>
-              <div className="eyebrow">Telegram · UniLab</div>
+              <div className="eyebrow">{hasVk?'UniLab · Telegram + VK':'Telegram · UniLab'}</div>
               <h1>{view==='Обзор'?'Обзор':view==='Аккаунты'?'Менеджер аккаунтов':view}</h1>
               <p className="muted mt-2">{viewCopy[view]}</p>
             </div>
@@ -3317,16 +3335,19 @@ function WorkspaceHome(){
                   <span className="badge neutral">{chatLeads.length} диалогов</span>
                 </div>
               ):currentKind==='lead'?(
-                <div className="flex flex-wrap items-center gap-3">
+                <div className={`flex flex-wrap items-center gap-3${hasVk?' lead-filter-row':''}`}>
                   <Button
-                    disabled={busy||!telegramConnected||autoRescanRunning}
+                    className={hasVk?'lead-collect':undefined}
+                    disabled={busy||!(telegramConnected||(hasVk&&vkPoolCanScan(vkAccounts)))||autoRescanRunning}
                     onClick={async()=>{
                       setBusy(true);
                       setAutoRescanRunning(true);
                       try{
-                        const r=await rescanAllGroups({force:true,limit:40});
+                        const r=await rescanAllGroups({force:true,limit:40,withVk:hasVk});
                         try{await api({action:'mark_auto_rescan'})}catch{/* */}
-                        toast.success(`Собрано: ${r.scanned} групп, +${r.added} лидов`);
+                        toast.success(r.vkScanned
+                          ?`Собрано: ${r.scanned} групп Telegram, ${r.vkScanned} источников VK, +${r.added} лидов`
+                          :`Собрано: ${r.scanned} групп, +${r.added} лидов`);
                         await refresh();
                       }catch(e){toast.error((e as Error).message)}
                       finally{setBusy(false);setAutoRescanRunning(false)}
@@ -3336,7 +3357,7 @@ function WorkspaceHome(){
                     {autoRescanRunning?'Сбор…':'Собрать лиды'}
                   </Button>
                   <Select value={leadGroupFilter} onValueChange={setLeadGroupFilter}>
-                    <SelectTrigger className="w-[220px]" aria-label="Источник"><SelectValue placeholder="Группа"/></SelectTrigger>
+                    <SelectTrigger className={hasVk?'w-[220px] lead-filter-select':'w-[220px]'} aria-label="Источник"><SelectValue placeholder="Группа"/></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">{hasVk?'Все источники':'Все группы'}</SelectItem>
                       {leadPlatformFilter!=='vk'&&list('group').map(g=>(
@@ -3358,7 +3379,7 @@ function WorkspaceHome(){
                         if(leadGroupFilter!=='all'&&((next==='vk'&&!isVkSource)||(next==='telegram'&&isVkSource)))setLeadGroupFilter('all');
                       }}
                     >
-                      <SelectTrigger className="w-[160px]" aria-label="Площадка"><SelectValue/></SelectTrigger>
+                      <SelectTrigger className="w-[160px] lead-filter-select" aria-label="Площадка"><SelectValue/></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all">Все площадки</SelectItem>
                         <SelectItem value="telegram">Telegram</SelectItem>
@@ -3470,7 +3491,9 @@ function WorkspaceHome(){
             )}
             {currentKind==='lead'&&(
               <div className="status-note">
-                «Собрать лиды» — принудительный обход. Автообход круглосуточно через Telegram-воркер из npm run dev (каждые {settings?.data.autoRescanMinutes||30} мин на группу)
+                {hasVk
+                  ?`«Собрать лиды» — обход групп Telegram и источников VK сейчас. Автообход круглосуточно: каждые ${settings?.data.autoRescanMinutes||30} мин на группу Telegram и на источник VK`
+                  :<>«Собрать лиды» — принудительный обход. Автообход круглосуточно через Telegram-воркер из npm run dev (каждые {settings?.data.autoRescanMinutes||30} мин на группу)</>}
                 {settings?.data.lastAutoRescanAt?` · последний ${new Date(settings.data.lastAutoRescanAt).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}`:''}
                 {autoRescanRunning?' · идёт…':''}.
               </div>
@@ -4228,8 +4251,14 @@ function WorkspaceHome(){
           )}
 
           <footer className="app-footer">
-            <span>UniLab · Тёплые заявки из Telegram</span>
-            <span>Тёплые заявки из Telegram</span>
+            {hasVk?(
+              <span>UniLab · тёплые заявки из Telegram и VK</span>
+            ):(
+              <>
+                <span>UniLab · Тёплые заявки из Telegram</span>
+                <span>Тёплые заявки из Telegram</span>
+              </>
+            )}
           </footer>
         </div>
       </SidebarInset>
@@ -5053,14 +5082,14 @@ function WorkspaceHome(){
             const vkHref=safeVkHref(detail.data.url);
             return (
               <div className="chat-composer px-6 py-4 border-t border-[var(--spike-border)] space-y-3">
-                <div className="flex flex-wrap gap-2">
+                <div className="vk-lead-actions">
                   {vkHref&&(
-                    <Button asChild>
+                    <Button asChild className="vk-open-btn">
                       <a href={vkHref} target="_blank" rel="noopener noreferrer">Открыть в VK<ExternalLink size={15}/><span className="sr-only"> (откроется в новой вкладке)</span></a>
                     </Button>
                   )}
-                  <Button variant="ghost" onClick={()=>{open('lead',detail);setDetail(null)}}>Правки</Button>
-                  <Button variant="ghost" aria-label="Удалить лид" onClick={()=>{setDeleting(detail);setDetail(null)}}><Trash2 size={15}/></Button>
+                  <Button variant="outline" onClick={()=>{open('lead',detail);setDetail(null)}}>Изменить лид</Button>
+                  <Button variant="ghost" size="icon" className="vk-danger-text" aria-label="Удалить лид" title="Удалить лид" onClick={()=>{setDeleting(detail);setDetail(null)}}><Trash2 size={15}/></Button>
                 </div>
                 <p className="small-note">
                   {vkHref

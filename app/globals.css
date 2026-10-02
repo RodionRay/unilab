@@ -5034,6 +5034,41 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   color: var(--spike-warning);
 }
 
+/* Leads toolbar with the VK platform filter: «Собрать лиды» on its own line, both selects share one row ≤900px */
+@media (max-width: 900px) {
+  .lead-filter-row > .lead-collect {
+    flex: 0 0 auto;
+    margin-right: 100%;
+  }
+  .lead-filter-row > [data-slot="select-trigger"].lead-filter-select,
+  .lead-filter-row > .lead-filter-select {
+    flex: 1 1 160px;
+    width: auto;
+    min-width: 0;
+  }
+  .lead-filter-row > [data-slot="tabs"] {
+    max-width: 100%;
+    min-width: 0;
+  }
+}
+
+/* VK lead detail: one action row (open · edit · delete) at every width */
+.vk-lead-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+}
+.vk-lead-actions > :last-child {
+  margin-left: auto;
+}
+.vk-open-btn {
+  font-weight: 600;
+}
+.vk-open-btn * {
+  font-weight: inherit;
+}
+
 /* Import: form left, per-line result (or the accepted formats) right */
 .vk-import {
   display: grid;
@@ -5130,7 +5165,7 @@ button[data-slot="button"][data-variant="ghost"]:hover {
 .vk-import-line {
   display: grid;
   grid-template-columns: 72px auto minmax(0, 1fr);
-  align-items: center;
+  align-items: start;
   gap: 10px;
   padding: 8px 0;
   border-top: 1px solid rgba(255, 255, 255, 0.04);
@@ -5140,18 +5175,67 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   color: var(--spike-muted);
   font-variant-numeric: tabular-nums;
 }
+.vk-import-no,
+.vk-import-line .badge {
+  margin-top: 1px;
+}
 .vk-import-text {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.45;
 }
 .vk-import-line .vk-import-text { color: var(--spike-muted); }
 .vk-import-line.is-success .vk-import-text { color: var(--spike-text); }
 .vk-import-line .badge { justify-self: start; }
-.vk-import-text em {
-  font-style: normal;
-  color: var(--spike-warning);
+.vk-only-errors {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-size: 0.78rem;
+  color: var(--spike-muted);
+  cursor: pointer;
+}
+.vk-import-hint {
+  margin-top: 8px;
+}
+
+/* Reasons and errors: two lines, tap to expand (components/product/vk-clamp-text.tsx) */
+.vk-clamp {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+.vk-clamp-body {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.vk-clamp.is-open .vk-clamp-body {
+  display: block;
+  -webkit-line-clamp: unset;
+}
+.vk-clamp.is-toggle {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.vk-clamp-more {
+  display: inline-block;
+  margin-top: 2px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--spike-primary);
+}
+.vk-clamp.is-toggle:focus-visible {
+  outline: 2px solid var(--spike-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 /* Lists: VK accounts and VK sources share one row rhythm with the Telegram groups list */
@@ -5170,8 +5254,12 @@ button[data-slot="button"][data-variant="ghost"]:hover {
 }
 .vk-src-cols,
 .vk-src-row {
-  grid-template-columns: 36px minmax(0, 1.8fr) minmax(90px, 0.6fr) minmax(110px, 0.6fr) minmax(90px, 0.5fr) auto;
+  /* One fixed actions track: header and rows are separate grids and must line up. */
+  grid-template-columns: minmax(0, 1.8fr) minmax(90px, 0.5fr) minmax(110px, 0.55fr) minmax(96px, 0.5fr) 176px;
 }
+.vk-src-enable > .vk-cell-main { grid-column: 1 / 3; }
+.vk-src-enable > .vk-src-status { grid-column: 3; }
+.vk-src-enable > .vk-cell-actions { grid-column: 4 / -1; }
 .vk-rows-cols,
 .vk-src-cols {
   border-bottom: 1px solid var(--spike-border);
@@ -5229,8 +5317,48 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   min-width: 0;
   text-align: left;
 }
+.vk-status-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.vk-status-text strong {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--spike-text);
+}
 .vk-status-detail {
-  max-width: 220px !important;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--spike-muted);
+}
+.vk-row-result {
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+.vk-row-result.is-ok { color: var(--spike-success); }
+.vk-row-result.is-fail { color: var(--spike-error); }
+.vk-usage-line {
+  display: none !important;
+}
+.vk-usage-line .is-over {
+  color: var(--spike-error);
+}
+.vk-status-chips {
+  margin-top: 2px;
+}
+.vk-bind-progress {
+  font-size: 0.8125rem;
+  color: var(--spike-muted);
+  font-variant-numeric: tabular-nums;
+}
+.vk-bulk-proxy {
+  min-width: 150px;
+  max-width: 220px;
+}
+.vk-danger-action {
+  background: var(--spike-error) !important;
+  color: #fff !important;
 }
 .vk-cell-actions {
   display: flex;
@@ -5238,14 +5366,27 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   align-items: center;
   gap: 4px;
 }
-.vk-src-icon {
-  width: 32px;
-  height: 32px;
-  border-radius: 10px;
-  display: grid;
-  place-items: center;
-  background: var(--spike-info-light);
-  color: var(--spike-info);
+.vk-src-err {
+  margin-top: 2px;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--spike-error);
+}
+.vk-src-leads-label {
+  display: none;
+  color: var(--spike-muted);
+}
+.vk-blocked-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: -4px;
+  font-size: 0.8125rem;
+  color: var(--spike-warning);
+}
+.vk-blocked-note .text-link {
+  font-weight: 600;
 }
 .vk-src-leads {
   font-size: 0.8125rem;
@@ -5309,7 +5450,8 @@ button[data-slot="button"][data-variant="ghost"]:hover {
     grid-template-columns: 28px minmax(0, 1fr) auto;
     grid-template-areas:
       "check main actions"
-      "check status usage"
+      "check status status"
+      "check usage usage"
       "check proxy proxy";
     gap: 8px 10px;
     padding: 12px;
@@ -5318,21 +5460,31 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   .vk-row > .vk-cell-main { grid-area: main; }
   .vk-row > .vk-cell-proxy { grid-area: proxy; }
   .vk-row > .vk-cell-status { grid-area: status; }
-  .vk-row > .vk-cell-usage { grid-area: usage; align-self: start; align-items: flex-end; }
+  .vk-row > .vk-cell-usage { grid-area: usage; }
   .vk-import-formats ul { display: none; }
   .vk-import-formats { padding: 12px 14px; }
   .vk-row > .vk-cell-actions { grid-area: actions; }
   .vk-row-proxy { max-width: none; }
   .vk-src-row {
-    grid-template-columns: 32px minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas:
-      "icon main main"
-      "icon status leads"
-      "icon sync actions";
+      "main main"
+      "status leads"
+      "sync actions";
     gap: 8px 10px;
-    padding: 12px;
+    padding: 12px 14px;
   }
-  .vk-src-row > .vk-src-icon { grid-area: icon; align-self: start; }
+  .vk-src-enable {
+    grid-template-areas:
+      "main main"
+      "status actions";
+  }
+  .vk-src-enable > .vk-cell-main,
+  .vk-src-enable > .vk-src-status,
+  .vk-src-enable > .vk-cell-actions { grid-column: auto; }
+  .vk-src-leads-label { display: inline; }
+  .vk-usage-icon { display: none !important; }
+  .vk-usage-line { display: inline !important; white-space: nowrap; }
   .vk-src-row > .vk-cell-main { grid-area: main; }
   .vk-src-row > .vk-src-leads { grid-area: leads; justify-self: end; }
   .vk-src-row > .vk-src-status { grid-area: status; }
@@ -5340,4 +5492,19 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   .vk-src-row > .vk-cell-actions { grid-area: actions; }
   .vk-src-sync-label { display: inline; }
   .vk-source-add { width: 100%; }
+}
+
+@media (max-width: 600px) {
+  .vk-import-line {
+    grid-template-columns: 64px minmax(0, 1fr);
+    grid-template-areas:
+      "no badge"
+      "no text";
+    gap: 4px 10px;
+  }
+  .vk-import-line > .vk-import-no { grid-area: no; }
+  .vk-import-line > .badge { grid-area: badge; }
+  .vk-import-line > .vk-import-text { grid-area: text; }
+  .vk-bulkbar .groups-actionbar-right { width: 100%; }
+  .vk-bulk-proxy { flex: 1 1 100%; max-width: none; }
 }
