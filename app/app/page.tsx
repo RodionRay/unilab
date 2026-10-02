@@ -3849,7 +3849,7 @@ function WorkspaceHome(){
                       <span className="sr-only">Поиск групп</span>
                       <Input
                         type="search"
-                        placeholder="Название, ссылка или причина"
+                        placeholder="Название, ссылка, причина"
                         value={groupFilters.q}
                         maxLength={GROUP_SEARCH_MAX}
                         onChange={e=>updateGroupFilters({q:e.target.value})}
@@ -3965,7 +3965,7 @@ function WorkspaceHome(){
                         {groupSelected.length>0&&!byLimitRunning&&` · ${groupSelected.length}`}
                       </Button>
                       {!farmAccounts.length&&(
-                        <span id="groups-bylimit-hint" className="groups-bylimit-hint">Нет активных аккаунтов для вступления</span>
+                        <span id="groups-bylimit-hint" className="groups-bylimit-hint">Нет активных аккаунтов</span>
                       )}
                       {groupSelected.length>0&&(
                         <Button

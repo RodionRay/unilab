@@ -2814,7 +2814,7 @@ textarea:focus-visible,
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 14px;
+  gap: 8px 12px;
 }
 
 .groups-filterbar-search {
@@ -2855,6 +2855,7 @@ textarea:focus-visible,
 
 .groups-filterbar select[data-slot="native-select"] {
   padding-left: 14px;
+  padding-right: 30px;
   border-color: var(--spike-border);
   border-radius: var(--spike-radius-pill);
   background-color: var(--spike-paper);
