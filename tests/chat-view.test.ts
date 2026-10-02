@@ -1,7 +1,8 @@
 import {describe,expect,it} from 'vitest';
 import type {ReplyEntry} from '@/lib/lead-conversation';
 import {
-  AVATAR_TONES,buildThread,chatListItem,dateSeparatorLabel,initials,avatarTone,isSendShortcut,listTimeLabel,unreadCountOf,
+  AVATAR_TONES,buildThread,chatListItem,dateSeparatorLabel,defaultMode,describeSendError,initials,avatarTone,isSendShortcut,
+  listTimeLabel,listWithOpened,makeOutbox,openedFrom,pendingFor,unreadCountOf,unreadOnOpen,
   type ChatLead,type ThreadItem,type ThreadMessage,
 } from '@/lib/chat-view';
 
@@ -167,5 +168,79 @@ describe('chat-view · avatar, keys',()=>{
     expect(isSendShortcut({key:'Enter',nativeEvent:{isComposing:true}})).toBe(false);
     expect(isSendShortcut({key:'Enter',keyCode:229})).toBe(false);
     expect(isSendShortcut({key:'a'})).toBe(false);
+  });
+});
+
+describe('chat-view · panel state',()=>{
+  const withReplies=(replies:ReplyEntry[],id='lead-1'):ChatLead=>({...lead({replies}),id});
+
+  it('pending bubble shows until the server stores a new copy of the text, then disappears',()=>{
+    const before=withReplies([us('Привет',at(2,9))]);
+    const box=makeOutbox(before,'  Привет  ','dm',NOW);
+
+    expect(pendingFor(box,before)).toEqual({text:'Привет',mode:'dm',at:NOW.toISOString()});
+    // server clock earlier than ours: still recognised by the copy count, not by time
+    expect(pendingFor(box,withReplies([us('Привет',at(2,9)),us('Привет',at(2,8))]))).toBeNull();
+    // failed send stored by the server also ends the pending state
+    expect(pendingFor(box,withReplies([us('Привет',at(2,9)),us('Привет',at(2,18),{ok:false,status:'failed'})]))).toBeNull();
+  });
+
+  it('pending bubble belongs to its chat only; no outbox = nothing',()=>{
+    const a=withReplies([],'a');
+    const box=makeOutbox(a,'x','chat',NOW);
+
+    expect(pendingFor(box,withReplies([],'b'))).toBeNull();
+    expect(pendingFor(null,a)).toBeNull();
+    expect(pendingFor(box,null)).toBeNull();
+  });
+
+  it('opened chat stays in its list slot only while search and folder are unchanged',()=>{
+    const a=withReplies([],'a'),b=withReplies([],'b'),c=withReplies([],'c');
+    const opened=openedFrom(b,[a,b,c],'',"all");
+    const afterViewed=[a,c];
+
+    expect(listWithOpened(afterViewed,b,opened,{query:'',folder:'all'}).map(l=>l.id)).toEqual(['a','b','c']);
+    expect(listWithOpened(afterViewed,b,opened,{query:'ozon',folder:'all'}).map(l=>l.id)).toEqual(['a','c']);
+    expect(listWithOpened(afterViewed,b,opened,{query:'',folder:'viewed'}).map(l=>l.id)).toEqual(['a','c']);
+    expect(listWithOpened([a,b,c],b,opened,{query:'',folder:'all'})).toHaveLength(3);
+    expect(listWithOpened(afterViewed,null,opened,{query:'',folder:'all'})).toBe(afterViewed);
+  });
+
+  it('unread state is the one captured at click time',()=>{
+    const unreadLead={...withReplies([client('?',at(2,9))],'a'),data:{...withReplies([client('?',at(2,9))],'a').data,viewed:false}};
+    const opened=openedFrom(unreadLead,[unreadLead],'','all');
+    const nowViewed={...unreadLead,data:{...unreadLead.data,viewed:true}};
+
+    expect(unreadOnOpen(nowViewed,opened)).toBe(true);
+    expect(unreadOnOpen(nowViewed,null)).toBe(false);
+  });
+
+  it('default mode: DM when the client is reachable, group reply when only the group is',()=>{
+    expect(defaultMode({senderUsername:'demo_x'},true)).toBe('dm');
+    expect(defaultMode({},true)).toBe('chat');
+    expect(defaultMode({},false)).toBe('dm');
+  });
+});
+
+describe('chat-view · send errors',()=>{
+  it('maps Telegram codes to plain Russian with the next step; code kept for the tooltip',()=>{
+    expect(describeSendError('PEER_FLOOD: аккаунт временно ограничен Telegram')).toEqual({
+      text:'Telegram временно ограничил этот аккаунт для новых диалогов. Ответьте позже или в группе.',code:'PEER_FLOOD',
+    });
+    expect(describeSendError('USER_PRIVACY_RESTRICTED').text).toMatch(/закрыл личные сообщения/);
+    expect(describeSendError('rpc error USER_IS_BLOCKED').code).toBe('USER_IS_BLOCKED');
+    expect(describeSendError('INPUT_USER_DEACTIVATED').text).toMatch(/удалён/);
+    expect(describeSendError('CHAT_WRITE_FORBIDDEN').text).toMatch(/Ответьте в личку/);
+  });
+
+  it('FLOOD_WAIT_N becomes a human wait time',()=>{
+    expect(describeSendError('FLOOD_WAIT_45')).toEqual({text:'Telegram просит подождать 45 с. Повторите после паузы.',code:'FLOOD_WAIT_45'});
+    expect(describeSendError('A wait of FLOOD_WAIT_600 seconds').text).toMatch(/10 мин/);
+  });
+
+  it('unknown code → generic next step; server Russian text without a code → as is; empty → retry hint',()=>{
+    expect(describeSendError('SOME_NEW_ERROR').text).toMatch(/Telegram отклонил сообщение/);
+    expect(describeSendError('Аккаунт на отлежке — отправка недоступна')).toEqual({text:'Аккаунт на отлежке — отправка недоступна',code:''});
+    expect(describeSendError('').text).toBe('Не отправлено. Повторите попытку.');
   });
 });

@@ -9,7 +9,7 @@ import { leadReplies, type LeadData, type ReplyEntry } from "@/lib/lead-conversa
 /** Consecutive messages of one side closer than this are drawn as one group (tail only on the last). */
 export const GROUP_WINDOW_MS = 5 * 60_000;
 /** Number of avatar colours (components map the index to `--chat-avatar-<n>`). */
-export const AVATAR_TONES = 7;
+export const AVATAR_TONES = 10;
 
 export type ChatLead = { id: string; created?: string; data: LeadData };
 export type ChatSide = "in" | "out";
@@ -318,13 +318,18 @@ export function initials(name: string): string {
   return out || "?";
 }
 
-/** Stable palette index 0..AVATAR_TONES-1 for an id (FNV-1a). */
+/** Stable palette index 0..AVATAR_TONES-1 for an id (FNV-1a + murmur3 finalizer so similar UUIDs spread). */
 export function avatarTone(id: string): number {
   let h = 0x811c9dc5;
   for (const ch of str(id)) {
     h ^= ch.codePointAt(0)!;
     h = Math.imul(h, 0x01000193);
   }
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x85ebca6b);
+  h ^= h >>> 13;
+  h = Math.imul(h, 0xc2b2ae35);
+  h ^= h >>> 16;
   return (h >>> 0) % AVATAR_TONES;
 }
 
@@ -343,4 +348,104 @@ export function isSendShortcut(e: KeyLike): boolean {
   if (e.shiftKey || e.altKey) return false;
   if (e.isComposing || e.nativeEvent?.isComposing || e.keyCode === 229) return false;
   return true;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Panel state rules (kept pure so they are testable without React)
+
+/** A message the manager just sent; shown with the clock tick until the server stores it. */
+export type Outbox = {
+  leadId: string;
+  text: string;
+  mode: "dm" | "chat";
+  at: string;
+  /** How many of our replies with this text existed when it was sent (server clocks may differ from ours). */
+  known: number;
+};
+
+const sameText = (a: string, b: string) => a.trim() === b.trim();
+
+function ourCopies(data: LeadData, text: string): number {
+  return leadReplies(data).filter((r) => r.from === "us" && sameText(str(r.text), text)).length;
+}
+
+export function makeOutbox(lead: ChatLead, text: string, mode: "dm" | "chat", now: Date = new Date()): Outbox {
+  const clean = text.trim();
+  return { leadId: lead.id, text: clean, mode, at: now.toISOString(), known: ourCopies(lead.data, clean) };
+}
+
+/** The outbox still needs its own bubble: same chat and the server has not stored a new copy of the text yet. */
+export function pendingFor(outbox: Outbox | null, lead: ChatLead | null): BuildThreadOptions["pending"] {
+  if (!outbox || !lead || outbox.leadId !== lead.id) return null;
+  if (ourCopies(lead.data, outbox.text) > outbox.known) return null;
+  return { text: outbox.text, mode: outbox.mode, at: outbox.at };
+}
+
+/** Where a chat was opened from: lets the list keep it in place while nothing else changed. */
+export type OpenedFrom = { id: string; unread: boolean; index: number; query: string; folder: string };
+
+export function openedFrom(lead: ChatLead, leads: readonly ChatLead[], query: string, folder: string): OpenedFrom {
+  return { id: lead.id, unread: !lead.data.viewed, index: leads.findIndex((l) => l.id === lead.id), query, folder };
+}
+
+/**
+ * Opening a «Новые» chat marks it viewed, which moves it to «Просмотренные». Like Telegram's unread folder the row
+ * stays in place while that chat is open — but only while the search and folder are the ones it was opened from.
+ */
+export function listWithOpened(
+  leads: readonly ChatLead[],
+  active: ChatLead | null,
+  opened: OpenedFrom | null,
+  current: { query: string; folder: string },
+): readonly ChatLead[] {
+  if (!active || !opened || opened.id !== active.id || opened.index < 0) return leads;
+  if (opened.query !== current.query || opened.folder !== current.folder) return leads;
+  if (leads.some((l) => l.id === active.id)) return leads;
+  const next = [...leads];
+  next.splice(Math.min(opened.index, next.length), 0, active);
+  return next;
+}
+
+/** Unread state for the thread: captured at click time (opening marks the lead viewed in the same render). */
+export function unreadOnOpen(active: ChatLead, opened: OpenedFrom | null): boolean {
+  return opened && opened.id === active.id ? opened.unread : !active.data.viewed;
+}
+
+/** Default composer mode for a chat: DM when the client is reachable there, else a reply in the group. */
+export function defaultMode(data: LeadData, chatAvailable: boolean): "dm" | "chat" {
+  const dm = !!(data.senderId || data.senderUsername);
+  return dm || !chatAvailable ? "dm" : "chat";
+}
+
+export type SendErrorView = { text: string; code: string };
+
+const SEND_ERRORS: Record<string, string> = {
+  PEER_FLOOD: "Telegram временно ограничил этот аккаунт для новых диалогов. Ответьте позже или в группе.",
+  USER_PRIVACY_RESTRICTED: "Клиент закрыл личные сообщения. Ответьте в группе.",
+  USER_IS_BLOCKED: "Клиент заблокировал аккаунт. Ответьте в группе или с другого аккаунта.",
+  INPUT_USER_DEACTIVATED: "Аккаунт клиента удалён. Отправить сообщение нельзя.",
+  CHAT_WRITE_FORBIDDEN: "Этому аккаунту запрещено писать в группе. Ответьте в личку.",
+  USER_BANNED_IN_CHANNEL: "Аккаунт ограничен в этой группе. Ответьте в личку.",
+};
+
+function waitLabel(sec: number): string {
+  if (sec < 60) return `${sec} с`;
+  const min = Math.ceil(sec / 60);
+  return min < 60 ? `${min} мин` : `${Math.ceil(min / 60)} ч`;
+}
+
+/**
+ * Plain-Russian text for a failed send with the next step; the raw Telegram code goes to a tooltip.
+ * Server messages without a Telegram code (already Russian) are shown as they are.
+ */
+export function describeSendError(raw: string): SendErrorView {
+  const text = str(raw).trim();
+  if (!text) return { text: "Не отправлено. Повторите попытку.", code: "" };
+  const flood = text.match(/FLOOD_WAIT_(\d+)/);
+  if (flood) {
+    return { text: `Telegram просит подождать ${waitLabel(Number(flood[1]))}. Повторите после паузы.`, code: flood[0] };
+  }
+  const code = text.match(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/)?.[0] ?? "";
+  if (!code) return { text, code: "" };
+  return { text: SEND_ERRORS[code] ?? "Telegram отклонил сообщение. Повторите позже или ответьте другим способом.", code };
 }
